@@ -288,6 +288,17 @@ function migrateSaveData(data) {
   }
   return { ...next, version };
 }
+function shiftTimestampsDeep(value, deltaMs) {
+  if (Array.isArray(value)) return value.map((v) => shiftTimestampsDeep(v, deltaMs));
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+      out[k] = typeof v === "number" && /(At|Until|Since)$/.test(k) ? v + deltaMs : shiftTimestampsDeep(v, deltaMs);
+    }
+    return out;
+  }
+  return value;
+}
 async function saveGameState(payload) {
   try {
     await activeSaveAdapter.save(STORAGE_KEY, payload);
@@ -1093,7 +1104,9 @@ function MarketSandbox() {
     setPullY(0);
     touchStartYRef.current = null;
   };
-  const applyLoadedData = (data) => {
+  const applyLoadedData = (rawData) => {
+    const pausedMs = Math.max(0, Date.now() - (typeof rawData.lastSavedAt === "number" ? rawData.lastSavedAt : Date.now()));
+    const data = pausedMs > 0 ? shiftTimestampsDeep(rawData, pausedMs) : rawData;
     const rawBankAccounts = (() => {
       const raw = data.bankAccounts && typeof data.bankAccounts === "object" ? data.bankAccounts : {};
       const patched = {};
@@ -1263,6 +1276,7 @@ function MarketSandbox() {
   }, []);
   const buildSavePayload = () => ({
     version: SAVE_VERSION,
+    lastSavedAt: Date.now(),
     onboarded: onboardedRef.current,
     holdings: holdingsRef.current,
     ipHoldings: ipHoldingsRef.current,
@@ -1982,7 +1996,7 @@ function MarketSandbox() {
   }, [loaded]);
   useEffect(() => {
     if (!loaded) return;
-    const id = setInterval(() => {
+    const checkBlackMarketDeadline = () => {
       const r = blackMarketRoundRef.current;
       if (!r || r.stage === "offered" || !r.deadlineAt || Date.now() < r.deadlineAt) return;
       if (r.stage === "received") {
@@ -1995,7 +2009,9 @@ function MarketSandbox() {
       adjustReputation(-8);
       setBlackMarketRound(null);
       setTimeout(saveGame, 50);
-    }, 1e4);
+    };
+    checkBlackMarketDeadline();
+    const id = setInterval(checkBlackMarketDeadline, 1e4);
     return () => clearInterval(id);
   }, [loaded]);
   useEffect(() => {
@@ -2838,6 +2854,10 @@ function MarketSandbox() {
         const misc = Math.round(t.bidAmount * 0.02);
         const profit = Math.max(0, t.bidAmount - resourceCost - misc) + (type.marginBonus ? Math.round(t.bidAmount * type.marginBonus) : 0);
         adjustAccountBalance(t.financeAccountId, profit + t.deposit);
+        if (t.financeAccountId === "ip" && profit > 0) {
+          setQuarterRevenue((r) => r + profit);
+          trackIpTurnover(profit);
+        }
         adjustReputation(Math.min(4, 1 + t.bidAmount / 2e5));
         trackDelta.completed += 1;
         if (type.originRisk && Math.random() < 0.12) flagSuspicion(10 + Math.random() * 15);
@@ -2867,6 +2887,12 @@ function MarketSandbox() {
     if (!blackMarketRound || blackMarketRound.stage !== "offered") return;
     const { amount, offerId } = blackMarketRound;
     adjustAccountBalance(accountId, amount);
+    if (accountId === "ip") {
+      setQuarterRevenue((r) => r + amount);
+      trackIpTurnover(amount);
+    } else if (BANK_ACCOUNTS.some((b) => b.id === accountId)) {
+      setBankAccounts((prev) => prev[accountId] ? { ...prev, [accountId]: { ...prev[accountId], turnoverUsed: prev[accountId].turnoverUsed + amount, lifetimeTurnover: (prev[accountId].lifetimeTurnover || 0) + amount } } : prev);
+    }
     logTx("\u0427\u0451\u0440\u043D\u044B\u0439 \u0440\u044B\u043D\u043E\u043A: \u043F\u0440\u0438\u0451\u043C \u043F\u043B\u0430\u0442\u0435\u0436\u0430", amount, "in");
     const now = Date.now();
     setBlackMarketRound((r) => r ? { ...r, stage: "received", accountId, receivedAt: now, deadlineAt: now + 10 * 60 * 1e3 } : r);
@@ -2999,9 +3025,12 @@ function MarketSandbox() {
       }
     }
     setMuleCards((prev) => ({ ...prev, [muleId]: { ...prev[muleId], balance: prev[muleId].balance - total, turnoverUsed: prev[muleId].turnoverUsed + amt, lifetimeTurnover: prev[muleId].lifetimeTurnover + amt, warmth: Math.min(100, prev[muleId].warmth + (isSmall ? MULE_WARMUP_SMALL_TX_GAIN : 0)) } }));
-    if (dest === "ip") setIpCash((c) => c + amt);
-    else if (dest === "grey") setGreyAccount((a) => a ? { ...a, balance: a.balance + amt } : a);
-    else setBankAccounts((prev) => prev[dest] ? { ...prev, [dest]: { ...prev[dest], balance: prev[dest].balance + amt } } : prev);
+    if (dest === "ip") {
+      setIpCash((c) => c + amt);
+      setQuarterRevenue((r) => r + amt);
+      trackIpTurnover(amt);
+    } else if (dest === "grey") setGreyAccount((a) => a ? { ...a, balance: a.balance + amt } : a);
+    else setBankAccounts((prev) => prev[dest] ? { ...prev, [dest]: { ...prev[dest], balance: prev[dest].balance + amt, turnoverUsed: prev[dest].turnoverUsed + amt, lifetimeTurnover: (prev[dest].lifetimeTurnover || 0) + amt } } : prev);
     logTx(`\u041E\u0431\u043D\u0430\u043B\u0438\u0447\u043A\u0430 \u0441 \u0447\u0443\u0436\u043E\u0439 \u043A\u0430\u0440\u0442\u044B \xB7 ${bank.name}${fee > 0 ? ` (\u043A\u043E\u043C\u0438\u0441\u0441\u0438\u044F ${fmt(fee)})` : ""}`, total, "out");
     const nearLimit = amt >= bank.singleLimit * 0.85 && amt <= bank.singleLimit * 1.05;
     if (amt > bank.singleLimit * 0.5) flagTransferSuspicion(card.bankId, amt / bank.singleLimit * (nearLimit ? 12 : 5));
