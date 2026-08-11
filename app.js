@@ -223,7 +223,6 @@ var FACTORY_QUALITY_TIERS = [
 ];
 var FACTORY_EQUIPMENT_COST = { clothes: 5e3, accessories: 1e4, phones: 1e4, laptops: 1e4 };
 var FACTORY_UNIT_COST = { clothes: 4, accessories: 7, phones: 16, laptops: 22 };
-var FACTORY_MARKET_REF = { clothes: 20, accessories: 32, phones: 85, laptops: 120 };
 var FACTORY_CYCLE_MS = 30 * 60 * 1e3;
 var FACTORY_ORDER_WINDOW_MS = 12 * 60 * 1e3;
 var FACTORY_BUYER_NAMES = ["\u0420\u0438\u0442\u0435\u0439\u043B-\u0441\u0435\u0442\u044C \xAB\u0414\u043E\u043C\u0438\u043D\u043E\xBB", "\u041E\u043F\u0442\u043E\u0432\u0438\u043A \u0441 \u0440\u044B\u043D\u043A\u0430", "\u0418\u043D\u0442\u0435\u0440\u043D\u0435\u0442-\u043C\u0430\u0433\u0430\u0437\u0438\u043D \xAB\u041A\u0430\u043A\u0442\u0443\u0441\xBB", "\u0414\u0438\u0441\u0442\u0440\u0438\u0431\u044C\u044E\u0442\u043E\u0440 \xAB\u0412\u043E\u043B\u043D\u0430\xBB", "\u0421\u0435\u0442\u0435\u0432\u043E\u0439 \u0437\u0430\u043A\u0443\u043F\u0449\u0438\u043A", "\u0427\u0430\u0441\u0442\u043D\u044B\u0439 \u043E\u043F\u0442"];
@@ -2248,19 +2247,7 @@ function MarketSandbox() {
         let pendingOrders = f.pendingOrders.filter((o) => o.expiresAt > Date.now());
         const ordersExpired = f.ordersExpired + (f.pendingOrders.length - pendingOrders.length);
         if (pendingOrders.length < 2 && Math.random() < 0.65) {
-          const refPrice = FACTORY_MARKET_REF[f.category] * (marketIndexRef.current || 1);
-          const compTicker = f.category === "clothes" || f.category === "accessories" ? "ASIM" : "VSLG";
-          const perf = companyPerfPct(companiesRef.current, compTicker);
-          const compMult = Math.max(0.7, Math.min(1.2, 1 + perf / 400));
-          const pricePerUnit = Math.round(refPrice * compMult * (0.6 + Math.random() * 0.35) * 100) / 100;
-          const volume = Math.round(20 + Math.random() * 130);
-          pendingOrders = [...pendingOrders, {
-            id: makeId("forder"),
-            buyerName: FACTORY_BUYER_NAMES[Math.floor(Math.random() * FACTORY_BUYER_NAMES.length)],
-            pricePerUnit,
-            volume,
-            expiresAt: Date.now() + FACTORY_ORDER_WINDOW_MS
-          }];
+          pendingOrders = [...pendingOrders, createFactoryOrder(f.category)];
         }
         updates[f.id] = { stock, totalProduced, pendingOrders, ordersExpired, missedTicks, nextTickAt: Date.now() + FACTORY_CYCLE_MS };
       });
@@ -2554,6 +2541,26 @@ function MarketSandbox() {
     setActiveTab("company");
     setTimeout(saveGame, 50);
   };
+  const createFactoryOrder = (category) => {
+    const unitCost = FACTORY_UNIT_COST[category];
+    const roll = Math.random();
+    let marginMult;
+    if (roll < 0.55) marginMult = 1.1 + Math.random() * 0.25;
+    else if (roll < 0.85) marginMult = 0.7 + Math.random() * 0.35;
+    else marginMult = 1.6 + Math.random() * 0.9;
+    const compTicker = category === "clothes" || category === "accessories" ? "ASIM" : "VSLG";
+    const perf = companyPerfPct(companiesRef.current, compTicker);
+    const compMult = Math.max(0.9, Math.min(1.1, 1 + perf / 600));
+    const pricePerUnit = Math.round(unitCost * marginMult * compMult * 100) / 100;
+    const volume = Math.round(20 + Math.random() * 130);
+    return {
+      id: makeId("forder"),
+      buyerName: FACTORY_BUYER_NAMES[Math.floor(Math.random() * FACTORY_BUYER_NAMES.length)],
+      pricePerUnit,
+      volume,
+      expiresAt: Date.now() + FACTORY_ORDER_WINDOW_MS
+    };
+  };
   const openFactory = (name, category) => {
     const line = FACTORY_LINES.small20;
     const equipCost = FACTORY_EQUIPMENT_COST[category];
@@ -2564,6 +2571,7 @@ function MarketSandbox() {
     if (bal < totalCost) return;
     adjustAccountBalance(src, -totalCost);
     const newId = makeId("factory");
+    const initialOrders = [createFactoryOrder(category), createFactoryOrder(category)].map((o) => ({ ...o, expiresAt: Date.now() + FACTORY_CYCLE_MS + FACTORY_ORDER_WINDOW_MS }));
     setFactories((prev) => [...prev, {
       id: newId,
       name: name && name.trim() ? name.trim() : `\u041F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u043E \u2116${prev.length + 1}`,
@@ -2577,7 +2585,7 @@ function MarketSandbox() {
       ordersDeclined: 0,
       ordersExpired: 0,
       missedTicks: 0,
-      pendingOrders: [],
+      pendingOrders: initialOrders,
       nextTickAt: Date.now() + FACTORY_CYCLE_MS,
       openedAt: Date.now()
     }]);
@@ -4125,6 +4133,7 @@ function MarketSandbox() {
           const openTenders = tenders.filter((t) => t.status === "open");
           const biddingTenders = tenders.filter((t) => t.status === "bidding");
           const activeTendersList = tenders.filter((t) => t.status === "active");
+          const recentResolved = tenders.filter((t) => ["lost", "completed", "failed"].includes(t.status)).slice(-5).reverse();
           const winLabel = (t, bidAmount) => {
             if (!bidAmount || bidAmount <= 0) return null;
             const priceScore = Math.max(0, Math.min(1, (t.budget - bidAmount) / (t.budget * 0.4)));
@@ -4149,6 +4158,8 @@ function MarketSandbox() {
               maxActiveTenders(),
               " \xB7 \u0432\u044B\u0438\u0433\u0440\u0430\u043D\u043E ",
               tenderTrackRecord.won,
+              " \xB7 \u043F\u0440\u043E\u0438\u0433\u0440\u0430\u043D\u043E ",
+              tenderTrackRecord.lost,
               " \xB7 \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D\u043E ",
               tenderTrackRecord.completed,
               " \xB7 \u043F\u0440\u043E\u0432\u0430\u043B\u0435\u043D\u043E ",
@@ -4191,6 +4202,25 @@ function MarketSandbox() {
                   /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkDim, marginTop: 4 }, children: [
                     "\u0420\u0435\u0448\u0435\u043D\u0438\u0435 \u0447\u0435\u0440\u0435\u0437: ",
                     fmtLeft(t.resolveAt)
+                  ] })
+                ] }, t.id);
+              })
+            ] }),
+            recentResolved.length > 0 && /* @__PURE__ */ jsxs("div", { style: { marginBottom: 18 }, children: [
+              /* @__PURE__ */ jsx("div", { style: { fontSize: 13, fontWeight: 700, marginBottom: 8 }, children: "\u041D\u0435\u0434\u0430\u0432\u043D\u0438\u0435 \u0440\u0435\u0437\u0443\u043B\u044C\u0442\u0430\u0442\u044B" }),
+              recentResolved.map((t) => {
+                const type = TENDER_TYPES[t.type];
+                const label = t.status === "lost" ? "\u041F\u0440\u043E\u0438\u0433\u0440\u0430\u043D" : t.status === "failed" ? "\u041F\u0440\u043E\u0432\u0430\u043B\u0435\u043D" : "\u0412\u044B\u043F\u043E\u043B\u043D\u0435\u043D";
+                const color = t.status === "completed" ? C.green : C.red;
+                return /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", padding: "8px 4px", fontSize: 11.5, borderBottom: `1px solid ${C.border}` }, children: [
+                  /* @__PURE__ */ jsxs("span", { style: { color: C.inkDim }, children: [
+                    type.name,
+                    " \xB7 ",
+                    t.clientName
+                  ] }),
+                  /* @__PURE__ */ jsxs("span", { style: { color, fontWeight: 600 }, children: [
+                    label,
+                    t.status === "completed" ? ` +${fmt(t.payout || 0)}` : ""
                   ] })
                 ] }, t.id);
               })
@@ -4836,7 +4866,7 @@ function MarketSandbox() {
               ] }),
               /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }, children: "\u041E\u0444\u043B\u0430\u0439\u043D-\u043C\u0430\u0433\u0430\u0437\u0438\u043D" }),
               !shop.offlineStore ? /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
-                /* @__PURE__ */ jsx("div", { style: { fontSize: 11.5, color: C.inkDim, marginBottom: 12, lineHeight: 1.6 }, children: "\u0424\u0438\u0437\u0438\u0447\u0435\u0441\u043A\u0430\u044F \u0442\u043E\u0447\u043A\u0430 \u2014 \u0434\u043E\u043F\u043E\u043B\u043D\u0438\u0442\u0435\u043B\u044C\u043D\u044B\u0439 \u043A\u0430\u043D\u0430\u043B \u043F\u0440\u043E\u0434\u0430\u0436 \u0442\u043E\u0433\u043E \u0436\u0435 \u0441\u043A\u043B\u0430\u0434\u0430, \u0447\u0442\u043E \u0438 \u043E\u043D\u043B\u0430\u0439\u043D-\u043C\u0430\u0433\u0430\u0437\u0438\u043D. \u041F\u0440\u043E\u0434\u0430\u0436\u0438 \u0437\u0430\u0432\u0438\u0441\u044F\u0442 \u043E\u0442 \u0446\u0435\u043D\u044B, \u0440\u0435\u0439\u0442\u0438\u043D\u0433\u0430, \u0440\u0435\u043F\u0443\u0442\u0430\u0446\u0438\u0438, \u0440\u0435\u043A\u043B\u0430\u043C\u044B \u0438 \u0437\u0430\u043F\u043E\u043B\u043D\u0435\u043D\u043D\u043E\u0441\u0442\u0438 \u0441\u043A\u043B\u0430\u0434\u0430, \u0438 \u043E\u0433\u0440\u0430\u043D\u0438\u0447\u0435\u043D\u044B \u043F\u043E\u0442\u043E\u043A\u043E\u043C \u043F\u043E\u043A\u0443\u043F\u0430\u0442\u0435\u043B\u0435\u0439 \u0442\u043E\u0447\u043A\u0438 \u2014 \u0431\u0435\u0437 \u0442\u043E\u0432\u0430\u0440\u0430 \u043D\u0430 \u0441\u043A\u043B\u0430\u0434\u0435 \u043F\u0440\u043E\u0434\u0430\u0432\u0430\u0442\u044C \u043D\u0435\u0447\u0435\u0433\u043E. \u0410\u0440\u0435\u043D\u0434\u0430, \u0437\u0430\u0440\u043F\u043B\u0430\u0442\u0430 \u0438 \u0440\u0430\u0441\u0445\u043E\u0434\u044B \u0441\u043F\u0438\u0441\u044B\u0432\u0430\u044E\u0442\u0441\u044F \u0441\u043E \u0441\u0447\u0451\u0442\u0430 \u0418\u041F \u0440\u0430\u0437 \u0432 \u0447\u0430\u0441 \u2014 \u0435\u0441\u043B\u0438 \u043D\u0435\u0447\u0435\u043C \u043F\u043B\u0430\u0442\u0438\u0442\u044C, \u0441\u043E\u0441\u0442\u043E\u044F\u043D\u0438\u0435 \u0442\u043E\u0447\u043A\u0438 \u0440\u0435\u0437\u043A\u043E \u043F\u0430\u0434\u0430\u0435\u0442, \u0430 \u043F\u043E\u0441\u043B\u0435 \u0442\u0440\u0451\u0445 \u043F\u0440\u043E\u0432\u0430\u043B\u043E\u0432 \u043F\u043E\u0434\u0440\u044F\u0434 \u043C\u0430\u0433\u0430\u0437\u0438\u043D \u0437\u0430\u043A\u0440\u044B\u0432\u0430\u0435\u0442\u0441\u044F. \u041F\u0443\u0441\u0442\u043E\u0439 \u0438\u043B\u0438 \u0441\u043A\u0443\u0434\u043D\u044B\u0439 \u0441\u043A\u043B\u0430\u0434 \u0442\u043E\u0436\u0435 \u0440\u043E\u043D\u044F\u0435\u0442 \u0441\u043E\u0441\u0442\u043E\u044F\u043D\u0438\u0435." }),
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 11.5, color: C.inkDim, marginBottom: 12, lineHeight: 1.6 }, children: "\u0424\u0438\u0437\u0438\u0447\u0435\u0441\u043A\u0430\u044F \u0442\u043E\u0447\u043A\u0430 \u2014 \u0434\u043E\u043F\u043E\u043B\u043D\u0438\u0442\u0435\u043B\u044C\u043D\u044B\u0439 \u043A\u0430\u043D\u0430\u043B \u043F\u0440\u043E\u0434\u0430\u0436 \u0442\u043E\u0433\u043E \u0436\u0435 \u0441\u043A\u043B\u0430\u0434\u0430, \u0447\u0442\u043E \u0438 \u043E\u043D\u043B\u0430\u0439\u043D-\u043C\u0430\u0433\u0430\u0437\u0438\u043D. \u041F\u0440\u043E\u0434\u0430\u0436\u0438 \u0437\u0430\u0432\u0438\u0441\u044F\u0442 \u043E\u0442 \u0446\u0435\u043D\u044B, \u0440\u0435\u0439\u0442\u0438\u043D\u0433\u0430, \u0440\u0435\u043F\u0443\u0442\u0430\u0446\u0438\u0438, \u0440\u0435\u043A\u043B\u0430\u043C\u044B \u0438 \u0437\u0430\u043F\u043E\u043B\u043D\u0435\u043D\u043D\u043E\u0441\u0442\u0438 \u0441\u043A\u043B\u0430\u0434\u0430, \u0438 \u043E\u0433\u0440\u0430\u043D\u0438\u0447\u0435\u043D\u044B \u043F\u043E\u0442\u043E\u043A\u043E\u043C \u043F\u043E\u043A\u0443\u043F\u0430\u0442\u0435\u043B\u0435\u0439 \u0442\u043E\u0447\u043A\u0438 \u2014 \u0431\u0435\u0437 \u0442\u043E\u0432\u0430\u0440\u0430 \u043D\u0430 \u0441\u043A\u043B\u0430\u0434\u0435 \u043F\u0440\u043E\u0434\u0430\u0432\u0430\u0442\u044C \u043D\u0435\u0447\u0435\u0433\u043E. \u0410\u0440\u0435\u043D\u0434\u0430, \u0437\u0430\u0440\u043F\u043B\u0430\u0442\u0430 \u0438 \u0440\u0430\u0441\u0445\u043E\u0434\u044B \u0441\u043F\u0438\u0441\u044B\u0432\u0430\u044E\u0442\u0441\u044F \u0441\u043E \u0441\u0447\u0451\u0442\u0430 \u0418\u041F \u0440\u0430\u0437 \u0432 \u0447\u0430\u0441 \u2014 \u0435\u0441\u043B\u0438 \u043D\u0435\u0447\u0435\u043C \u043F\u043B\u0430\u0442\u0438\u0442\u044C, \u0441\u043E\u0441\u0442\u043E\u044F\u043D\u0438\u0435 \u0442\u043E\u0447\u043A\u0438 \u0440\u0435\u0437\u043A\u043E \u043F\u0430\u0434\u0430\u0435\u0442, \u0430 \u043F\u043E\u0441\u043B\u0435 \u0442\u0440\u0451\u0445 \u043F\u0440\u043E\u0432\u0430\u043B\u043E\u0432 \u043F\u043E\u0434\u0440\u044F\u0434 \u043C\u0430\u0433\u0430\u0437\u0438\u043D \u0437\u0430\u043A\u0440\u044B\u0432\u0430\u0435\u0442\u0441\u044F. \u041F\u0443\u0441\u0442\u043E\u0439 \u0438\u043B\u0438 \u0441\u043A\u0443\u0434\u043D\u044B\u0439 \u0441\u043A\u043B\u0430\u0434 \u0442\u043E\u0436\u0435 \u0440\u043E\u043D\u044F\u0435\u0442 \u0441\u043E\u0441\u0442\u043E\u044F\u043D\u0438\u0435. \u041F\u043E\u0441\u043B\u0435 \u043E\u0442\u043A\u0440\u044B\u0442\u0438\u044F \u0437\u0434\u0435\u0441\u044C \u0436\u0435 \u043C\u043E\u0436\u043D\u043E \u0431\u0443\u0434\u0435\u0442 \u043D\u0430\u043D\u044F\u0442\u044C \u043C\u0435\u043D\u0435\u0434\u0436\u0435\u0440\u0430 \u043F\u043E \u043F\u0440\u043E\u0434\u0430\u0436\u0430\u043C \u2014 \u043E\u043D \u0441\u0430\u043C \u0434\u0435\u0440\u0436\u0438\u0442 \u043E\u0441\u0442\u0430\u0442\u043E\u043A, \u043D\u0430\u0446\u0435\u043D\u043A\u0443 \u0438 \u0440\u0435\u043A\u043B\u0430\u043C\u0443." }),
                 Object.entries(OFFLINE_STORE_TIERS).map(([tierId, tier]) => {
                   const hasCommercial = (ownedItems.commercial1 || 0) > 0;
                   const effCost = Math.round(tier.openingCost * (hasCommercial ? 1 - SHOP_ITEMS.find((i) => i.id === "commercial1").offlineDiscount : 1));
