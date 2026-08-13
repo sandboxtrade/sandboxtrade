@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 
 // MarketSandbox.tsx
 import { useState, useEffect, useRef } from "react";
-import { TrendingUp, Building2, X, Sparkles, RotateCcw, Briefcase, FlaskConical, Flame, CreditCard, MessageCircle, ShieldAlert, Heart, MessageSquare, RefreshCw, Landmark, ShoppingBag, Receipt, Send, Save, Plus, Check, EyeOff } from "lucide-react";
+import { TrendingUp, Building2, X, Sparkles, RotateCcw, Briefcase, FlaskConical, Flame, CreditCard, MessageCircle, ShieldAlert, Heart, MessageSquare, RefreshCw, Landmark, ShoppingBag, Receipt, Send, Save, Plus, Check, EyeOff, ArrowLeftRight, Search, SlidersHorizontal, Star } from "lucide-react";
 import { Fragment, jsx, jsxs } from "react/jsx-runtime";
 var C = {
   bg: "#0B0E14",
@@ -14,6 +14,8 @@ var C = {
   gold: "#E8B14C",
   green: "#3FD68C",
   red: "#FF5C5C",
+  violet: "#7C5CFC",
+  violetSoft: "#7C5CFC22",
   ink: "#E7EAEE",
   inkDim: "#7A8494",
   inkFaint: "#4A5261"
@@ -225,6 +227,7 @@ var FACTORY_EQUIPMENT_COST = { clothes: 5e3, accessories: 1e4, phones: 1e4, lapt
 var FACTORY_UNIT_COST = { clothes: 4, accessories: 7, phones: 16, laptops: 22 };
 var FACTORY_CYCLE_MS = 30 * 60 * 1e3;
 var FACTORY_ORDER_WINDOW_MS = 12 * 60 * 1e3;
+var FACTORY_SHOP_TRANSFER_FEE_PCT = 0.18;
 var FACTORY_BUYER_NAMES = ["\u0420\u0438\u0442\u0435\u0439\u043B-\u0441\u0435\u0442\u044C \xAB\u0414\u043E\u043C\u0438\u043D\u043E\xBB", "\u041E\u043F\u0442\u043E\u0432\u0438\u043A \u0441 \u0440\u044B\u043D\u043A\u0430", "\u0418\u043D\u0442\u0435\u0440\u043D\u0435\u0442-\u043C\u0430\u0433\u0430\u0437\u0438\u043D \xAB\u041A\u0430\u043A\u0442\u0443\u0441\xBB", "\u0414\u0438\u0441\u0442\u0440\u0438\u0431\u044C\u044E\u0442\u043E\u0440 \xAB\u0412\u043E\u043B\u043D\u0430\xBB", "\u0421\u0435\u0442\u0435\u0432\u043E\u0439 \u0437\u0430\u043A\u0443\u043F\u0449\u0438\u043A", "\u0427\u0430\u0441\u0442\u043D\u044B\u0439 \u043E\u043F\u0442"];
 var OFFLINE_STORE_TIERS = {
   small: { id: "small", name: "\u041C\u0430\u043B\u0435\u043D\u044C\u043A\u0438\u0439 \u043C\u0430\u0433\u0430\u0437\u0438\u043D", openingCost: 1e4, rent: 2e3, salary: 1800, electricity: 200, extraMin: 100, extraMax: 2e3, adCost: 1200, healthyStockValue: 8e3, footfall: 55, maxHourlyRevenue: 15e3 },
@@ -263,8 +266,21 @@ function newsImpactMult(c) {
 var AD_TIERS = [
   { id: "basic", name: "\u0411\u0430\u043D\u043D\u0435\u0440 \u043D\u0430 \u043C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441\u0435", cost: 150, boostMult: 1.5, durationMin: 5 },
   { id: "featured", name: "\u0422\u043E\u043F \u0432\u044B\u0434\u0430\u0447\u0438", cost: 450, boostMult: 2.2, durationMin: 8 },
-  { id: "blast", name: "\u0420\u0430\u0441\u0441\u044B\u043B\u043A\u0430 \u0432\u0441\u0435\u043C \u043F\u043E\u043A\u0443\u043F\u0430\u0442\u0435\u043B\u044F\u043C", cost: 1e3, boostMult: 3.2, durationMin: 6 }
+  { id: "blast", name: "\u0420\u0430\u0441\u0441\u044B\u043B\u043A\u0430 \u0432\u0441\u0435\u043C \u043F\u043E\u043A\u0443\u043F\u0430\u0442\u0435\u043B\u044F\u043C", cost: 1e3, boostMult: 3.2, durationMin: 12 }
 ];
+var MANAGER_AD_TIER_MAP = { min: "basic", mid: "featured", max: "blast" };
+var MANAGER_PRICE_STRATEGY_MULT = { below: 0.85, market: 1.05, above: 1.3 };
+var MANAGER_PRICE_STRATEGY_LABEL = { below: "\u041D\u0438\u0436\u0435 \u0440\u044B\u043D\u043A\u0430", market: "\u041F\u043E \u0440\u044B\u043D\u043A\u0443", above: "\u0412\u044B\u0448\u0435 \u0440\u044B\u043D\u043A\u0430" };
+var MANAGER_AD_TIER_LABEL = { min: "\u041C\u0438\u043D\u0438\u043C\u0430\u043B\u044C\u043D\u0430\u044F", mid: "\u0421\u0440\u0435\u0434\u043D\u044F\u044F", max: "\u041C\u0430\u043A\u0441\u0438\u043C\u0430\u043B\u044C\u043D\u0430\u044F" };
+function computeAdBoost(activeAds) {
+  if (!activeAds || !activeAds.length) return 1;
+  const sorted = [...activeAds].sort((a, b) => b.boostMult - a.boostMult);
+  let boost = 1;
+  sorted.forEach((a, i) => {
+    boost += (a.boostMult - 1) * Math.pow(0.6, i);
+  });
+  return Math.min(6, boost);
+}
 var INVESTOR_PERSONAS = [
   { id: "hype", name: "\u0410\u043A\u0443\u043B\u0430 \u0445\u0430\u0439\u043F\u0430", icon: "\u{1F988}", likes: "growth", wants: "\u0440\u043E\u0441\u0442 \u0430\u0443\u0434\u0438\u0442\u043E\u0440\u0438\u0438 \u0438 \u0445\u0430\u0439\u043F", color: "#FF5C5C" },
   { id: "fund", name: "\u041E\u0441\u0442\u043E\u0440\u043E\u0436\u043D\u044B\u0439 \u0444\u043E\u043D\u0434", icon: "\u{1F9E0}", likes: "rd", wants: "\u0440\u0430\u0437\u0440\u0430\u0431\u043E\u0442\u043A\u0443 \u0438 \u0441\u0442\u0430\u0431\u0438\u043B\u044C\u043D\u043E\u0441\u0442\u044C", color: "#5AA9E6" },
@@ -652,45 +668,70 @@ function CandleChart({ companyId, engineRef, candles, height = 210 }) {
     /* @__PURE__ */ jsx("canvas", { ref: canvasRef, style: { width: "100%", height, display: "block", background: "#000" } })
   ] });
 }
-function CompanyRow({ c, onClick }) {
+function riskBadge(c) {
+  if (c.rugged) return { text: "\u0421\u043A\u0430\u043C", color: C.red };
+  if (c.vol >= 0.9) return { text: "\u0412\u044B\u0441\u043E\u043A\u0438\u0439 \u0440\u0438\u0441\u043A", color: C.red };
+  if (c.vol <= 0.15) return { text: "\u0421\u0442\u0430\u0431\u0438\u043B\u044C\u043D\u043E", color: C.green };
+  return null;
+}
+function CompanyRow({ c, onClick, favorite, onToggleFavorite }) {
   const openRef = c.candles && c.candles[0] ? c.candles[0].o : c.price;
   const change = (c.price - openRef) / openRef * 100;
   const color = c.rugged ? C.red : change >= 0 ? C.green : C.red;
   const badgeColor = c.isPlayer ? c.rugged ? C.red : C.gold : C.inkDim;
   const sparkData = [...(c.candles || []).map((cd) => cd.c), c.price];
-  return /* @__PURE__ */ jsxs("button", { onClick, style: { width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 14px", marginBottom: 8, textAlign: "left" }, children: [
-    /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "center", gap: 10, minWidth: 0 }, children: [
+  const badge = riskBadge(c);
+  return /* @__PURE__ */ jsxs("div", { style: { width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 14px", marginBottom: 8, textAlign: "left" }, children: [
+    /* @__PURE__ */ jsxs("button", { onClick, style: { display: "flex", alignItems: "center", gap: 10, minWidth: 0, background: "none", border: "none", padding: 0, textAlign: "left", flex: 1 }, children: [
       /* @__PURE__ */ jsx("div", { style: { width: 38, height: 38, borderRadius: 8, background: C.surface2, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'JetBrains Mono', monospace", fontSize: 10.5, fontWeight: 700, color: badgeColor, border: c.isPlayer ? `1px solid ${badgeColor}` : "none", flexShrink: 0 }, children: c.ticker.slice(0, 4) }),
       /* @__PURE__ */ jsxs("div", { style: { minWidth: 0 }, children: [
         /* @__PURE__ */ jsx("div", { style: { fontSize: 14, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }, children: c.name }),
-        /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkDim }, children: [
-          c.sector,
-          c.isPlayer ? " \xB7 \u0442\u0432\u043E\u044F" : "",
-          c.rugged ? " \xB7 \u0441\u043A\u0430\u043C" : ""
+        /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkDim, display: "flex", alignItems: "center", gap: 6 }, children: [
+          /* @__PURE__ */ jsxs("span", { children: [
+            c.sector,
+            c.isPlayer ? " \xB7 \u0442\u0432\u043E\u044F" : ""
+          ] }),
+          badge && /* @__PURE__ */ jsx("span", { style: { fontSize: 9.5, fontWeight: 700, color: badge.color, background: `${badge.color}18`, borderRadius: 6, padding: "1px 6px" }, children: badge.text })
         ] })
       ] })
     ] }),
-    /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }, children: [
+    /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }, children: [
       /* @__PURE__ */ jsx(Sparkline, { data: sparkData, color }),
-      /* @__PURE__ */ jsxs("div", { style: { textAlign: "right" }, children: [
-        /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 14, fontWeight: 600 }, children: fmt(c.price) }),
+      /* @__PURE__ */ jsxs("button", { onClick, style: { textAlign: "right", background: "none", border: "none", padding: 0 }, children: [
+        /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 14, fontWeight: 600, color: C.ink }, children: fmt(c.price) }),
         /* @__PURE__ */ jsxs("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color }, children: [
           change >= 0 ? "+" : "",
           change.toFixed(1),
           "%"
         ] })
-      ] })
+      ] }),
+      onToggleFavorite && /* @__PURE__ */ jsx("button", { onClick: (e) => {
+        e.stopPropagation();
+        onToggleFavorite(c.id);
+      }, style: { background: "none", border: "none", padding: 2, color: favorite ? C.gold : C.inkFaint, display: "flex" }, children: /* @__PURE__ */ jsx(Star, { size: 15, fill: favorite ? C.gold : "none" }) })
     ] })
   ] });
 }
-function AccountRow({ icon, iconBg, iconColor, amount, label, badge, onClick }) {
-  return /* @__PURE__ */ jsxs("button", { onClick, style: { width: "100%", display: "flex", alignItems: "center", gap: 14, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 16, padding: 16, marginBottom: 12, textAlign: "left" }, children: [
-    /* @__PURE__ */ jsx("div", { style: { width: 44, height: 44, borderRadius: "50%", background: iconBg, color: iconColor, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }, children: icon }),
-    /* @__PURE__ */ jsxs("div", { style: { flex: 1, minWidth: 0 }, children: [
-      /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 19, fontWeight: 700 }, children: amount }),
-      /* @__PURE__ */ jsx("div", { style: { fontSize: 12.5, color: C.inkDim, marginTop: 2 }, children: label })
+function AccountRow({ icon, iconBg, iconColor, amount, label, badge, onClick, progressPct, progressLabel }) {
+  return /* @__PURE__ */ jsxs("button", { onClick, style: { width: "100%", display: "flex", flexDirection: "column", gap: progressPct != null ? 10 : 0, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 16, padding: 16, marginBottom: 12, textAlign: "left" }, children: [
+    /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "center", gap: 14, width: "100%" }, children: [
+      /* @__PURE__ */ jsx("div", { style: { width: 44, height: 44, borderRadius: "50%", background: iconBg, color: iconColor, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }, children: icon }),
+      /* @__PURE__ */ jsxs("div", { style: { flex: 1, minWidth: 0 }, children: [
+        /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 19, fontWeight: 700 }, children: amount }),
+        /* @__PURE__ */ jsx("div", { style: { fontSize: 12.5, color: C.inkDim, marginTop: 2 }, children: label })
+      ] }),
+      badge && /* @__PURE__ */ jsx("div", { style: { background: C.surface2, borderRadius: 20, padding: "6px 10px", fontSize: 11.5, color: C.gold, fontWeight: 700, flexShrink: 0, whiteSpace: "nowrap" }, children: badge })
     ] }),
-    badge && /* @__PURE__ */ jsx("div", { style: { background: C.surface2, borderRadius: 20, padding: "6px 10px", fontSize: 11.5, color: C.gold, fontWeight: 700, flexShrink: 0, whiteSpace: "nowrap" }, children: badge })
+    progressPct != null && /* @__PURE__ */ jsxs(Fragment, { children: [
+      progressLabel && /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint }, children: progressLabel }),
+      /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "center", gap: 8 }, children: [
+        /* @__PURE__ */ jsx("div", { style: { flex: 1, height: 5, borderRadius: 3, background: C.surface2, overflow: "hidden" }, children: /* @__PURE__ */ jsx("div", { style: { height: "100%", width: `${Math.min(100, progressPct)}%`, background: progressPct >= 90 ? C.red : progressPct >= 65 ? C.gold : C.violet } }) }),
+        /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint, flexShrink: 0 }, children: [
+          Math.round(progressPct),
+          "%"
+        ] })
+      ] })
+    ] })
   ] });
 }
 var inputStyle = { width: "100%", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: "11px 12px", color: C.ink, fontSize: 14, marginBottom: 12, marginTop: 6, outline: "none" };
@@ -753,6 +794,11 @@ function MarketSandbox() {
   const [confirmCloseResell, setConfirmCloseResell] = useState(null);
   const [confirmCloseOffline, setConfirmCloseOffline] = useState(null);
   const [managerFormInputs, setManagerFormInputs] = useState({});
+  const [factoryTransferInputs, setFactoryTransferInputs] = useState({});
+  const [favorites, setFavorites] = useState({});
+  const [marketFilterCat, setMarketFilterCat] = useState("all");
+  const [marketSort, setMarketSort] = useState("default");
+  const [transferForm, setTransferForm] = useState({ from: "", to: "", amount: "" });
   const [closeCardDestSel, setCloseCardDestSel] = useState({});
   const [confirmCloseFactory, setConfirmCloseFactory] = useState(null);
   const [confirmCloseCard, setConfirmCloseCard] = useState(null);
@@ -801,10 +847,6 @@ function MarketSandbox() {
   const [promoDismissed, setPromoDismissed] = useState(false);
   const [showBackupModal, setShowBackupModal] = useState(false);
   const [focusedBankId, setFocusedBankId] = useState(null);
-  const [showTransferPanel, setShowTransferPanel] = useState(false);
-  const [xferFrom, setXferFrom] = useState("personal");
-  const [xferTo, setXferTo] = useState("ip");
-  const [xferAmount, setXferAmount] = useState("");
   const [xferFeedback, setXferFeedback] = useState(null);
   const [payFromAccount, setPayFromAccount] = useState("personal");
   const [exportFlash, setExportFlash] = useState(false);
@@ -1757,7 +1799,7 @@ function MarketSandbox() {
           const ratingMult = Math.max(0.15, (shop.rating - 1) / 4);
           const repMult = Math.max(0.4, reputationRef.current / 100);
           const activeAds = (shop.ads || []).filter((a) => Date.now() < a.until);
-          const adMult = activeAds.length ? Math.min(6, activeAds.reduce((m, a) => m * a.boostMult, 1)) : 1;
+          const adMult = activeAds.length ? computeAdBoost(activeAds) : 1;
           const saleChance = Math.min(0.7, Math.max(0.02, 0.16 * attractiveness * ratingMult * adMult * repMult));
           if (Math.random() < saleChance) {
             const qtySold = Math.min(c.stock, 1 + Math.floor(Math.random() * 3));
@@ -2076,6 +2118,7 @@ function MarketSandbox() {
       if (!due.length) return;
       let ipCashDelta = 0;
       const updates = {};
+      const factoryStockUsed = {};
       due.forEach((shop) => {
         const os = shop.offlineStore;
         const tier = OFFLINE_STORE_TIERS[os.tier];
@@ -2114,24 +2157,64 @@ function MarketSandbox() {
             manager = null;
           }
         }
+        let managerNewAds = null;
         if (manager && manager.hired) {
+          const priceMult = MANAGER_PRICE_STRATEGY_MULT[manager.priceStrategy] || MANAGER_PRICE_STRATEGY_MULT.market;
+          const preferredSupplier = manager.supplierId && manager.supplierId !== "auto" ? SUPPLIERS.find((s) => s.id === manager.supplierId) : null;
+          const candidateSuppliers = preferredSupplier ? [preferredSupplier] : SUPPLIERS;
           PRODUCT_CATEGORIES.forEach((cat) => {
             const c = cats[cat.id];
             if (!c) return;
             let next = c;
-            if (next.avgCost > 0) {
-              const targetPrice = Math.round(next.avgCost * (1 + manager.targetMarginPct / 100) * 100) / 100;
-              if (Math.abs((next.listedPrice || 0) - targetPrice) > 0.01) next = { ...next, listedPrice: targetPrice };
-              if (next.stock < manager.minStock) {
-                const needed = manager.minStock - next.stock;
-                const cost = Math.round(needed * next.avgCost);
-                const available2 = ipCashRef.current + ipCashDelta;
-                if (cost > 0 && available2 >= cost) {
-                  ipCashDelta -= cost;
-                  next = { ...next, stock: next.stock + needed };
-                  logTx(`\u041C\u0435\u043D\u0435\u0434\u0436\u0435\u0440: \u0434\u043E\u043A\u0443\u043F\u043A\u0430 \u043E\u0441\u0442\u0430\u0442\u043A\u0430 \xB7 \xAB${shop.name}\xBB (${cat.name})`, cost, "out");
+            const targetStock = manager.minStock * 2;
+            if (next.stock < manager.minStock && targetStock > next.stock) {
+              let needed = targetStock - next.stock;
+              if (manager.supplierId && manager.supplierId.indexOf("factory:") === 0) {
+                const factoryId = manager.supplierId.slice(8);
+                const factory = factoriesRef.current.find((f) => f.id === factoryId && f.category === cat.id);
+                const factoryStockLeft = factory ? Math.max(0, factory.stock - (factoryStockUsed[factory.id] || 0)) : 0;
+                if (factory && factoryStockLeft > 0 && needed > 0) {
+                  const unitCost = FACTORY_UNIT_COST[cat.id];
+                  const logisticsUnitCost = unitCost * FACTORY_SHOP_TRANSFER_FEE_PCT;
+                  const available2 = ipCashRef.current + ipCashDelta;
+                  const affordableByLogistics = logisticsUnitCost > 0 ? Math.floor(available2 / logisticsUnitCost) : needed;
+                  const fromFactory = Math.max(0, Math.min(needed, factoryStockLeft, affordableByLogistics));
+                  if (fromFactory > 0) {
+                    const logisticsCost = Math.round(fromFactory * logisticsUnitCost);
+                    ipCashDelta -= logisticsCost;
+                    factoryStockUsed[factory.id] = (factoryStockUsed[factory.id] || 0) + fromFactory;
+                    const newStock = next.stock + fromFactory;
+                    const newAvgCost = next.stock > 0 ? (next.avgCost * next.stock + unitCost * fromFactory) / newStock : unitCost;
+                    next = { ...next, stock: newStock, avgCost: Math.round(newAvgCost * 100) / 100 };
+                    needed -= fromFactory;
+                    logTx(`\u041C\u0435\u043D\u0435\u0434\u0436\u0435\u0440: \u043F\u0435\u0440\u0435\u0432\u043E\u0434 \u0441\u043E \u0441\u0432\u043E\u0435\u0433\u043E \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u0430 \xB7 \xAB${shop.name}\xBB (${cat.name} \xD7${fromFactory})`, logisticsCost, "out");
+                  }
                 }
               }
+              const bestSupplier = needed > 0 ? candidateSuppliers.reduce((best, s) => {
+                const perf = companyPerfPct(companiesRef.current, s.companyTicker);
+                const price = s.pricePerUnit * cat.priceMult * marketIndexRef.current * supplierHealthPriceMult(perf);
+                return !best || price < best.price ? { supplier: s, price } : best;
+              }, null) : null;
+              if (bestSupplier) {
+                const unitPrice = Math.round(bestSupplier.price * 100) / 100;
+                const available2 = ipCashRef.current + ipCashDelta;
+                const affordableUnits = unitPrice > 0 ? Math.floor(available2 / unitPrice) : 0;
+                const buyUnits = Math.max(0, Math.min(needed, affordableUnits));
+                if (buyUnits > 0) {
+                  const cost = Math.round(buyUnits * unitPrice * 100) / 100;
+                  ipCashDelta -= cost;
+                  const newStock = next.stock + buyUnits;
+                  const newAvgCost = next.stock > 0 ? (next.avgCost * next.stock + unitPrice * buyUnits) / newStock : unitPrice;
+                  next = { ...next, stock: newStock, avgCost: Math.round(newAvgCost * 100) / 100 };
+                  logTx(`\u041C\u0435\u043D\u0435\u0434\u0436\u0435\u0440: \u0434\u043E\u043A\u0443\u043F\u043A\u0430 \u043E\u0441\u0442\u0430\u0442\u043A\u0430 \xB7 \xAB${shop.name}\xBB (${cat.name}, ${bestSupplier.supplier.flag} ${bestSupplier.supplier.country})`, cost, "out");
+                }
+              }
+            }
+            if (next.avgCost > 0) {
+              const fairPrice = next.avgCost * 1.5 * cat.marginMult * marketIndexRef.current;
+              const targetPrice = Math.round(fairPrice * priceMult * 100) / 100;
+              if (Math.abs((next.listedPrice || 0) - targetPrice) > 0.01) next = { ...next, listedPrice: targetPrice };
             }
             if (next !== c) cats[cat.id] = next;
           });
@@ -2140,7 +2223,21 @@ function MarketSandbox() {
             if (available2 >= tier.adCost) {
               ipCashDelta -= tier.adCost;
               adUntilTick = os.tickCount + OFFLINE_AD_DURATION_TICKS;
-              logTx(`\u041C\u0435\u043D\u0435\u0434\u0436\u0435\u0440: \u0440\u0435\u043A\u043B\u0430\u043C\u0430 \xB7 \xAB${shop.name}\xBB`, tier.adCost, "out");
+              logTx(`\u041C\u0435\u043D\u0435\u0434\u0436\u0435\u0440: \u0440\u0435\u043A\u043B\u0430\u043C\u0430 \u0442\u043E\u0447\u043A\u0438 \xB7 \xAB${shop.name}\xBB`, tier.adCost, "out");
+            }
+          }
+          if (manager.autoAdEnabled) {
+            const adTierId = MANAGER_AD_TIER_MAP[manager.adTier] || "featured";
+            const onlineTier = AD_TIERS.find((t) => t.id === adTierId);
+            const activeAds = (shop.ads || []).filter((a) => Date.now() < a.until);
+            const activeBoost = activeAds.length ? computeAdBoost(activeAds) : 1;
+            if (onlineTier && activeBoost < onlineTier.boostMult) {
+              const available3 = ipCashRef.current + ipCashDelta;
+              if (available3 >= onlineTier.cost) {
+                ipCashDelta -= onlineTier.cost;
+                managerNewAds = [{ id: makeId("ad"), tierId: onlineTier.id, boostMult: onlineTier.boostMult, until: Date.now() + onlineTier.durationMin * 6e4 }];
+                logTx(`\u041C\u0435\u043D\u0435\u0434\u0436\u0435\u0440: \u0440\u0435\u043A\u043B\u0430\u043C\u0430 \u043E\u043D\u043B\u0430\u0439\u043D \xB7 \xAB${shop.name}\xBB (${onlineTier.name})`, onlineTier.cost, "out");
+              }
             }
           }
         }
@@ -2204,11 +2301,15 @@ function MarketSandbox() {
         updates[shop.id] = {
           categories: newCategories,
           totalRevenue: shop.totalRevenue + revenue,
-          offlineStore: { ...os, boostHealth, missedTicks, adUntilTick, manager, growthLevel, tickCount: os.tickCount + 1, nextTickAt: Date.now() + OFFLINE_TICK_MS, totalOfflineRevenue: os.totalOfflineRevenue + revenue }
+          offlineStore: { ...os, boostHealth, missedTicks, adUntilTick, manager, growthLevel, tickCount: os.tickCount + 1, nextTickAt: Date.now() + OFFLINE_TICK_MS, totalOfflineRevenue: os.totalOfflineRevenue + revenue },
+          ...managerNewAds ? { ads: [...shop.ads || [], ...managerNewAds] } : {}
         };
       });
       if (ipCashDelta !== 0) setIpCash((c) => Math.max(0, c + ipCashDelta));
       setResellShops((prev) => prev.map((s) => updates[s.id] ? { ...s, ...updates[s.id] } : s));
+      if (Object.keys(factoryStockUsed).length) {
+        setFactories((prev) => prev.map((f) => factoryStockUsed[f.id] ? { ...f, stock: Math.max(0, f.stock - factoryStockUsed[f.id]), totalTransferredToShop: (f.totalTransferredToShop || 0) + factoryStockUsed[f.id] } : f));
+      }
       setTimeout(saveGame, 50);
     }, 15e3);
     return () => clearInterval(id);
@@ -2485,14 +2586,16 @@ function MarketSandbox() {
     logTx(`\u0420\u0435\u043A\u043B\u0430\u043C\u0430 \u043E\u0444\u043B\u0430\u0439\u043D-\u043C\u0430\u0433\u0430\u0437\u0438\u043D\u0430 \xB7 ${tier.name}`, tier.adCost, "out");
     setTimeout(saveGame, 50);
   };
-  const hireManager = (shopId, { minStock, targetMarginPct, autoAdEnabled }) => {
+  const hireManager = (shopId, { minStock, priceStrategy, adTier, autoAdEnabled, supplierId }) => {
     const shop = resellShops.find((s) => s.id === shopId);
     if (!shop?.offlineStore) return;
     setResellShops((prev) => prev.map((s) => s.id === shopId ? { ...s, offlineStore: { ...s.offlineStore, manager: {
       hired: true,
-      minStock: Math.max(0, Math.round(Number(minStock) || 0)),
-      targetMarginPct: Math.max(0, Math.round(Number(targetMarginPct) || 0)),
+      minStock: Math.max(1, Math.round(Number(minStock) || 0)),
+      priceStrategy: ["below", "market", "above"].includes(priceStrategy) ? priceStrategy : "market",
+      adTier: ["min", "mid", "max"].includes(adTier) ? adTier : "mid",
       autoAdEnabled: !!autoAdEnabled,
+      supplierId: supplierId || "auto",
       salaryDue: 0,
       nextSalaryAt: Date.now() + MANAGER_SALARY_CYCLE_MS
     } } } : s));
@@ -2600,6 +2703,7 @@ function MarketSandbox() {
     const order = factory?.pendingOrders.find((o) => o.id === orderId);
     if (!factory || !order) return;
     if (accept) {
+      if (order.expiresAt <= Date.now()) return;
       if (factory.stock < order.volume) return;
       const revenue = Math.round(order.pricePerUnit * order.volume);
       setIpCash((c) => c + revenue);
@@ -2621,6 +2725,31 @@ function MarketSandbox() {
   const closeFactory = (factoryId) => {
     setFactories((prev) => prev.filter((f) => f.id !== factoryId));
     if (selectedBizId === factoryId) setSelectedBizId(null);
+    setTimeout(saveGame, 50);
+  };
+  const transferFactoryStockToShop = (factoryId, shopId, units) => {
+    const factory = factories.find((f) => f.id === factoryId);
+    const shop = resellShops.find((s) => s.id === shopId);
+    if (!factory || !shop) return;
+    const cat = PRODUCT_CATEGORIES.find((c) => c.id === factory.category);
+    if (!cat) return;
+    const qty = Math.max(0, Math.min(factory.stock, Math.round(Number(units) || 0)));
+    if (qty <= 0) return;
+    const unitCost = FACTORY_UNIT_COST[factory.category];
+    const logisticsCost = Math.round(qty * unitCost * FACTORY_SHOP_TRANSFER_FEE_PCT);
+    const src = resolvedPayFrom;
+    const bal = getAccountBalance(src);
+    if (bal < logisticsCost) return;
+    adjustAccountBalance(src, -logisticsCost);
+    setFactories((prev) => prev.map((f) => f.id === factoryId ? { ...f, stock: f.stock - qty, totalTransferredToShop: (f.totalTransferredToShop || 0) + qty } : f));
+    setResellShops((prev) => prev.map((s) => {
+      if (s.id !== shopId) return s;
+      const cur = s.categories?.[cat.id] || { stock: 0, avgCost: 0, listedPrice: 0 };
+      const newStock = cur.stock + qty;
+      const newAvgCost = cur.stock > 0 ? (cur.avgCost * cur.stock + unitCost * qty) / newStock : unitCost;
+      return { ...s, categories: { ...s.categories, [cat.id]: { ...cur, stock: newStock, avgCost: Math.round(newAvgCost * 100) / 100 } } };
+    }));
+    logTx(`\u041F\u0435\u0440\u0435\u0432\u043E\u0434 \u043F\u0440\u043E\u0434\u0443\u043A\u0446\u0438\u0438 \xAB${factory.name}\xBB \u2192 \xAB${shop.name}\xBB (${cat.name} \xD7${qty}, \u043B\u043E\u0433\u0438\u0441\u0442\u0438\u043A\u0430)`, logisticsCost, "out");
     setTimeout(saveGame, 50);
   };
   const placeSupplierOrder = (shopId, supplierId, categoryId) => {
@@ -2958,7 +3087,6 @@ function MarketSandbox() {
     } else {
       withdrawFromBankAccount(fromId, amt, toId);
     }
-    setXferAmount("");
     setXferFeedback({ ok: true, msg: "\u041F\u0435\u0440\u0435\u0432\u043E\u0434 \u043E\u0442\u043F\u0440\u0430\u0432\u043B\u0435\u043D" });
   };
   const getAccountBalance = (accountId) => accountId === "grey" ? greyAccount?.balance || 0 : bankAccounts[accountId]?.balance || 0;
@@ -3165,14 +3293,23 @@ function MarketSandbox() {
   const acceptBlackMarketJob = (accountId) => {
     if (!blackMarketRound || blackMarketRound.stage !== "offered") return;
     const { amount, offerId } = blackMarketRound;
-    adjustAccountBalance(accountId, amount);
-    if (accountId === "ip") {
-      setQuarterRevenue((r) => r + amount);
-      trackIpTurnover(amount);
-    } else if (BANK_ACCOUNTS.some((b) => b.id === accountId)) {
-      setBankAccounts((prev) => prev[accountId] ? { ...prev, [accountId]: { ...prev[accountId], turnoverUsed: prev[accountId].turnoverUsed + amount, lifetimeTurnover: (prev[accountId].lifetimeTurnover || 0) + amount } } : prev);
+    const muleCard = muleCards[accountId];
+    if (muleCard) {
+      if (muleCard.frozen) return;
+      const bank = BANK_ACCOUNTS.find((b) => b.id === muleCard.bankId);
+      const isSmall = !!bank && amount <= bank.singleLimit * 0.15;
+      setMuleCards((prev) => prev[accountId] ? { ...prev, [accountId]: { ...prev[accountId], balance: prev[accountId].balance + amount, warmth: Math.min(100, prev[accountId].warmth + (isSmall ? MULE_WARMUP_SMALL_TX_GAIN : 0)) } } : prev);
+      logTx("\u0427\u0451\u0440\u043D\u044B\u0439 \u0440\u044B\u043D\u043E\u043A: \u043F\u0440\u0438\u0451\u043C \u043F\u043B\u0430\u0442\u0435\u0436\u0430 \u043D\u0430 \u0447\u0443\u0436\u0443\u044E \u043A\u0430\u0440\u0442\u0443", amount, "in");
+    } else {
+      adjustAccountBalance(accountId, amount);
+      if (accountId === "ip") {
+        setQuarterRevenue((r) => r + amount);
+        trackIpTurnover(amount);
+      } else if (BANK_ACCOUNTS.some((b) => b.id === accountId)) {
+        setBankAccounts((prev) => prev[accountId] ? { ...prev, [accountId]: { ...prev[accountId], turnoverUsed: prev[accountId].turnoverUsed + amount, lifetimeTurnover: (prev[accountId].lifetimeTurnover || 0) + amount } } : prev);
+      }
+      logTx("\u0427\u0451\u0440\u043D\u044B\u0439 \u0440\u044B\u043D\u043E\u043A: \u043F\u0440\u0438\u0451\u043C \u043F\u043B\u0430\u0442\u0435\u0436\u0430", amount, "in");
     }
-    logTx("\u0427\u0451\u0440\u043D\u044B\u0439 \u0440\u044B\u043D\u043E\u043A: \u043F\u0440\u0438\u0451\u043C \u043F\u043B\u0430\u0442\u0435\u0436\u0430", amount, "in");
     const now = Date.now();
     setBlackMarketRound((r) => r ? { ...r, stage: "received", accountId, receivedAt: now, deadlineAt: now + 10 * 60 * 1e3 } : r);
     setBlackMarketOffers((prev) => prev.filter((o) => o.id !== offerId));
@@ -3812,7 +3949,7 @@ function MarketSandbox() {
   const selectedHeld = selectedCompany ? (tradeIsGrey ? greyHoldings : tradeIsIp ? ipHoldings : holdings)[selectedCompany.id]?.qty || 0 : 0;
   const tradeAvailableCash = tradeIsGrey ? greyAccount.balance : tradeIsIp ? ipCash : tradeIsBankCard ? bankAccounts[tradeAccountResolved].balance : tradeIsMule ? muleCards[tradeAccountResolved].balance : 0;
   const assetsFrozen = !tradeIsIp && !tradeIsGrey && loans.some((l) => l.frozen);
-  const tabTitle = { market: "\u0420\u044B\u043D\u043E\u043A", news: "\u0421\u043E\u0446\u0441\u0435\u0442\u044C", job: "\u0420\u0430\u0431\u043E\u0442\u0430", tenders: "\u0422\u0435\u043D\u0434\u0435\u0440\u044B", inspection: "\u0418\u041F", company: "\u041C\u043E\u0439 \u0431\u0438\u0437\u043D\u0435\u0441", darkshop: "\u0414\u0430\u0440\u043A\u043D\u0435\u0442", cabinet: "\u041A\u0430\u0431\u0438\u043D\u0435\u0442" }[activeTab];
+  const tabTitle = { market: "\u0420\u044B\u043D\u043E\u043A", news: "\u0421\u043E\u0446\u0441\u0435\u0442\u044C", job: "\u0420\u0430\u0431\u043E\u0442\u0430", tenders: "\u0422\u0435\u043D\u0434\u0435\u0440\u044B", inspection: "\u0418\u041F", company: "\u041C\u043E\u0439 \u0431\u0438\u0437\u043D\u0435\u0441", darkshop: "\u0414\u0430\u0440\u043A\u043D\u0435\u0442", cabinet: "\u041A\u0430\u0431\u0438\u043D\u0435\u0442", transfers: "\u041F\u0435\u0440\u0435\u0432\u043E\u0434\u044B" }[activeTab];
   return /* @__PURE__ */ jsxs("div", { style: { height: "100vh", background: C.bg, display: "flex", justifyContent: "center", overflow: "hidden" }, children: [
     /* @__PURE__ */ jsx("style", { children: `
         @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
@@ -3857,16 +3994,56 @@ function MarketSandbox() {
         ] }, b.id);
       })
     ] }) : /* @__PURE__ */ jsxs(Fragment, { children: [
-      /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px 6px" }, children: [
+      /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px 10px" }, children: [
         /* @__PURE__ */ jsxs("div", { children: [
-          /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkDim, letterSpacing: 1.5, textTransform: "uppercase" }, children: "\u041F\u0435\u0441\u043E\u0447\u043D\u0438\u0446\u0430 \u0440\u044B\u043D\u043A\u0430" }),
-          /* @__PURE__ */ jsx("div", { style: { fontSize: 20, fontWeight: 700 }, children: tabTitle })
+          /* @__PURE__ */ jsx("div", { style: { fontSize: 20, fontWeight: 700 }, children: tabTitle }),
+          /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkDim, letterSpacing: 1, textTransform: "uppercase", marginTop: 2 }, children: "\u041F\u0435\u0441\u043E\u0447\u043D\u0438\u0446\u0430 \u0440\u044B\u043D\u043A\u0430" })
         ] }),
         /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8 }, children: [
           /* @__PURE__ */ jsx("button", { onClick: () => setShowBackupModal(true), style: { background: "none", border: `1px solid ${C.border}`, borderRadius: 8, padding: 8, color: C.inkDim }, children: /* @__PURE__ */ jsx(Save, { size: 16 }) }),
           /* @__PURE__ */ jsx("button", { onClick: () => setConfirmReset(true), style: { background: "none", border: `1px solid ${C.border}`, borderRadius: 8, padding: 8, color: C.inkDim }, children: /* @__PURE__ */ jsx(RotateCcw, { size: 16 }) })
         ] })
       ] }),
+      (() => {
+        const isMarketTab = activeTab === "market";
+        const leftLabel = isMarketTab ? "\u041F\u043E\u0440\u0442\u0444\u0435\u043B\u044C" : "\u0412\u0441\u0435 \u0430\u043A\u0442\u0438\u0432\u044B";
+        const leftValue = isMarketTab ? ipHoldingsValue + Object.entries(holdings).reduce((s, [cid, h]) => {
+          const c = companies.find((x) => x.id === cid);
+          return s + (c ? c.price * h.qty : 0);
+        }, 0) + greyHoldingsValue : netWorth;
+        const hasHist = !isMarketTab && netWorthHistory.length > 1;
+        const hist = hasHist ? netWorthHistory : [leftValue, leftValue];
+        const first = hasHist ? hist[0] || leftValue : leftValue;
+        const changeAbs = leftValue - first;
+        const changePct = first > 0 ? changeAbs / first * 100 : 0;
+        const changeColor = changeAbs >= 0 ? C.green : C.red;
+        return /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 10, padding: "0 16px 10px" }, children: [
+          /* @__PURE__ */ jsxs("div", { style: { flex: 1, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 14, minWidth: 0 }, children: [
+            /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkDim }, children: leftLabel }),
+            /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 20, fontWeight: 700, margin: "3px 0 4px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }, children: fmt(leftValue) }),
+            /* @__PURE__ */ jsxs("div", { style: { fontSize: 11.5, color: changeColor, fontWeight: 600, marginBottom: 6 }, children: [
+              changeAbs >= 0 ? "+" : "",
+              fmt(Math.round(changeAbs)),
+              " ",
+              changeAbs >= 0 ? "+" : "",
+              changePct.toFixed(2),
+              "%"
+            ] }),
+            /* @__PURE__ */ jsx(PriceChart, { data: hist, color: changeColor, height: 28 })
+          ] }),
+          /* @__PURE__ */ jsxs("div", { style: { flex: 1, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 14, minWidth: 0 }, children: [
+            /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }, children: [
+              /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkDim }, children: "\u0421\u0447\u0451\u0442 \u0418\u041F" }),
+              /* @__PURE__ */ jsx("div", { style: { width: 26, height: 26, borderRadius: 8, background: C.violetSoft, color: C.violet, display: "flex", alignItems: "center", justifyContent: "center" }, children: /* @__PURE__ */ jsx(Briefcase, { size: 14 }) })
+            ] }),
+            /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 20, fontWeight: 700, marginBottom: 10, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }, children: fmt(ipCash) }),
+            /* @__PURE__ */ jsx("button", { onClick: () => {
+              setActiveTab("inspection");
+              setIpTab("account");
+            }, style: { width: "100%", padding: "8px 10px", borderRadius: 9, border: "none", background: C.violetSoft, color: C.violet, fontWeight: 700, fontSize: 11.5 }, children: "\u0423\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0438\u0435 \u2192" })
+          ] })
+        ] });
+      })(),
       /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", padding: "0 16px 4px", fontSize: 12.5 }, children: [
         /* @__PURE__ */ jsxs("div", { style: { fontFamily: "'JetBrains Mono', monospace", color: C.inkDim }, children: [
           "\u0424\u0438\u0437: ",
@@ -3889,15 +4066,97 @@ function MarketSandbox() {
         /* @__PURE__ */ jsx("b", { style: { color: reputation >= 70 ? C.green : reputation >= 40 ? C.gold : C.red }, children: Math.round(reputation) })
       ] }),
       /* @__PURE__ */ jsxs("div", { style: { flex: 1, overflowY: "auto", padding: "8px 16px 16px" }, onTouchStart: handleFeedTouchStart, onTouchMove: handleFeedTouchMove, onTouchEnd: handleFeedTouchEnd, children: [
-        activeTab === "market" && /* @__PURE__ */ jsx("div", { children: companies.map((c) => /* @__PURE__ */ jsx(CompanyRow, { c, onClick: () => {
-          setSelectedId(c.id);
-          setTradeSide("buy");
-          setTradeQty(1);
-          setTradeLeverage(1);
-          setTradeAccount("personal");
-          setTradeQtyMode("qty");
-          setTradeAmountInput("");
-        } }, c.id)) }),
+        activeTab === "market" && (() => {
+          const pills = [
+            { id: "all", label: "\u0412\u0441\u0435" },
+            { id: "crypto", label: "\u041A\u0440\u0438\u043F\u0442\u043E" },
+            { id: "finance", label: "\u0424\u0438\u043D\u0430\u043D\u0441\u044B" },
+            { id: "companies", label: "\u041A\u043E\u043C\u043F\u0430\u043D\u0438\u0438" }
+          ];
+          const filtered = companies.filter((c) => {
+            if (marketFilterCat === "crypto") return c.sector === "\u041A\u0440\u0438\u043F\u0442\u043E";
+            if (marketFilterCat === "finance") return c.sector === "\u0424\u0438\u043D\u0430\u043D\u0441\u044B";
+            if (marketFilterCat === "companies") return c.sector !== "\u041A\u0440\u0438\u043F\u0442\u043E" && c.sector !== "\u0424\u0438\u043D\u0430\u043D\u0441\u044B";
+            return true;
+          });
+          const sorted = [...filtered].sort((a, b) => {
+            if (marketSort === "price") return b.price - a.price;
+            if (marketSort === "change") {
+              const chA = (a.price - (a.candles?.[0]?.o || a.price)) / (a.candles?.[0]?.o || a.price);
+              const chB = (b.price - (b.candles?.[0]?.o || b.price)) / (b.candles?.[0]?.o || b.price);
+              return chB - chA;
+            }
+            if (marketSort === "favorites") return (favorites[b.id] ? 1 : 0) - (favorites[a.id] ? 1 : 0);
+            return 0;
+          });
+          return /* @__PURE__ */ jsxs("div", { children: [
+            /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }, children: [
+              /* @__PURE__ */ jsx("div", { style: { display: "flex", gap: 6, flex: 1, overflowX: "auto" }, children: pills.map((p) => /* @__PURE__ */ jsx("button", { onClick: () => setMarketFilterCat(p.id), style: { padding: "7px 13px", borderRadius: 20, border: "none", fontWeight: 600, fontSize: 12, whiteSpace: "nowrap", background: marketFilterCat === p.id ? C.violet : C.surface2, color: marketFilterCat === p.id ? "#fff" : C.inkDim }, children: p.label }, p.id)) }),
+              /* @__PURE__ */ jsxs("select", { value: marketSort, onChange: (e) => setMarketSort(e.target.value), style: { background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, color: C.inkDim, fontSize: 11.5, padding: "7px 8px", flexShrink: 0 }, children: [
+                /* @__PURE__ */ jsx("option", { value: "default", children: "\u041F\u043E \u0443\u043C\u043E\u043B\u0447\u0430\u043D\u0438\u044E" }),
+                /* @__PURE__ */ jsx("option", { value: "price", children: "\u041F\u043E \u0446\u0435\u043D\u0435" }),
+                /* @__PURE__ */ jsx("option", { value: "change", children: "\u041F\u043E \u0438\u0437\u043C\u0435\u043D\u0435\u043D\u0438\u044E" }),
+                /* @__PURE__ */ jsx("option", { value: "favorites", children: "\u0418\u0437\u0431\u0440\u0430\u043D\u043D\u043E\u0435" })
+              ] })
+            ] }),
+            sorted.length === 0 ? /* @__PURE__ */ jsx("div", { style: { color: C.inkFaint, fontSize: 13, padding: "30px 0", textAlign: "center" }, children: "\u041D\u0438\u0447\u0435\u0433\u043E \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u043E" }) : sorted.map((c) => /* @__PURE__ */ jsx(CompanyRow, { c, favorite: !!favorites[c.id], onToggleFavorite: (id) => setFavorites((prev) => ({ ...prev, [id]: !prev[id] })), onClick: () => {
+              setSelectedId(c.id);
+              setTradeSide("buy");
+              setTradeQty(1);
+              setTradeLeverage(1);
+              setTradeAccount("personal");
+              setTradeQtyMode("qty");
+              setTradeAmountInput("");
+            } }, c.id))
+          ] });
+        })(),
+        activeTab === "transfers" && (() => {
+          const options = [
+            { id: "ip", label: "\u0421\u0447\u0451\u0442 \u0418\u041F" },
+            ...BANK_ACCOUNTS.filter((b) => bankAccounts[b.id] && !bankAccounts[b.id].frozen).map((b) => ({ id: b.id, label: `${b.name} (\u2022\u2022\u2022\u2022 ${bankAccounts[b.id].cardLast4})` })),
+            ...greyAccount && !greyAccount.frozen ? [{ id: "grey", label: `${GREY_BANK.name} (\u2022\u2022\u2022\u2022 ${greyAccount.cardLast4})` }] : []
+          ];
+          const getBal = (id) => id === "ip" ? ipCash : id === "grey" ? greyAccount?.balance || 0 : bankAccounts[id]?.balance || 0;
+          const from = options.some((o) => o.id === transferForm.from) ? transferForm.from : options[0]?.id || "";
+          const to = transferForm.to;
+          const amt = Number(transferForm.amount) || 0;
+          const fromBal = from ? getBal(from) : 0;
+          const canSend = from && to && from !== to && amt > 0 && amt <= fromBal;
+          const feeNote = from === "ip" ? "2%" : from === "grey" ? `${Math.round(GREY_BANK.transferFee * 100)}%` : "\u043F\u043E \u043B\u0438\u043C\u0438\u0442\u0430\u043C \u0431\u0430\u043D\u043A\u0430";
+          const doTransfer = () => {
+            if (!canSend) return;
+            universalTransfer(from, to, amt);
+            setTransferForm((f) => ({ ...f, from, amount: "" }));
+          };
+          return /* @__PURE__ */ jsxs("div", { children: [
+            /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
+              /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkDim, marginBottom: 6 }, children: "\u041E\u0442\u043A\u0443\u0434\u0430" }),
+              /* @__PURE__ */ jsx("select", { value: from, onChange: (e) => setTransferForm((f) => ({ ...f, from: e.target.value })), style: { width: "100%", marginBottom: 12, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, color: C.ink, fontSize: 13, padding: "10px 10px" }, children: options.map((o) => /* @__PURE__ */ jsxs("option", { value: o.id, children: [
+                o.label,
+                " \xB7 ",
+                fmt(getBal(o.id))
+              ] }, o.id)) }),
+              /* @__PURE__ */ jsx("div", { style: { display: "flex", justifyContent: "center", margin: "-4px 0 8px" }, children: /* @__PURE__ */ jsx(ArrowLeftRight, { size: 16, color: C.inkFaint }) }),
+              /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkDim, marginBottom: 6 }, children: "\u041A\u0443\u0434\u0430" }),
+              /* @__PURE__ */ jsxs("select", { value: to, onChange: (e) => setTransferForm((f) => ({ ...f, to: e.target.value })), style: { width: "100%", marginBottom: 12, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, color: C.ink, fontSize: 13, padding: "10px 10px" }, children: [
+                /* @__PURE__ */ jsx("option", { value: "", children: "\u0412\u044B\u0431\u0435\u0440\u0438 \u0441\u0447\u0451\u0442" }),
+                options.filter((o) => o.id !== from).map((o) => /* @__PURE__ */ jsx("option", { value: o.id, children: o.label }, o.id))
+              ] }),
+              /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkDim, marginBottom: 6 }, children: [
+                "\u0421\u0443\u043C\u043C\u0430 \xB7 \u043A\u043E\u043C\u0438\u0441\u0441\u0438\u044F ",
+                feeNote
+              ] }),
+              /* @__PURE__ */ jsx("input", { type: "number", value: transferForm.amount, onChange: (e) => setTransferForm((f) => ({ ...f, amount: e.target.value })), placeholder: `\u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E ${fmt(fromBal)}`, style: { width: "100%", background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, color: C.ink, fontSize: 15, padding: "10px 10px", fontFamily: "'JetBrains Mono', monospace" } }),
+              xferFeedback && /* @__PURE__ */ jsx("div", { style: { marginTop: 10, fontSize: 12, color: xferFeedback.ok ? C.green : C.red }, children: xferFeedback.msg }),
+              /* @__PURE__ */ jsx("button", { onClick: doTransfer, disabled: !canSend, style: { width: "100%", padding: 12, borderRadius: 10, border: "none", fontWeight: 700, fontSize: 13.5, marginTop: 14, background: canSend ? C.violet : C.surface2, color: canSend ? "#fff" : C.inkFaint }, children: "\u041F\u0435\u0440\u0435\u0432\u0435\u0441\u0442\u0438" })
+            ] }),
+            /* @__PURE__ */ jsxs("div", { style: { fontSize: 11.5, color: C.inkFaint, lineHeight: 1.6, padding: "0 2px" }, children: [
+              "\u041F\u0435\u0440\u0435\u0432\u043E\u0434\u044B \u043C\u0435\u0436\u0434\u0443 \u0441\u0447\u0451\u0442\u043E\u043C \u0418\u041F, \u0431\u0430\u043D\u043A\u043E\u0432\u0441\u043A\u0438\u043C\u0438 \u043A\u0430\u0440\u0442\u0430\u043C\u0438 \u0438 \u043E\u0444\u0448\u043E\u0440\u043E\u043C. \u0414\u043B\u044F \u043F\u0435\u0440\u0435\u0432\u043E\u0434\u043E\u0432 \u043D\u0430 \u0447\u0443\u0436\u0438\u0435 \u043A\u0430\u0440\u0442\u044B \u0437\u0430\u0439\u0434\u0438 \u0432 ",
+              /* @__PURE__ */ jsx("b", { style: { color: C.ink }, children: "\u041A\u0430\u0431\u0438\u043D\u0435\u0442 \u2192 \u0427\u0443\u0436\u0438\u0435 \u043A\u0430\u0440\u0442\u044B" }),
+              " \u2014 \u0442\u0430\u043C \u0441\u0432\u043E\u044F \u0441\u0445\u0435\u043C\u0430 \u0441 \u043A\u043E\u043C\u0438\u0441\u0441\u0438\u044F\u043C\u0438 \u0438 \u043F\u0440\u043E\u0433\u0440\u0435\u0432\u043E\u043C."
+            ] })
+          ] });
+        })(),
         activeTab === "news" && /* @__PURE__ */ jsxs("div", { children: [
           /* @__PURE__ */ jsxs("div", { style: { height: refreshing ? 40 : pullY, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", transition: pullY === 0 ? "height 0.2s" : "none", color: C.inkDim, fontSize: 11.5 }, children: [
             /* @__PURE__ */ jsx(RefreshCw, { size: 14, style: { marginRight: 6, animation: refreshing ? "spin 0.7s linear infinite" : "none", transform: !refreshing && pullY > 46 ? "rotate(180deg)" : "none", transition: "transform 0.15s" } }),
@@ -4111,7 +4370,8 @@ function MarketSandbox() {
                           "\u043E\u0442 ",
                           p.minShifts,
                           " \u0441\u043C\u0435\u043D"
-                        ] })
+                        ] }),
+                        /* @__PURE__ */ jsx("div", { style: { height: 3, borderRadius: 2, background: C.border, overflow: "hidden", marginTop: 4 }, children: /* @__PURE__ */ jsx("div", { style: { height: "100%", width: `${Math.min(100, shifts / p.minShifts * 100)}%`, background: C.violet } }) })
                       ] }),
                       !unlocked && shifts >= p.minShifts && needsCar && /* @__PURE__ */ jsxs(Fragment, { children: [
                         /* @__PURE__ */ jsx("br", {}),
@@ -4164,7 +4424,8 @@ function MarketSandbox() {
               tenderTrackRecord.completed,
               " \xB7 \u043F\u0440\u043E\u0432\u0430\u043B\u0435\u043D\u043E ",
               tenderTrackRecord.failed,
-              "."
+              ".",
+              /* @__PURE__ */ jsx("div", { style: { height: 5, borderRadius: 3, background: C.surface2, overflow: "hidden", marginTop: 8 }, children: /* @__PURE__ */ jsx("div", { style: { height: "100%", width: `${Math.min(100, activeTenderCount() / Math.max(1, maxActiveTenders()) * 100)}%`, background: C.violet } }) })
             ] }),
             activeTendersList.length > 0 && /* @__PURE__ */ jsxs("div", { style: { marginBottom: 18 }, children: [
               /* @__PURE__ */ jsx("div", { style: { fontSize: 13, fontWeight: 700, marginBottom: 8 }, children: "\u0410\u043A\u0442\u0438\u0432\u043D\u044B\u0435 \u043A\u043E\u043D\u0442\u0440\u0430\u043A\u0442\u044B" }),
@@ -4240,7 +4501,13 @@ function MarketSandbox() {
               return /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${type.originRisk ? C.red + "44" : C.border}`, borderRadius: 14, padding: 16, marginBottom: 12 }, children: [
                 /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start" }, children: [
                   /* @__PURE__ */ jsxs("div", { children: [
-                    /* @__PURE__ */ jsx("div", { style: { fontWeight: 700, fontSize: 14 }, children: type.name }),
+                    /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "center", gap: 6 }, children: [
+                      /* @__PURE__ */ jsx("div", { style: { fontWeight: 700, fontSize: 14 }, children: type.name }),
+                      (() => {
+                        const rb = type.riskLevel > 0.35 ? { text: "\u0412\u044B\u0441\u043E\u043A\u0438\u0439 \u0440\u0438\u0441\u043A", color: C.red } : type.riskLevel <= 0.15 ? { text: "\u041D\u0438\u0437\u043A\u0438\u0439 \u0440\u0438\u0441\u043A", color: C.green } : null;
+                        return rb && /* @__PURE__ */ jsx("span", { style: { fontSize: 9.5, fontWeight: 700, color: rb.color, background: `${rb.color}18`, borderRadius: 6, padding: "1px 6px" }, children: rb.text });
+                      })()
+                    ] }),
                     /* @__PURE__ */ jsx("div", { style: { fontSize: 11.5, color: C.inkDim }, children: t.clientName })
                   ] }),
                   /* @__PURE__ */ jsxs("div", { style: { textAlign: "right" }, children: [
@@ -4429,9 +4696,21 @@ function MarketSandbox() {
             /* @__PURE__ */ jsx("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 12, marginBottom: 12, fontSize: 11.5, color: C.inkDim, lineHeight: 1.6 }, children: "\u041A\u0440\u0435\u0434\u0438\u0442 \u043F\u043E\u0434 \u0437\u0430\u043B\u043E\u0433 \u0442\u043E\u0432\u0430\u0440\u0430 \u043D\u0430 \u0441\u043A\u043B\u0430\u0434\u0435. \u0415\u0441\u043B\u0438 \u0434\u043E\u043B\u0433 \u0432\u044B\u0440\u0430\u0441\u0442\u0435\u0442 \u0434\u043E 150% \u2014 \u0430\u043A\u0442\u0438\u0432\u044B \u043F\u043E\u0434 \u0430\u0440\u0435\u0441\u0442\u043E\u043C (\u043D\u0435\u043B\u044C\u0437\u044F \u0432\u044B\u0441\u0442\u0430\u0432\u043B\u044F\u0442\u044C \u043D\u0430 \u043F\u0440\u043E\u0434\u0430\u0436\u0443), \u0434\u043E 170% \u2014 \u0431\u0430\u043D\u043A \u0437\u0430\u0431\u0435\u0440\u0451\u0442 \u0442\u043E\u0432\u0430\u0440 \u0432 \u0441\u0447\u0451\u0442 \u0434\u043E\u043B\u0433\u0430. \u041B\u0438\u0447\u043D\u044B\u0439 \u0441\u0447\u0451\u0442 \u0438 \u0430\u043A\u0442\u0438\u0432\u044B \u0444\u0438\u0437\u043B\u0438\u0446\u0430 \u044D\u0442\u043E \u043D\u0435 \u0437\u0430\u0442\u0440\u0430\u0433\u0438\u0432\u0430\u0435\u0442." }),
             ipLoans.map((l) => {
               const ratio = l.balance / l.principal;
+              const ratioPct = Math.min(100, ratio / 1.7 * 100);
+              const barColor = ratio >= 1.5 ? C.red : ratio >= 1 ? C.gold : C.violet;
               return /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.red}55`, borderRadius: 14, padding: 16, marginBottom: 12 }, children: [
                 /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.red, textTransform: "uppercase", letterSpacing: 1 }, children: IP_BANK.name }),
                 /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 20, fontWeight: 700, margin: "4px 0" }, children: fmt(l.balance) }),
+                /* @__PURE__ */ jsxs("div", { style: { marginBottom: 10 }, children: [
+                  /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 10, color: C.inkDim, marginBottom: 3 }, children: [
+                    /* @__PURE__ */ jsx("span", { children: "\u0414\u043E\u043B\u0433 \u043A \u0437\u0430\u043B\u043E\u0433\u0443" }),
+                    /* @__PURE__ */ jsxs("span", { style: { color: barColor }, children: [
+                      Math.round(ratio * 100),
+                      "%"
+                    ] })
+                  ] }),
+                  /* @__PURE__ */ jsx("div", { style: { height: 5, borderRadius: 3, background: C.surface2, overflow: "hidden" }, children: /* @__PURE__ */ jsx("div", { style: { height: "100%", width: `${ratioPct}%`, background: barColor } }) })
+                ] }),
                 /* @__PURE__ */ jsxs("div", { style: { fontSize: 11.5, color: C.inkDim, marginBottom: 10 }, children: [
                   "\u041C\u0438\u043D. \u043F\u043B\u0430\u0442\u0451\u0436 ",
                   fmt(l.minPayment),
@@ -4823,7 +5102,7 @@ function MarketSandbox() {
               /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
                 (() => {
                   const activeAds = (shop.ads || []).filter((a) => Date.now() < a.until);
-                  const combinedMult = activeAds.length ? Math.min(6, activeAds.reduce((m, a) => m * a.boostMult, 1)) : 1;
+                  const combinedMult = activeAds.length ? computeAdBoost(activeAds) : 1;
                   return activeAds.length > 0 ? /* @__PURE__ */ jsxs("div", { style: { marginBottom: 12 }, children: [
                     /* @__PURE__ */ jsxs("div", { style: { fontSize: 12.5, color: C.green, fontWeight: 700, marginBottom: 8 }, children: [
                       "\u041A\u0430\u043C\u043F\u0430\u043D\u0438\u0439 \u0430\u043A\u0442\u0438\u0432\u043D\u043E: ",
@@ -4831,6 +5110,7 @@ function MarketSandbox() {
                       " \xB7 \u043E\u0431\u0449\u0438\u0439 \u043C\u043D\u043E\u0436\u0438\u0442\u0435\u043B\u044C \xD7",
                       combinedMult.toFixed(1)
                     ] }),
+                    /* @__PURE__ */ jsx("div", { style: { height: 5, borderRadius: 3, background: C.surface2, overflow: "hidden", marginBottom: 10 }, children: /* @__PURE__ */ jsx("div", { style: { height: "100%", width: `${Math.min(100, combinedMult / 6 * 100)}%`, background: C.green } }) }),
                     activeAds.map((a) => {
                       const tier = AD_TIERS.find((t) => t.id === a.tierId);
                       const minLeft = Math.ceil((a.until - Date.now()) / 6e4);
@@ -5003,19 +5283,48 @@ function MarketSandbox() {
                     os.manager?.hired ? (() => {
                       const m = os.manager;
                       const overdue = m.salaryDue > 0;
+                      const priceStrategy = m.priceStrategy || "market";
+                      const adTier = m.adTier || "mid";
+                      const supplierId = m.supplierId || "auto";
+                      const restockDraft = managerFormInputs[shop.id]?.minStock ?? String(m.minStock);
+                      const commitMinStock = () => {
+                        const v = Math.max(1, Math.round(Number(restockDraft) || 0));
+                        updateManagerSettings(shop.id, { minStock: v });
+                        setManagerFormInputs((prev) => ({ ...prev, [shop.id]: { ...prev[shop.id], minStock: String(v) } }));
+                      };
                       return /* @__PURE__ */ jsxs("div", { children: [
-                        /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint, marginBottom: 8, lineHeight: 1.6 }, children: [
-                          "\u0414\u0435\u0440\u0436\u0438\u0442 \u043E\u0441\u0442\u0430\u0442\u043E\u043A \u043E\u0442 ",
-                          m.minStock,
-                          " \u0448\u0442, \u043D\u0430\u0446\u0435\u043D\u043A\u0443 ~",
-                          m.targetMarginPct,
-                          "% \u0438",
-                          m.autoAdEnabled ? "" : " \u041D\u0415",
-                          " \u0434\u0435\u0440\u0436\u0438\u0442 \u0440\u0435\u043A\u043B\u0430\u043C\u0443 \u0430\u043A\u0442\u0438\u0432\u043D\u043E\u0439 \u043F\u043E\u0441\u0442\u043E\u044F\u043D\u043D\u043E.",
+                        /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint, marginBottom: 10, lineHeight: 1.6 }, children: [
+                          "\u0422\u0440\u0430\u0442\u0438\u0442 \u0441\u0440\u0435\u0434\u0441\u0442\u0432\u0430 \u0441\u043E \u0441\u0447\u0451\u0442\u0430 \u0418\u041F \u0441\u0430\u043C\u043E\u0441\u0442\u043E\u044F\u0442\u0435\u043B\u044C\u043D\u043E, \u043F\u043E \u043C\u0435\u0440\u0435 \u043F\u043E\u044F\u0432\u043B\u0435\u043D\u0438\u044F \u0434\u0435\u043D\u0435\u0433 \u2014 \u0434\u0430\u0436\u0435 \u0447\u0430\u0441\u0442\u0438\u0447\u043D\u043E, \u0435\u0441\u043B\u0438 \u043D\u0430 \u043F\u043E\u043B\u043D\u0443\u044E \u0437\u0430\u043A\u0443\u043F\u043A\u0443 \u043D\u0435 \u0445\u0432\u0430\u0442\u0430\u0435\u0442.",
                           m.salaryDue >= MANAGER_SALARY * 2 && /* @__PURE__ */ jsxs(Fragment, { children: [
                             /* @__PURE__ */ jsx("br", {}),
                             /* @__PURE__ */ jsx("span", { style: { color: C.red }, children: "\u0415\u0449\u0451 \u0446\u0438\u043A\u043B \u0431\u0435\u0437 \u043E\u043F\u043B\u0430\u0442\u044B \u2014 \u0443\u0432\u043E\u043B\u0438\u0442\u0441\u044F \u0441\u0430\u043C." })
                           ] })
+                        ] }),
+                        /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u0426\u0435\u043D\u0430" }),
+                        /* @__PURE__ */ jsx("div", { style: { display: "flex", gap: 6, marginBottom: 10 }, children: ["below", "market", "above"].map((k) => /* @__PURE__ */ jsx("button", { onClick: () => updateManagerSettings(shop.id, { priceStrategy: k }), style: segStyle(priceStrategy === k), children: MANAGER_PRICE_STRATEGY_LABEL[k] }, k)) }),
+                        /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u0420\u0435\u043A\u043B\u0430\u043C\u0430 (\u043E\u043D\u043B\u0430\u0439\u043D + \u0442\u043E\u0447\u043A\u0430)" }),
+                        /* @__PURE__ */ jsx("div", { style: { display: "flex", gap: 6, marginBottom: 10 }, children: ["min", "mid", "max"].map((k) => /* @__PURE__ */ jsx("button", { onClick: () => updateManagerSettings(shop.id, { adTier: k }), style: segStyle(adTier === k), children: MANAGER_AD_TIER_LABEL[k] }, k)) }),
+                        /* @__PURE__ */ jsxs("button", { onClick: () => updateManagerSettings(shop.id, { autoAdEnabled: !m.autoAdEnabled }), style: { width: "100%", textAlign: "left", padding: 10, borderRadius: 8, border: `1px solid ${C.border}`, background: C.surface2, color: C.ink, fontSize: 12, marginBottom: 10 }, children: [
+                          m.autoAdEnabled ? "\u2611" : "\u2610",
+                          " \u0414\u0435\u0440\u0436\u0430\u0442\u044C \u0440\u0435\u043A\u043B\u0430\u043C\u0443 \u0430\u043A\u0442\u0438\u0432\u043D\u043E\u0439 \u043F\u043E\u0441\u0442\u043E\u044F\u043D\u043D\u043E"
+                        ] }),
+                        /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u041C\u0438\u043D. \u043E\u0441\u0442\u0430\u0442\u043E\u043A (\u0434\u043E\u043A\u0443\u043F\u0430\u0435\u0442 \u0441\u0440\u0430\u0437\u0443 \u0434\u043E \u00D72)" }),
+                        /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8, marginBottom: 10 }, children: [
+                          /* @__PURE__ */ jsx("input", { type: "number", value: restockDraft, onChange: (e) => setManagerFormInputs((prev) => ({ ...prev, [shop.id]: { ...prev[shop.id], minStock: e.target.value } })), onBlur: commitMinStock, style: { flex: 1, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 12, padding: "8px 10px" } }),
+                          /* @__PURE__ */ jsx("button", { onClick: commitMinStock, style: { padding: "0 14px", borderRadius: 8, border: `1px solid ${C.border}`, background: "transparent", color: C.inkDim, fontSize: 11.5 }, children: "OK" })
+                        ] }),
+                        /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u041F\u043E\u0441\u0442\u0430\u0432\u0449\u0438\u043A" }),
+                        /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }, children: [
+                          /* @__PURE__ */ jsx("button", { onClick: () => updateManagerSettings(shop.id, { supplierId: "auto" }), style: { ...segStyle(supplierId === "auto"), flex: "0 1 auto" }, children: "\u0410\u0432\u0442\u043E (\u0434\u0435\u0448\u0435\u0432\u043B\u0435)" }),
+                          ...SUPPLIERS.map((s) => /* @__PURE__ */ jsxs("button", { onClick: () => updateManagerSettings(shop.id, { supplierId: s.id }), style: { ...segStyle(supplierId === s.id), flex: "0 1 auto" }, children: [
+                            s.flag,
+                            " ",
+                            s.quality
+                          ] }, s.id)),
+                          ...factories.map((f) => /* @__PURE__ */ jsxs("button", { onClick: () => updateManagerSettings(shop.id, { supplierId: `factory:${f.id}` }), style: { ...segStyle(supplierId === `factory:${f.id}`), flex: "0 1 auto" }, children: [
+                            "\u{1F3ED} ",
+                            f.name
+                          ] }, f.id))
                         ] }),
                         /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }, children: [
                           /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: overdue ? C.red : C.inkDim }, children: [
@@ -5027,29 +5336,32 @@ function MarketSandbox() {
                         /* @__PURE__ */ jsx("button", { onClick: () => fireManager(shop.id), style: { width: "100%", padding: 8, borderRadius: 8, border: `1px solid ${C.border}`, background: "transparent", color: C.inkDim, fontSize: 11 }, children: "\u0423\u0432\u043E\u043B\u0438\u0442\u044C" })
                       ] });
                     })() : (() => {
-                      const f = managerFormInputs[shop.id] || { minStock: "20", targetMarginPct: "50", autoAdEnabled: true };
+                      const f = managerFormInputs[shop.id] || { minStock: "20", priceStrategy: "market", adTier: "mid", autoAdEnabled: true, supplierId: "auto" };
                       const setF = (patch) => setManagerFormInputs((prev) => ({ ...prev, [shop.id]: { ...f, ...patch } }));
                       return /* @__PURE__ */ jsxs("div", { children: [
-                        /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint, marginBottom: 8, lineHeight: 1.6 }, children: [
-                          "\u0410\u0432\u0442\u043E\u043C\u0430\u0442\u0438\u0447\u0435\u0441\u043A\u0438 \u0434\u0435\u0440\u0436\u0438\u0442 \u043E\u0441\u0442\u0430\u0442\u043E\u043A, \u043D\u0430\u0446\u0435\u043D\u043A\u0443 \u0438 \u0440\u0435\u043A\u043B\u0430\u043C\u0443 \u0431\u0435\u0437 \u0440\u0443\u0447\u043D\u043E\u0433\u043E \u043A\u043E\u043D\u0442\u0440\u043E\u043B\u044F. \u0417\u0430\u0440\u043F\u043B\u0430\u0442\u0430 ",
-                          fmt(MANAGER_SALARY),
-                          " \u043A\u0430\u0436\u0434\u044B\u0435 ",
-                          MANAGER_SALARY_CYCLE_MS / 6e4,
-                          " \u043C\u0438\u043D \u2014 \u043D\u0430\u0447\u0438\u0441\u043B\u044F\u0435\u0442\u0441\u044F, \u043D\u043E \u0441\u043F\u0438\u0441\u044B\u0432\u0430\u0435\u0442\u0441\u044F \u0442\u043E\u043B\u044C\u043A\u043E \u043A\u043E\u0433\u0434\u0430 \u0442\u044B \u0441\u0430\u043C \u043E\u043F\u043B\u0430\u0442\u0438\u0448\u044C \u0441\u043E \u0441\u0447\u0451\u0442\u0430 \u0418\u041F."
-                        ] }),
-                        /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8, marginBottom: 8 }, children: [
-                          /* @__PURE__ */ jsxs("div", { style: { flex: 1 }, children: [
-                            /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u041C\u0438\u043D. \u043E\u0441\u0442\u0430\u0442\u043E\u043A, \u0448\u0442" }),
-                            /* @__PURE__ */ jsx("input", { type: "number", value: f.minStock, onChange: (e) => setF({ minStock: e.target.value }), style: { width: "100%", background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 12, padding: "8px 10px" } })
-                          ] }),
-                          /* @__PURE__ */ jsxs("div", { style: { flex: 1 }, children: [
-                            /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u041D\u0430\u0446\u0435\u043D\u043A\u0430, %" }),
-                            /* @__PURE__ */ jsx("input", { type: "number", value: f.targetMarginPct, onChange: (e) => setF({ targetMarginPct: e.target.value }), style: { width: "100%", background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 12, padding: "8px 10px" } })
-                          ] })
-                        ] }),
+                        /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginBottom: 10, lineHeight: 1.6 }, children: `\u0410\u0432\u0442\u043E\u043C\u0430\u0442\u0438\u0447\u0435\u0441\u043A\u0438 \u0434\u0435\u0440\u0436\u0438\u0442 \u043E\u0441\u0442\u0430\u0442\u043E\u043A, \u0446\u0435\u043D\u0443 \u0438 \u0440\u0435\u043A\u043B\u0430\u043C\u0443. \u0417\u0430\u0440\u043F\u043B\u0430\u0442\u0430 ${fmt(MANAGER_SALARY)} \u043A\u0430\u0436\u0434\u044B\u0435 ${MANAGER_SALARY_CYCLE_MS / 6e4} \u043C\u0438\u043D \u2014 \u043D\u0430\u0447\u0438\u0441\u043B\u044F\u0435\u0442\u0441\u044F, \u043D\u043E \u0441\u043F\u0438\u0441\u044B\u0432\u0430\u0435\u0442\u0441\u044F \u0442\u043E\u043B\u044C\u043A\u043E \u043A\u043E\u0433\u0434\u0430 \u0442\u044B \u0441\u0430\u043C \u043E\u043F\u043B\u0430\u0442\u0438\u0448\u044C \u0441\u043E \u0441\u0447\u0451\u0442\u0430 \u0418\u041F.` }),
+                        /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u0426\u0435\u043D\u0430" }),
+                        /* @__PURE__ */ jsx("div", { style: { display: "flex", gap: 6, marginBottom: 10 }, children: ["below", "market", "above"].map((k) => /* @__PURE__ */ jsx("button", { onClick: () => setF({ priceStrategy: k }), style: segStyle(f.priceStrategy === k), children: MANAGER_PRICE_STRATEGY_LABEL[k] }, k)) }),
+                        /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u0420\u0435\u043A\u043B\u0430\u043C\u0430 (\u043E\u043D\u043B\u0430\u0439\u043D + \u0442\u043E\u0447\u043A\u0430)" }),
+                        /* @__PURE__ */ jsx("div", { style: { display: "flex", gap: 6, marginBottom: 10 }, children: ["min", "mid", "max"].map((k) => /* @__PURE__ */ jsx("button", { onClick: () => setF({ adTier: k }), style: segStyle(f.adTier === k), children: MANAGER_AD_TIER_LABEL[k] }, k)) }),
                         /* @__PURE__ */ jsxs("button", { onClick: () => setF({ autoAdEnabled: !f.autoAdEnabled }), style: { width: "100%", textAlign: "left", padding: 10, borderRadius: 8, border: `1px solid ${C.border}`, background: C.surface2, color: C.ink, fontSize: 12, marginBottom: 10 }, children: [
                           f.autoAdEnabled ? "\u2611" : "\u2610",
                           " \u0414\u0435\u0440\u0436\u0430\u0442\u044C \u0440\u0435\u043A\u043B\u0430\u043C\u0443 \u0430\u043A\u0442\u0438\u0432\u043D\u043E\u0439 \u043F\u043E\u0441\u0442\u043E\u044F\u043D\u043D\u043E"
+                        ] }),
+                        /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u041C\u0438\u043D. \u043E\u0441\u0442\u0430\u0442\u043E\u043A (\u0434\u043E\u043A\u0443\u043F\u0430\u0435\u0442 \u0441\u0440\u0430\u0437\u0443 \u0434\u043E \u00D72)" }),
+                        /* @__PURE__ */ jsx("input", { type: "number", value: f.minStock, onChange: (e) => setF({ minStock: e.target.value }), style: { width: "100%", marginBottom: 10, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 12, padding: "8px 10px" } }),
+                        /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u041F\u043E\u0441\u0442\u0430\u0432\u0449\u0438\u043A" }),
+                        /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }, children: [
+                          /* @__PURE__ */ jsx("button", { onClick: () => setF({ supplierId: "auto" }), style: { ...segStyle((f.supplierId || "auto") === "auto"), flex: "0 1 auto" }, children: "\u0410\u0432\u0442\u043E (\u0434\u0435\u0448\u0435\u0432\u043B\u0435)" }),
+                          ...SUPPLIERS.map((s) => /* @__PURE__ */ jsxs("button", { onClick: () => setF({ supplierId: s.id }), style: { ...segStyle(f.supplierId === s.id), flex: "0 1 auto" }, children: [
+                            s.flag,
+                            " ",
+                            s.quality
+                          ] }, s.id)),
+                          ...factories.map((fac) => /* @__PURE__ */ jsxs("button", { onClick: () => setF({ supplierId: `factory:${fac.id}` }), style: { ...segStyle(f.supplierId === `factory:${fac.id}`), flex: "0 1 auto" }, children: [
+                            "\u{1F3ED} ",
+                            fac.name
+                          ] }, fac.id))
                         ] }),
                         /* @__PURE__ */ jsx("button", { onClick: () => hireManager(shop.id, f), style: { width: "100%", padding: 10, borderRadius: 10, border: "none", fontWeight: 700, fontSize: 12.5, background: C.gold, color: "#161207" }, children: "\u041D\u0430\u043D\u044F\u0442\u044C \u043C\u0435\u043D\u0435\u0434\u0436\u0435\u0440\u0430" })
                       ] });
@@ -5199,6 +5511,31 @@ function MarketSandbox() {
                   String(secLeft % 60).padStart(2, "0"),
                   f.missedTicks > 0 ? ` \xB7 \u043F\u0440\u043E\u043F\u0443\u0449\u0435\u043D\u043E \u043E\u043F\u043B\u0430\u0442 \u043F\u043E\u0434\u0440\u044F\u0434: ${f.missedTicks}/3` : ""
                 ] }),
+                resellShops.length > 0 && (() => {
+                  const ft = factoryTransferInputs[f.id] || { shopId: resellShops[0].id, units: "" };
+                  const setFt = (patch) => setFactoryTransferInputs((prev) => ({ ...prev, [f.id]: { ...ft, ...patch } }));
+                  const logisticsCost = Math.round((Number(ft.units) || 0) * unitCost * FACTORY_SHOP_TRANSFER_FEE_PCT);
+                  const canSend = Number(ft.units) > 0 && Number(ft.units) <= f.stock && logisticsCost <= ipCash;
+                  return /* @__PURE__ */ jsxs("div", { style: { background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, padding: 10, marginBottom: 10 }, children: [
+                    /* @__PURE__ */ jsx("div", { style: { fontSize: 11.5, fontWeight: 700, marginBottom: 6 }, children: "\u041F\u0440\u043E\u0434\u0430\u0442\u044C \u0447\u0435\u0440\u0435\u0437 \u0441\u0432\u043E\u0439 \u043C\u0430\u0433\u0430\u0437\u0438\u043D" }),
+                    /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint, marginBottom: 8, lineHeight: 1.5 }, children: [
+                      "\u041B\u043E\u0433\u0438\u0441\u0442\u0438\u043A\u0430 ",
+                      Math.round(FACTORY_SHOP_TRANSFER_FEE_PCT * 100),
+                      "% \u043E\u0442 \u0441\u0435\u0431\u0435\u0441\u0442\u043E\u0438\u043C\u043E\u0441\u0442\u0438 \u2014 \u0434\u0435\u0448\u0435\u0432\u043B\u0435 \u0442\u0435\u043D\u0434\u0435\u0440\u043E\u0432, \u043D\u043E \u0437\u0430\u0431\u0438\u0440\u0430\u0435\u0442 \u0442\u043E\u0432\u0430\u0440, \u043A\u043E\u0442\u043E\u0440\u044B\u0439 \u043C\u043E\u0433 \u0431\u044B \u0443\u0439\u0442\u0438 \u043D\u0430 \u0431\u043E\u043B\u0435\u0435 \u0432\u044B\u0433\u043E\u0434\u043D\u044B\u0439 \u0442\u0435\u043D\u0434\u0435\u0440."
+                    ] }),
+                    resellShops.length > 1 && /* @__PURE__ */ jsx("select", { value: ft.shopId, onChange: (e) => setFt({ shopId: e.target.value }), style: { width: "100%", marginBottom: 8, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 12, padding: "8px 10px" }, children: resellShops.map((s) => /* @__PURE__ */ jsx("option", { value: s.id, children: s.name }, s.id)) }),
+                    /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8 }, children: [
+                      /* @__PURE__ */ jsx("input", { type: "number", value: ft.units, onChange: (e) => setFt({ units: e.target.value }), placeholder: `\u0434\u043E ${f.stock} \u0448\u0442`, style: { flex: 1, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 12, padding: "8px 10px" } }),
+                      /* @__PURE__ */ jsxs("button", { onClick: () => {
+                        transferFactoryStockToShop(f.id, ft.shopId, ft.units);
+                        setFt({ units: "" });
+                      }, disabled: !canSend, style: { padding: "0 14px", borderRadius: 8, border: "none", fontWeight: 700, fontSize: 12, background: canSend ? C.gold : C.surface, color: canSend ? "#161207" : C.inkFaint, whiteSpace: "nowrap" }, children: [
+                        "\u041E\u0442\u043F\u0440\u0430\u0432\u0438\u0442\u044C",
+                        Number(ft.units) > 0 ? ` \xB7 ${fmt(logisticsCost)}` : ""
+                      ] })
+                    ] })
+                  ] });
+                })(),
                 confirmCloseFactory === f.id ? /* @__PURE__ */ jsxs("div", { style: { background: C.surface2, border: `1px solid ${C.red}55`, borderRadius: 10, padding: 10 }, children: [
                   /* @__PURE__ */ jsxs("div", { style: { fontSize: 11.5, color: C.inkDim, marginBottom: 8 }, children: [
                     "\u0417\u0430\u043A\u0440\u044B\u0442\u044C \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u043E? \u041D\u0435\u0441\u043F\u0438\u0441\u0430\u043D\u043D\u044B\u0439 \u043E\u0441\u0442\u0430\u0442\u043E\u043A \u043D\u0430 \u0441\u043A\u043B\u0430\u0434\u0435 (",
@@ -5217,8 +5554,8 @@ function MarketSandbox() {
               /* @__PURE__ */ jsx("div", { style: { fontSize: 13, fontWeight: 700, marginBottom: 8 }, children: "\u0412\u0445\u043E\u0434\u044F\u0449\u0438\u0435 \u0437\u0430\u044F\u0432\u043A\u0438" }),
               f.pendingOrders.length === 0 ? /* @__PURE__ */ jsx("div", { style: { fontSize: 11.5, color: C.inkFaint, textAlign: "center", padding: "16px 0" }, children: "\u041F\u043E\u043A\u0430 \u043D\u0438\u043A\u0442\u043E \u043D\u0435 \u043F\u0440\u0435\u0434\u043B\u043E\u0436\u0438\u043B \u0441\u0434\u0435\u043B\u043A\u0443" }) : f.pendingOrders.map((o) => {
                 const margin = Math.round((o.pricePerUnit - unitCost) * o.volume);
-                const canAccept = f.stock >= o.volume;
                 const orderSecLeft = Math.max(0, Math.ceil((o.expiresAt - Date.now()) / 1e3));
+                const canAccept = f.stock >= o.volume && orderSecLeft > 0;
                 return /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 12, marginBottom: 8 }, children: [
                   /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between" }, children: [
                     /* @__PURE__ */ jsx("div", { style: { fontWeight: 600, fontSize: 13 }, children: o.buyerName }),
@@ -5231,7 +5568,8 @@ function MarketSandbox() {
                     "\u041E\u0431\u044A\u0451\u043C: ",
                     o.volume,
                     " \u0448\u0442",
-                    !canAccept && /* @__PURE__ */ jsx("span", { style: { color: C.red }, children: " (\u043D\u0435 \u0445\u0432\u0430\u0442\u0430\u0435\u0442 \u0441\u043A\u043B\u0430\u0434\u0430)" }),
+                    !canAccept && f.stock < o.volume && /* @__PURE__ */ jsx("span", { style: { color: C.red }, children: " (\u043D\u0435 \u0445\u0432\u0430\u0442\u0430\u0435\u0442 \u0441\u043A\u043B\u0430\u0434\u0430)" }),
+                    orderSecLeft <= 0 && /* @__PURE__ */ jsx("span", { style: { color: C.inkFaint }, children: " (\u0438\u0441\u0442\u0435\u043A\u043B\u0430)" }),
                     " \xB7 \u041C\u0430\u0440\u0436\u0430: ",
                     /* @__PURE__ */ jsx("span", { style: { color: margin >= 0 ? C.green : C.red }, children: fmt(margin) }),
                     " \xB7 \u0440\u0435\u0448\u0438\u0442\u044C \u0437\u0430 ",
@@ -5468,7 +5806,18 @@ function MarketSandbox() {
             blackMarketRoundsDone > 0 && darkTab === "services" && /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkFaint, marginTop: 8 }, children: [
               "\u041A\u0440\u0443\u0433\u043E\u0432 \u043F\u0440\u043E\u0439\u0434\u0435\u043D\u043E: ",
               blackMarketRoundsDone
-            ] })
+            ] }),
+            darkTab === "services" && blackMarketHeat > 0 && (() => {
+              const heatPct = Math.min(100, blackMarketHeat / (BLACKMARKET_HEAT_THRESHOLD * 2) * 100);
+              const heatColor = blackMarketHeat >= BLACKMARKET_HEAT_THRESHOLD ? C.red : blackMarketHeat >= BLACKMARKET_HEAT_THRESHOLD * 0.6 ? C.gold : "#c39bf0";
+              return /* @__PURE__ */ jsxs("div", { style: { marginTop: 10 }, children: [
+                /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 10, color: C.inkFaint, marginBottom: 3 }, children: [
+                  /* @__PURE__ */ jsx("span", { children: "\u0412\u043D\u0438\u043C\u0430\u043D\u0438\u0435 \u0444\u0438\u043D\u043C\u043E\u043D\u0438\u0442\u043E\u0440\u0438\u043D\u0433\u0430" }),
+                  /* @__PURE__ */ jsx("span", { style: { color: heatColor }, children: Math.round(blackMarketHeat) })
+                ] }),
+                /* @__PURE__ */ jsx("div", { style: { height: 5, borderRadius: 3, background: "rgba(255,255,255,0.08)", overflow: "hidden" }, children: /* @__PURE__ */ jsx("div", { style: { height: "100%", width: `${heatPct}%`, background: heatColor } }) })
+              ] });
+            })()
           ] }),
           /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 6, marginBottom: 16 }, children: [
             /* @__PURE__ */ jsx("button", { onClick: () => setDarkTab("services"), style: segStyle(darkTab === "services"), children: "\u0423\u0441\u043B\u0443\u0433\u0438" }),
@@ -5503,7 +5852,8 @@ function MarketSandbox() {
               const options = [
                 { id: "ip", label: "\u0418\u041F" },
                 ...BANK_ACCOUNTS.filter((b) => bankAccounts[b.id] && !bankAccounts[b.id].frozen).map((b) => ({ id: b.id, label: `${b.name} \xB7 \u043A\u0430\u0440\u0442\u0430` })),
-                ...greyAccount && !greyAccount.frozen ? [{ id: "grey", label: `${GREY_BANK.name} \xB7 \u043A\u0430\u0440\u0442\u0430` }] : []
+                ...greyAccount && !greyAccount.frozen ? [{ id: "grey", label: `${GREY_BANK.name} \xB7 \u043A\u0430\u0440\u0442\u0430` }] : [],
+                ...Object.entries(muleCards).filter(([, c]) => !c.frozen).map(([muleId, c]) => ({ id: muleId, label: `${BANK_ACCOUNTS.find((b) => b.id === c.bankId)?.name || c.bankId} \xB7 \u0447\u0443\u0436\u0430\u044F \u2022\u2022\u2022\u2022 ${c.cardLast4}` }))
               ];
               return /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16 }, children: [
                 /* @__PURE__ */ jsx("div", { style: { fontSize: 13, fontWeight: 700, marginBottom: 4 }, children: "\u0412\u0445\u043E\u0434\u044F\u0449\u0438\u0439 \u043F\u043B\u0430\u0442\u0451\u0436" }),
@@ -5664,10 +6014,7 @@ function MarketSandbox() {
               ] })
             ] }),
             /* @__PURE__ */ jsx("div", { style: { display: "flex", gap: 8, marginBottom: 16 }, children: [
-              { icon: /* @__PURE__ */ jsx(Send, { size: 18 }), label: "\u041F\u0435\u0440\u0435\u0432\u0435\u0441\u0442\u0438", onClick: () => {
-                setActiveTab("inspection");
-                setIpTab("account");
-              } },
+              { icon: /* @__PURE__ */ jsx(Send, { size: 18 }), label: "\u041F\u0435\u0440\u0435\u0432\u0435\u0441\u0442\u0438", onClick: () => setActiveTab("transfers") },
               { icon: /* @__PURE__ */ jsx(Landmark, { size: 18 }), label: "\u0411\u0430\u043D\u043A\u0438", onClick: () => {
                 setCabinetSubTab("banks");
                 setFocusedBankId(null);
@@ -5678,52 +6025,38 @@ function MarketSandbox() {
               /* @__PURE__ */ jsx("div", { style: { color: C.gold }, children: a.icon }),
               /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.ink, textAlign: "center", lineHeight: 1.2 }, children: a.label })
             ] }, a.label)) }),
-            /* @__PURE__ */ jsxs("button", { onClick: () => setShowTransferPanel((v) => !v), style: { width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: 10, borderRadius: 12, border: `1px solid ${C.border}`, background: showTransferPanel ? `${C.gold}18` : C.surface, color: showTransferPanel ? C.gold : C.ink, fontWeight: 700, fontSize: 12.5, marginBottom: 10 }, children: [
-              /* @__PURE__ */ jsx(Send, { size: 14 }),
-              " \u041F\u0435\u0440\u0435\u0432\u043E\u0434\u044B"
+            /* @__PURE__ */ jsxs("button", { onClick: () => setActiveTab("transfers"), style: { width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: 14, borderRadius: 12, border: `1px solid ${C.border}`, background: C.surface, color: C.ink, fontWeight: 600, fontSize: 13, marginBottom: 14 }, children: [
+              /* @__PURE__ */ jsxs("span", { style: { display: "flex", alignItems: "center", gap: 8 }, children: [
+                /* @__PURE__ */ jsx(Send, { size: 14, color: C.violet }),
+                "\u0411\u044B\u0441\u0442\u0440\u044B\u0435 \u043F\u0435\u0440\u0435\u0432\u043E\u0434\u044B"
+              ] }),
+              /* @__PURE__ */ jsx("span", { style: { color: C.inkFaint }, children: "\u2192" })
             ] }),
-            showTransferPanel && (() => {
-              const acctOptions = [
-                { id: "ip", label: "\u0418\u041F" },
-                ...BANK_ACCOUNTS.filter((b) => bankAccounts[b.id]).map((b) => ({ id: b.id, label: b.name })),
-                ...greyAccount ? [{ id: "grey", label: GREY_BANK.name }] : []
-              ];
-              const toOptions = [
-                { id: "ip", label: "\u0418\u041F" },
-                ...BANK_ACCOUNTS.filter((b) => bankAccounts[b.id]).map((b) => ({ id: b.id, label: b.name })),
-                ...greyAccount ? [{ id: "grey", label: GREY_BANK.name }] : []
-              ];
-              const validFrom = acctOptions.some((o) => o.id === xferFrom) ? xferFrom : acctOptions[0]?.id || "ip";
-              return /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
-                /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8, marginBottom: 8 }, children: [
-                  /* @__PURE__ */ jsx("select", { value: validFrom, onChange: (e) => setXferFrom(e.target.value), style: { flex: 1, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, color: C.ink, fontSize: 12, padding: "9px 8px" }, children: acctOptions.map((o) => /* @__PURE__ */ jsx("option", { value: o.id, children: o.label }, o.id)) }),
-                  /* @__PURE__ */ jsx("select", { value: xferTo, onChange: (e) => setXferTo(e.target.value), style: { flex: 1, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, color: C.ink, fontSize: 12, padding: "9px 8px" }, children: toOptions.filter((o) => o.id !== validFrom).map((o) => /* @__PURE__ */ jsx("option", { value: o.id, children: o.label }, o.id)) })
-                ] }),
-                /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8 }, children: [
-                  /* @__PURE__ */ jsx("input", { value: xferAmount, onChange: (e) => setXferAmount(e.target.value.replace(/[^0-9]/g, "")), placeholder: "\u0421\u0443\u043C\u043C\u0430", inputMode: "numeric", style: { ...inputStyle, marginBottom: 0, flex: 1 } }),
-                  /* @__PURE__ */ jsx("button", { onClick: () => universalTransfer(validFrom, xferTo, xferAmount), style: { padding: "0 18px", borderRadius: 10, border: "none", fontWeight: 700, fontSize: 12.5, background: C.gold, color: "#161207" }, children: "\u041F\u0435\u0440\u0435\u0432\u0435\u0441\u0442\u0438" })
-                ] }),
-                xferFeedback && /* @__PURE__ */ jsx("div", { style: { fontSize: 11.5, color: xferFeedback.ok ? C.green : C.red, marginTop: 8 }, children: xferFeedback.msg })
-              ] });
-            })(),
             (BANK_ACCOUNTS.some((b) => bankAccounts[b.id]) || greyAccount) && /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }, children: "\u0422\u0432\u043E\u0438 \u043A\u0430\u0440\u0442\u044B" }),
-            BANK_ACCOUNTS.filter((b) => bankAccounts[b.id]).map((b) => /* @__PURE__ */ jsx(
-              AccountRow,
-              {
-                icon: /* @__PURE__ */ jsx(CreditCard, { size: 20 }),
-                iconBg: `${C.gold}22`,
-                iconColor: C.gold,
-                amount: fmt(bankAccounts[b.id].balance),
-                label: `${b.name} \xB7 ${b.cardName}`,
-                badge: bankAccounts[b.id].frozen ? "\u0417\u0430\u043C\u043E\u0440\u043E\u0436\u0435\u043D" : `\u2022\u2022\u2022\u2022 ${bankAccounts[b.id].cardLast4}`,
-                onClick: () => {
-                  setActiveTab("cabinet");
-                  setCabinetSubTab("banks");
-                  setFocusedBankId(b.id);
-                }
-              },
-              b.id
-            )),
+            BANK_ACCOUNTS.filter((b) => bankAccounts[b.id]).map((b) => {
+              const acct = bankAccounts[b.id];
+              const limits = bankAccountLimits(b, acct);
+              const pct = limits.turnoverCap > 0 ? acct.turnoverUsed / limits.turnoverCap * 100 : 0;
+              return /* @__PURE__ */ jsx(
+                AccountRow,
+                {
+                  icon: /* @__PURE__ */ jsx(CreditCard, { size: 20 }),
+                  iconBg: `${C.gold}22`,
+                  iconColor: C.gold,
+                  amount: fmt(acct.balance),
+                  label: `${b.name} \xB7 ${b.cardName}`,
+                  badge: acct.frozen ? "\u0417\u0430\u043C\u043E\u0440\u043E\u0436\u0435\u043D" : `\u2022\u2022\u2022\u2022 ${acct.cardLast4}`,
+                  progressPct: pct,
+                  progressLabel: `\u041E\u0431\u043E\u0440\u043E\u0442: ${fmt(acct.turnoverUsed)} / ${fmt(limits.turnoverCap)}`,
+                  onClick: () => {
+                    setActiveTab("cabinet");
+                    setCabinetSubTab("banks");
+                    setFocusedBankId(b.id);
+                  }
+                },
+                b.id
+              );
+            }),
             greyAccount && /* @__PURE__ */ jsx(
               AccountRow,
               {
@@ -5862,11 +6195,16 @@ function MarketSandbox() {
                       ] })
                     ] })
                   ] }),
-                  /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: danger ? C.red : C.inkFaint, marginBottom: 8 }, children: [
+                  /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: danger ? C.red : C.inkFaint, marginBottom: 4 }, children: [
                     "\u041B\u0438\u043A\u0432\u0438\u0434\u0430\u0446\u0438\u044F \u043F\u0440\u0438 ",
                     fmt(p.liquidationPrice),
                     danger ? " \u2014 \u0441\u043E\u0432\u0441\u0435\u043C \u0431\u043B\u0438\u0437\u043A\u043E!" : ""
                   ] }),
+                  (() => {
+                    const dist = Math.max(0, (price - p.liquidationPrice) / p.liquidationPrice);
+                    const safePct = Math.min(100, dist / 0.5 * 100);
+                    return /* @__PURE__ */ jsx("div", { style: { height: 4, borderRadius: 2, background: C.surface2, overflow: "hidden", marginBottom: 8 }, children: /* @__PURE__ */ jsx("div", { style: { height: "100%", width: `${safePct}%`, background: danger ? C.red : safePct < 40 ? C.gold : C.green } }) });
+                  })(),
                   /* @__PURE__ */ jsx("button", { onClick: () => closeLeveragedPosition(p.id), style: { width: "100%", padding: 9, borderRadius: 9, border: `1px solid ${C.border}`, background: C.surface2, color: C.ink, fontWeight: 600, fontSize: 12 }, children: "\u0417\u0430\u043A\u0440\u044B\u0442\u044C \u043F\u043E\u0437\u0438\u0446\u0438\u044E" })
                 ] }, p.id);
               })
@@ -5889,12 +6227,16 @@ function MarketSandbox() {
               /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 24, fontWeight: 700, margin: "4px 0", color: taxOwed > 100 ? C.red : C.ink }, children: fmt(taxOwed) }),
               taxOwed > 100 ? (() => {
                 const secLeft = Math.max(0, 600 - Math.floor((Date.now() - (taxOverdueSince || Date.now())) / 1e3));
-                return /* @__PURE__ */ jsxs("div", { style: { fontSize: 11.5, color: C.red, marginBottom: 10 }, children: [
-                  "\u0414\u043E\u043B\u0433 \u0431\u043E\u043B\u044C\u0448\u0435 $100 \u2014 \u0435\u0441\u043B\u0438 \u043F\u0440\u043E\u0432\u0438\u0441\u0438\u0442 \u0435\u0449\u0451 ",
-                  Math.floor(secLeft / 60),
-                  ":",
-                  String(secLeft % 60).padStart(2, "0"),
-                  ", \u0434\u0435\u043B\u043E \u043F\u0435\u0440\u0435\u0434\u0430\u0434\u0443\u0442 \u0432 \u0438\u043D\u0441\u043F\u0435\u043A\u0446\u0438\u044E \u0438 \u0432\u044B\u043F\u0438\u0448\u0443\u0442 \u0448\u0442\u0440\u0430\u0444"
+                const elapsedPct = Math.min(100, (600 - secLeft) / 600 * 100);
+                return /* @__PURE__ */ jsxs("div", { style: { marginBottom: 10 }, children: [
+                  /* @__PURE__ */ jsxs("div", { style: { fontSize: 11.5, color: C.red, marginBottom: 6 }, children: [
+                    "\u0414\u043E\u043B\u0433 \u0431\u043E\u043B\u044C\u0448\u0435 $100 \u2014 \u0435\u0441\u043B\u0438 \u043F\u0440\u043E\u0432\u0438\u0441\u0438\u0442 \u0435\u0449\u0451 ",
+                    Math.floor(secLeft / 60),
+                    ":",
+                    String(secLeft % 60).padStart(2, "0"),
+                    ", \u0434\u0435\u043B\u043E \u043F\u0435\u0440\u0435\u0434\u0430\u0434\u0443\u0442 \u0432 \u0438\u043D\u0441\u043F\u0435\u043A\u0446\u0438\u044E \u0438 \u0432\u044B\u043F\u0438\u0448\u0443\u0442 \u0448\u0442\u0440\u0430\u0444"
+                  ] }),
+                  /* @__PURE__ */ jsx("div", { style: { height: 5, borderRadius: 3, background: C.surface2, overflow: "hidden" }, children: /* @__PURE__ */ jsx("div", { style: { height: "100%", width: `${elapsedPct}%`, background: C.red } }) })
                 ] });
               })() : /* @__PURE__ */ jsx("div", { style: { fontSize: 11.5, color: C.inkDim, marginBottom: 10 }, children: "\u041F\u0440\u043E\u0431\u043B\u0435\u043C\u044B \u043D\u0430\u0447\u0438\u043D\u0430\u044E\u0442\u0441\u044F \u0442\u043E\u043B\u044C\u043A\u043E \u043F\u0440\u0438 \u0434\u043E\u043B\u0433\u0435 \u0431\u043E\u043B\u044C\u0448\u0435 $100, \u043F\u043E\u0432\u0438\u0441\u0435\u0432\u0448\u0435\u043C \u0434\u043E\u043B\u044C\u0448\u0435 10 \u043C\u0438\u043D\u0443\u0442" }),
               /* @__PURE__ */ jsxs("button", { onClick: () => payTax(taxOwed), disabled: taxOwed <= 0 || getAccountBalance(resolvedPayFrom) <= 0, style: { width: "100%", padding: 11, borderRadius: 10, border: "none", fontWeight: 700, background: taxOwed > 0 && getAccountBalance(resolvedPayFrom) > 0 ? C.gold : C.surface2, color: taxOwed > 0 && getAccountBalance(resolvedPayFrom) > 0 ? "#161207" : C.inkFaint }, children: [
@@ -5936,7 +6278,8 @@ function MarketSandbox() {
               fmt(Math.round(pledgedCollateralTotal())),
               ", \u0441\u0432\u043E\u0431\u043E\u0434\u043D\u043E: ",
               fmt(Math.round(availablePropertyCollateral())),
-              "."
+              ".",
+              totalPropertyCollateralValue() > 0 && /* @__PURE__ */ jsx("div", { style: { height: 5, borderRadius: 3, background: C.surface2, overflow: "hidden", marginTop: 8 }, children: /* @__PURE__ */ jsx("div", { style: { height: "100%", width: `${Math.min(100, pledgedCollateralTotal() / totalPropertyCollateralValue() * 100)}%`, background: C.violet } }) })
             ] }),
             (() => {
               const payOptions = [
@@ -5996,6 +6339,28 @@ function MarketSandbox() {
           ] }),
           cabinetSubTab === "banks" && /* @__PURE__ */ jsx("div", { children: !focusedBankId ? /* @__PURE__ */ jsxs(Fragment, { children: [
             /* @__PURE__ */ jsx("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 12, marginBottom: 14, fontSize: 11.5, color: C.inkDim, lineHeight: 1.6 }, children: "\u0423 \u043A\u0430\u0436\u0434\u043E\u0433\u043E \u0431\u0430\u043D\u043A\u0430 \u0441\u0432\u043E\u0439 \u043B\u0438\u0447\u043D\u044B\u0439 \u043A\u0430\u0431\u0438\u043D\u0435\u0442 \u2014 \u0441\u0447\u0451\u0442, \u043F\u0435\u0440\u0435\u0432\u043E\u0434\u044B, \u043A\u0440\u0435\u0434\u0438\u0442 \u0438 \u0432\u043A\u043B\u0430\u0434 \u043D\u0430 \u0441\u0432\u043E\u0438\u0445 \u0443\u0441\u043B\u043E\u0432\u0438\u044F\u0445. \u041E\u0442\u043A\u0440\u043E\u0439 \u0441\u0447\u0451\u0442 \u0438 \u0437\u0430\u0439\u0434\u0438 \u0432\u043D\u0443\u0442\u0440\u044C." }),
+            /* @__PURE__ */ jsxs("div", { style: { background: "linear-gradient(135deg, #1c1530, #0c0c16)", border: `1px solid ${C.violet}55`, borderRadius: 14, padding: 16, marginBottom: 12 }, children: [
+              /* @__PURE__ */ jsxs("button", { onClick: () => {
+                setActiveTab("inspection");
+                setIpTab("account");
+              }, style: { width: "100%", background: "none", border: "none", padding: 0, textAlign: "left", display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }, children: [
+                /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "center", gap: 10 }, children: [
+                  /* @__PURE__ */ jsx("div", { style: { width: 34, height: 34, borderRadius: 9, background: C.violetSoft, color: C.violet, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }, children: /* @__PURE__ */ jsx(Briefcase, { size: 16 }) }),
+                  /* @__PURE__ */ jsxs("div", { children: [
+                    /* @__PURE__ */ jsx("div", { style: { fontWeight: 700, fontSize: 15, color: C.ink }, children: "\u0421\u0447\u0451\u0442 \u0418\u041F" }),
+                    /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint }, children: "\u0411\u0438\u0437\u043D\u0435\u0441" })
+                  ] })
+                ] }),
+                /* @__PURE__ */ jsxs("div", { style: { textAlign: "right" }, children: [
+                  /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 15, fontWeight: 700, color: C.ink }, children: fmt(ipCash) }),
+                  /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: taxOwed > 0 ? C.red : C.green }, children: taxOwed > 0 ? `\u041D\u0430\u043B\u043E\u0433 ${fmt(taxOwed)}` : "\u0411\u0435\u0437 \u0437\u0430\u0434\u043E\u043B\u0436\u0435\u043D\u043D\u043E\u0441\u0442\u0435\u0439" })
+                ] })
+              ] }),
+              /* @__PURE__ */ jsx("button", { onClick: () => {
+                setActiveTab("inspection");
+                setIpTab("account");
+              }, style: { width: "100%", padding: 9, borderRadius: 9, border: `1px solid ${C.violet}55`, background: "transparent", color: C.violet, fontWeight: 600, fontSize: 12, marginTop: 10 }, children: "\u041B\u0438\u0447\u043D\u044B\u0439 \u043A\u0430\u0431\u0438\u043D\u0435\u0442 \u2192" })
+            ] }),
             (() => {
               const payOptions = [
                 ...BANK_ACCOUNTS.filter((b) => bankAccounts[b.id] && !bankAccounts[b.id].frozen).map((b) => ({ id: b.id, label: `${b.name} (\u2022\u2022\u2022\u2022 ${bankAccounts[b.id].cardLast4})` })),
@@ -6103,6 +6468,17 @@ function MarketSandbox() {
                 Math.max(0, Math.ceil((greyAccount.nextSavingsAt - Date.now()) / 6e4)),
                 " \u043C\u0438\u043D"
               ] }),
+              greySuspicion > 5 && (() => {
+                const susPct = Math.min(100, greySuspicion / 50 * 100);
+                const susColor = greySuspicion >= 40 ? C.red : greySuspicion >= 20 ? C.gold : "#8b8bd8";
+                return /* @__PURE__ */ jsxs("div", { style: { marginBottom: 10 }, children: [
+                  /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 10, color: C.inkDim, marginBottom: 3 }, children: [
+                    /* @__PURE__ */ jsx("span", { children: "\u0412\u043D\u0438\u043C\u0430\u043D\u0438\u0435 \u0444\u0438\u043D\u043C\u043E\u043D\u0438\u0442\u043E\u0440\u0438\u043D\u0433\u0430" }),
+                    /* @__PURE__ */ jsx("span", { style: { color: susColor }, children: Math.round(greySuspicion) })
+                  ] }),
+                  /* @__PURE__ */ jsx("div", { style: { height: 5, borderRadius: 3, background: C.surface2, overflow: "hidden" }, children: /* @__PURE__ */ jsx("div", { style: { height: "100%", width: `${susPct}%`, background: susColor } }) })
+                ] });
+              })(),
               /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8, marginBottom: 8 }, children: [
                 /* @__PURE__ */ jsx(
                   "input",
@@ -6337,6 +6713,8 @@ function MarketSandbox() {
               bonds.filter((bd) => bd.bankId === b.id).map((bd) => {
                 const matured = Date.now() >= bd.maturesAt;
                 const secLeft = Math.max(0, Math.ceil((bd.maturesAt - Date.now()) / 1e3));
+                const totalSec = b.bond.termSeconds;
+                const maturedPct = Math.min(100, Math.max(0, (totalSec - secLeft) / totalSec * 100));
                 return /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 14, marginBottom: 10 }, children: [
                   /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 6 }, children: [
                     /* @__PURE__ */ jsxs("span", { style: { color: C.inkDim }, children: [
@@ -6345,6 +6723,7 @@ function MarketSandbox() {
                     ] }),
                     /* @__PURE__ */ jsx("span", { style: { color: matured ? C.green : C.inkDim }, children: matured ? "\u041F\u043E\u0433\u0430\u0448\u0435\u043D\u0438\u0435 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E" : `\u0434\u043E \u043F\u043E\u0433\u0430\u0448\u0435\u043D\u0438\u044F ${Math.floor(secLeft / 60)}:${String(secLeft % 60).padStart(2, "0")}` })
                   ] }),
+                  !matured && /* @__PURE__ */ jsx("div", { style: { height: 4, borderRadius: 2, background: C.surface2, overflow: "hidden", marginBottom: 8 }, children: /* @__PURE__ */ jsx("div", { style: { height: "100%", width: `${maturedPct}%`, background: C.gold } }) }),
                   /* @__PURE__ */ jsx("button", { onClick: () => redeemBond(bd.id), style: { width: "100%", padding: 9, borderRadius: 9, border: "none", fontWeight: 700, fontSize: 12, background: matured ? C.green : C.surface2, color: matured ? "#06210f" : C.inkDim }, children: matured ? `\u041F\u043E\u0433\u0430\u0441\u0438\u0442\u044C \xB7 +${b.bond.totalReturnPct}%` : "\u041F\u043E\u0433\u0430\u0441\u0438\u0442\u044C \u0434\u043E\u0441\u0440\u043E\u0447\u043D\u043E (\u221210%)" })
                 ] }, bd.id);
               }),
@@ -6408,6 +6787,24 @@ function MarketSandbox() {
                       ] })
                     ] }),
                     /* @__PURE__ */ jsx("div", { style: { height: 4, borderRadius: 2, background: C.surface2, overflow: "hidden" }, children: /* @__PURE__ */ jsx("div", { style: { height: "100%", width: `${Math.min(100, card.warmth / MULE_WARMUP_TARGET * 100)}%`, background: card.warmth >= MULE_WARMUP_TARGET ? C.green : C.gold } }) })
+                  ] }),
+                  b && /* @__PURE__ */ jsxs("div", { style: { margin: "8px 0" }, children: [
+                    /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 10, color: C.inkDim, marginBottom: 3 }, children: [
+                      /* @__PURE__ */ jsx("span", { children: "\u041E\u0431\u043E\u0440\u043E\u0442" }),
+                      /* @__PURE__ */ jsxs("span", { children: [
+                        fmt(card.turnoverUsed),
+                        " / ",
+                        fmt(b.turnoverCap)
+                      ] })
+                    ] }),
+                    /* @__PURE__ */ jsx("div", { style: { height: 4, borderRadius: 2, background: C.surface2, overflow: "hidden" }, children: /* @__PURE__ */ jsx("div", { style: { height: "100%", width: `${Math.min(100, card.turnoverUsed / b.turnoverCap * 100)}%`, background: card.turnoverUsed / b.turnoverCap >= 0.85 ? C.red : C.violet } }) }),
+                    /* @__PURE__ */ jsxs("div", { style: { fontSize: 10, color: C.inkFaint, marginTop: 4 }, children: [
+                      "\u0420\u0430\u0437\u043E\u0432\u044B\u0439 \u043B\u0438\u043C\u0438\u0442 ",
+                      fmt(b.singleLimit),
+                      " \u2014 \u0432\u044B\u0448\u0435 \u043D\u0435\u0433\u043E \u043A\u043E\u043C\u0438\u0441\u0441\u0438\u044F ",
+                      Math.round(b.overLimitFee * 100),
+                      "%"
+                    ] })
                   ] }),
                   /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8, marginBottom: 8 }, children: [
                     /* @__PURE__ */ jsx(
@@ -6484,22 +6881,33 @@ function MarketSandbox() {
           ] })
         ] })
       ] }),
-      /* @__PURE__ */ jsx("div", { style: { display: "flex", borderTop: `1px solid ${C.border}`, background: C.surface }, children: [
-        { key: "market", label: "\u0420\u044B\u043D\u043E\u043A", icon: TrendingUp },
-        { key: "news", label: "\u0421\u043E\u0446\u0441\u0435\u0442\u044C", icon: MessageCircle },
-        { key: "job", label: "\u0420\u0430\u0431\u043E\u0442\u0430", icon: Briefcase },
-        { key: "inspection", label: "\u0418\u041F", icon: ShieldAlert },
-        { key: "company", label: "\u0411\u0438\u0437\u043D\u0435\u0441", icon: Building2 },
-        { key: "darkshop", label: "\u0414\u0430\u0440\u043A\u043D\u0435\u0442", icon: EyeOff },
-        { key: "cabinet", label: "\u041A\u0430\u0431\u0438\u043D\u0435\u0442", icon: CreditCard }
-      ].map((t) => {
-        const Icon = t.icon;
-        const active = activeTab === t.key;
-        return /* @__PURE__ */ jsxs("button", { onClick: () => setActiveTab(t.key), style: { flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 3, padding: "8px 0 9px", background: "none", border: "none", color: active ? C.gold : C.inkFaint }, children: [
-          /* @__PURE__ */ jsx(Icon, { size: 17 }),
-          /* @__PURE__ */ jsx("span", { style: { fontSize: 9, fontWeight: active ? 700 : 500 }, children: t.label })
-        ] }, t.key);
-      }) }),
+      /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "flex-end", borderTop: `1px solid ${C.border}`, background: C.surface, position: "relative" }, children: [
+        [
+          { key: "market", label: "\u0420\u044B\u043D\u043E\u043A", icon: TrendingUp },
+          { key: "news", label: "\u0421\u043E\u0446\u0441\u0435\u0442\u044C", icon: MessageCircle },
+          { key: "job", label: "\u0420\u0430\u0431\u043E\u0442\u0430", icon: Briefcase }
+        ].map((t) => {
+          const Icon = t.icon;
+          const active = activeTab === t.key;
+          return /* @__PURE__ */ jsxs("button", { onClick: () => setActiveTab(t.key), style: { flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 3, padding: "8px 0 9px", background: "none", border: "none", color: active ? C.gold : C.inkFaint }, children: [
+            /* @__PURE__ */ jsx(Icon, { size: 17 }),
+            /* @__PURE__ */ jsx("span", { style: { fontSize: 9, fontWeight: active ? 700 : 500 }, children: t.label })
+          ] }, t.key);
+        }),
+        /* @__PURE__ */ jsx("div", { style: { flex: "0 0 64px", display: "flex", justifyContent: "center" }, children: /* @__PURE__ */ jsx("button", { onClick: () => setActiveTab("transfers"), style: { width: 50, height: 50, borderRadius: "50%", border: `3px solid ${C.bg}`, background: activeTab === "transfers" ? C.violet : `linear-gradient(135deg, ${C.violet}, #5B3FE0)`, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", marginTop: -20, boxShadow: "0 4px 14px rgba(124,92,252,0.45)" }, children: /* @__PURE__ */ jsx(ArrowLeftRight, { size: 20 }) }) }),
+        [
+          { key: "company", label: "\u0411\u0438\u0437\u043D\u0435\u0441", icon: Building2 },
+          { key: "darkshop", label: "\u0414\u0430\u0440\u043A\u043D\u0435\u0442", icon: EyeOff },
+          { key: "cabinet", label: "\u041A\u0430\u0431\u0438\u043D\u0435\u0442", icon: CreditCard }
+        ].map((t) => {
+          const Icon = t.icon;
+          const active = activeTab === t.key;
+          return /* @__PURE__ */ jsxs("button", { onClick: () => setActiveTab(t.key), style: { flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 3, padding: "8px 0 9px", background: "none", border: "none", color: active ? C.gold : C.inkFaint }, children: [
+            /* @__PURE__ */ jsx(Icon, { size: 17 }),
+            /* @__PURE__ */ jsx("span", { style: { fontSize: 9, fontWeight: active ? 700 : 500 }, children: t.label })
+          ] }, t.key);
+        })
+      ] }),
       selectedId && selectedCompany && /* @__PURE__ */ jsx("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 50 }, onClick: () => setSelectedId(null), children: /* @__PURE__ */ jsxs("div", { onClick: (e) => e.stopPropagation(), style: { width: "100%", maxWidth: 430, background: C.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, maxHeight: "85vh", overflowY: "auto" }, children: [
         /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }, children: [
           /* @__PURE__ */ jsxs("div", { children: [
