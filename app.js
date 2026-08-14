@@ -579,6 +579,14 @@ function warehouseEfficiency(tier, staffLevel, equipmentLevel, condition) {
   const equipRatio = clamp01(equipmentLevel / tier.maxEquipment, 0, 1);
   return clamp01(tier.effFloor + tier.effStaffW * staffRatio + tier.effEquipW * equipRatio + tier.effCondW * (condition / 100), 0.15, 1.15);
 }
+var WAREHOUSE_GUARANTEE_BASE = 2e4;
+function warehouseSubsidyMult(perf) {
+  return clamp01((perf + 60) / 60, 0, 1);
+}
+function warehouseGuaranteedFloor(tier, perf) {
+  const scale = tier.throughputCapacity / WAREHOUSE_TIERS.medium.throughputCapacity;
+  return Math.round(WAREHOUSE_GUARANTEE_BASE * scale * warehouseSubsidyMult(perf));
+}
 function estimateWarehouseCycle(w, warehouseList, companies, reputation) {
   const tier = WAREHOUSE_TIERS[w.tierId];
   if (!tier) return { processedTurnover: 0, grossRevenue: 0, rate: 0 };
@@ -593,8 +601,11 @@ function estimateWarehouseCycle(w, warehouseList, companies, reputation) {
   const baseTurnover = Math.min(availableToWarehouse, tier.throughputCapacity);
   const efficiency = warehouseEfficiency(tier, w.staffLevel, w.equipmentLevel, w.condition);
   const processedTurnover = baseTurnover * efficiency;
-  const grossRevenue = Math.round(processedTurnover * rate * WAREHOUSE_CYCLE_HOUR_FRACTION);
-  return { processedTurnover, grossRevenue, rate };
+  const marketRevenue = Math.round(processedTurnover * rate * WAREHOUSE_CYCLE_HOUR_FRACTION);
+  const floor = warehouseGuaranteedFloor(tier, zzonePerf);
+  const subsidy = Math.max(0, floor - marketRevenue);
+  const grossRevenue = marketRevenue + subsidy;
+  return { processedTurnover, grossRevenue, marketRevenue, subsidy, floor, rate };
 }
 var MANAGER_SALARY = 5e3;
 var MANAGER_SALARY_CYCLE_MS = 30 * 60 * 1e3;
@@ -3005,7 +3016,10 @@ function MarketSandbox() {
         const baseTurnover = Math.min(availableToWarehouse, tier.throughputCapacity);
         const efficiency = warehouseEfficiency(tier, w.staffLevel, w.equipmentLevel, w.condition);
         const processedTurnover = baseTurnover * efficiency;
-        const grossRevenue = Math.round(processedTurnover * rate * WAREHOUSE_CYCLE_HOUR_FRACTION);
+        const marketRevenue = Math.round(processedTurnover * rate * WAREHOUSE_CYCLE_HOUR_FRACTION);
+        const floor = warehouseGuaranteedFloor(tier, zzonePerf);
+        const subsidy = Math.max(0, floor - marketRevenue);
+        const grossRevenue = marketRevenue + subsidy;
         const wagesThisCycle = Math.round(w.staffLevel * tier.wagePerStaff * WAREHOUSE_CYCLE_HOUR_FRACTION * 100) / 100;
         const opex = (tier.electricity + w.transportLevel * tier.transportUpkeep + w.equipmentLevel * tier.equipmentUpkeep + tier.misc) * WAREHOUSE_CYCLE_HOUR_FRACTION;
         const available = ipCashRef.current + ipCashDelta;
@@ -3015,7 +3029,8 @@ function MarketSandbox() {
           setQuarterRevenue((r) => r + grossRevenue);
           trackIpTurnover(grossRevenue);
         }
-        logTx(`\u0421\u043A\u043B\u0430\u0434 ZZONE \xB7 \xAB${w.name}\xBB: \u0432\u044B\u0440\u0443\u0447\u043A\u0430 \u043D\u0430 \u0441\u0447\u0451\u0442 \u0441\u043A\u043B\u0430\u0434\u0430`, grossRevenue, "in");
+        logTx(`\u0421\u043A\u043B\u0430\u0434 ZZONE \xB7 \xAB${w.name}\xBB: \u0432\u044B\u0440\u0443\u0447\u043A\u0430 \u043D\u0430 \u0441\u0447\u0451\u0442 \u0441\u043A\u043B\u0430\u0434\u0430`, marketRevenue, "in");
+        if (subsidy > 0) logTx(`\u0421\u043A\u043B\u0430\u0434 ZZONE \xB7 \xAB${w.name}\xBB: \u0434\u043E\u043F\u043B\u0430\u0442\u0430 \u0434\u043E \u0433\u0430\u0440\u0430\u043D\u0442\u0438\u0440\u043E\u0432\u0430\u043D\u043D\u043E\u0433\u043E \u043C\u0438\u043D\u0438\u043C\u0443\u043C\u0430`, subsidy, "in");
         if (paidOpex > 0) logTx(`\u0421\u043A\u043B\u0430\u0434 ZZONE \xB7 \xAB${w.name}\xBB: \u044D\u043A\u0441\u043F\u043B\u0443\u0430\u0442\u0430\u0446\u0438\u044F/\u0442\u0440\u0430\u043D\u0441\u043F\u043E\u0440\u0442/\u043E\u0431\u043E\u0440\u0443\u0434\u043E\u0432\u0430\u043D\u0438\u0435`, paidOpex, "out");
         let newWageDue = Math.round((w.wageDue + wagesThisCycle) * 100) / 100;
         let condition = w.condition;
@@ -3042,7 +3057,7 @@ function MarketSandbox() {
           payoutBalance: Math.round(((w.payoutBalance || 0) + grossRevenue) * 100) / 100,
           cyclesRun: w.cyclesRun + 1,
           nextCycleAt: Date.now() + WAREHOUSE_CYCLE_MS,
-          lastCycleStats: { grossRevenue, wagesThisCycle, opex: paidOpex, efficiency, rate, processedTurnover: Math.round(processedTurnover), availableToWarehouse: Math.round(availableToWarehouse) }
+          lastCycleStats: { grossRevenue, marketRevenue, subsidy, floor, wagesThisCycle, opex: paidOpex, efficiency, rate, processedTurnover: Math.round(processedTurnover), availableToWarehouse: Math.round(availableToWarehouse) }
         };
       });
       if (ipCashDelta !== 0) setIpCash((c) => Math.max(0, c + ipCashDelta));
@@ -3617,22 +3632,22 @@ function MarketSandbox() {
     setTimeout(saveGame, 50);
   };
   const buyWarehouseTransport = (warehouseId) => {
-    const wh = warehouses.find((w) => w.id === warehouseId);
+    const wh = warehousesRef.current.find((w) => w.id === warehouseId);
     if (!wh) return;
     const tier = WAREHOUSE_TIERS[wh.tierId];
-    if (wh.transportLevel >= tier.maxTransport || ipCash < tier.transportBuyCost) return;
-    setIpCash((c) => c - tier.transportBuyCost);
-    setWarehouses((prev) => prev.map((w) => w.id === warehouseId ? { ...w, transportLevel: w.transportLevel + 1 } : w));
+    if (wh.transportLevel >= tier.maxTransport || ipCashRef.current < tier.transportBuyCost) return;
+    setIpCash((c) => c >= tier.transportBuyCost ? c - tier.transportBuyCost : c);
+    setWarehouses((prev) => prev.map((w) => w.id === warehouseId && w.transportLevel < tier.maxTransport ? { ...w, transportLevel: (w.transportLevel || 0) + 1 } : w));
     logTx(`\u0421\u043A\u043B\u0430\u0434 ZZONE: \u0442\u0440\u0430\u043D\u0441\u043F\u043E\u0440\u0442 \xB7 ${wh.name}`, tier.transportBuyCost, "out");
     setTimeout(saveGame, 50);
   };
   const buyWarehouseEquipment = (warehouseId) => {
-    const wh = warehouses.find((w) => w.id === warehouseId);
+    const wh = warehousesRef.current.find((w) => w.id === warehouseId);
     if (!wh) return;
     const tier = WAREHOUSE_TIERS[wh.tierId];
-    if (wh.equipmentLevel >= tier.maxEquipment || ipCash < tier.equipmentBuyCost) return;
-    setIpCash((c) => c - tier.equipmentBuyCost);
-    setWarehouses((prev) => prev.map((w) => w.id === warehouseId ? { ...w, equipmentLevel: w.equipmentLevel + 1 } : w));
+    if (wh.equipmentLevel >= tier.maxEquipment || ipCashRef.current < tier.equipmentBuyCost) return;
+    setIpCash((c) => c >= tier.equipmentBuyCost ? c - tier.equipmentBuyCost : c);
+    setWarehouses((prev) => prev.map((w) => w.id === warehouseId && w.equipmentLevel < tier.maxEquipment ? { ...w, equipmentLevel: (w.equipmentLevel || 0) + 1 } : w));
     logTx(`\u0421\u043A\u043B\u0430\u0434 ZZONE: \u043E\u0431\u043E\u0440\u0443\u0434\u043E\u0432\u0430\u043D\u0438\u0435 \xB7 ${wh.name}`, tier.equipmentBuyCost, "out");
     setTimeout(saveGame, 50);
   };
@@ -7250,6 +7265,10 @@ function MarketSandbox() {
                   /* @__PURE__ */ jsxs("div", { children: [
                     /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkDim }, children: "\u0422\u043E\u0432\u0430\u0440\u0430 \u043F\u0440\u043E\u0448\u043B\u043E \u0432\u0441\u0435\u0433\u043E" }),
                     /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 15, fontWeight: 700 }, children: fmt(w.totalProcessedTurnover || 0) })
+                  ] }),
+                  /* @__PURE__ */ jsxs("div", { children: [
+                    /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkDim }, children: "\u0413\u0430\u0440\u0430\u043D\u0442\u0438\u044F ZZONE \u0437\u0430 \u0446\u0438\u043A\u043B" }),
+                    /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 15, fontWeight: 700, color: (stats ? stats.floor : estCycle.floor) > 0 ? C.gold : C.inkFaint }, children: fmt(stats ? stats.floor : estCycle.floor) })
                   ] })
                 ] }),
                 stats ? /* @__PURE__ */ jsxs(Fragment, { children: [
@@ -7266,6 +7285,13 @@ function MarketSandbox() {
                       /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkDim }, children: "\u0427\u0438\u0441\u0442\u0430\u044F \u043F\u0440\u0438\u0431\u044B\u043B\u044C" }),
                       /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 15, fontWeight: 700, color: netLastCycle >= 0 ? C.green : C.red }, children: fmt(netLastCycle) })
                     ] })
+                  ] }),
+                  stats.subsidy > 0 && /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.gold, marginBottom: 10 }, children: [
+                    "\u26A1 \u0412\u043A\u043B\u044E\u0447\u0430\u0435\u0442 \u0434\u043E\u043F\u043B\u0430\u0442\u0443 ZZONE \u0434\u043E \u0433\u0430\u0440\u0430\u043D\u0442\u0438\u0440\u043E\u0432\u0430\u043D\u043D\u043E\u0433\u043E \u043C\u0438\u043D\u0438\u043C\u0443\u043C\u0430: +",
+                    fmt(stats.subsidy),
+                    " (\u0440\u044B\u043D\u043E\u043A: ",
+                    fmt(stats.marketRevenue),
+                    ")"
                   ] }),
                   /* @__PURE__ */ jsxs("div", { style: { marginBottom: 4 }, children: [
                     /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 10.5, color: C.inkDim, marginBottom: 3 }, children: [
