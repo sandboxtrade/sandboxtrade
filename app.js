@@ -451,8 +451,29 @@ var FACTORY_UNIT_COST = { clothes: 4, accessories: 7, phones: 16, laptops: 22 };
 var FACTORY_CYCLE_MS = 30 * 60 * 1e3;
 var FACTORY_ORDER_WINDOW_MS = 60 * 60 * 1e3;
 var FACTORY_ORDER_POOL_SIZE = 5;
-var FACTORY_SECONDS_PER_UNIT = 10;
+var FACTORY_SECONDS_PER_UNIT = 5;
 var FACTORY_SHOP_TRANSFER_FEE_PCT = 0.18;
+var FACTORY_EQUIPMENT_TIERS = [
+  { level: 0, secPerUnit: 5, costMult: 1 },
+  { level: 1, secPerUnit: 4.5, costMult: 1.08, buyCostMult: 0.4 },
+  { level: 2, secPerUnit: 4, costMult: 1.18, buyCostMult: 0.7 },
+  { level: 3, secPerUnit: 3.5, costMult: 1.3, buyCostMult: 1.1 }
+];
+function factoryEquipmentTier(level) {
+  return FACTORY_EQUIPMENT_TIERS[Math.max(0, Math.min(FACTORY_EQUIPMENT_TIERS.length - 1, level || 0))];
+}
+function factorySecPerUnit(equipmentLevel) {
+  return factoryEquipmentTier(equipmentLevel).secPerUnit;
+}
+function factoryEffectiveUnitCost(category, equipmentLevel) {
+  const base = FACTORY_UNIT_COST[category] || 0;
+  return Math.round(base * factoryEquipmentTier(equipmentLevel).costMult * 100) / 100;
+}
+function factoryEquipmentBuyCost(category, nextLevel) {
+  const base = FACTORY_EQUIPMENT_COST[category] || 0;
+  const tier = factoryEquipmentTier(nextLevel);
+  return Math.round(base * (tier.buyCostMult || 0));
+}
 var FACTORY_WAREHOUSE_CAPACITY_BONUS = { medium: 200, large: 500 };
 function warehouseFactoryCapacityBonus(warehouseList) {
   return (warehouseList || []).reduce((sum, w) => sum + (FACTORY_WAREHOUSE_CAPACITY_BONUS[w.tierId] || 0), 0);
@@ -1126,6 +1147,7 @@ function MarketSandbox() {
   const [job, setJob] = useState(null);
   const [jobHistory, setJobHistory] = useState({});
   const [jobCooldown, setJobCooldown] = useState(0);
+  const [warehouseTick, setWarehouseTick] = useState(0);
   const [taxOwed, setTaxOwed] = useState(0);
   const [taxOverdueSince, setTaxOverdueSince] = useState(null);
   const [taxHistory, setTaxHistory] = useState([]);
@@ -1722,7 +1744,7 @@ function MarketSandbox() {
       const { stock, avgCost, listedPrice, ...rest } = s;
       return { ...rest, categories: cats, orders: (s.orders || []).map((o) => o.category ? o : { ...o, category: "accessories" }) };
     }) : []);
-    setFactories(Array.isArray(data.factories) ? data.factories : []);
+    setFactories(Array.isArray(data.factories) ? data.factories.map((f) => f.equipmentLevel == null ? { ...f, equipmentLevel: 0 } : f) : []);
     setWarehouses(Array.isArray(data.warehouses) ? data.warehouses : []);
     setIpCash(typeof data.ipCash === "number" ? data.ipCash : 0);
     setIpTaxOwed(typeof data.ipTaxOwed === "number" ? data.ipTaxOwed : 0);
@@ -2296,6 +2318,11 @@ function MarketSandbox() {
     const id = setInterval(() => setJobCooldown((s) => Math.max(0, s - 1)), 1e3);
     return () => clearInterval(id);
   }, [jobCooldown]);
+  useEffect(() => {
+    if (!loaded) return;
+    const id = setInterval(() => setWarehouseTick((t) => t + 1), 1e4);
+    return () => clearInterval(id);
+  }, [loaded]);
   useEffect(() => {
     if (!loaded) return;
     const id = setInterval(() => {
@@ -3403,6 +3430,7 @@ function MarketSandbox() {
       line: "small20",
       category,
       qualityTier: "standard",
+      equipmentLevel: 0,
       stock: 0,
       production: null,
       totalProduced: 0,
@@ -3429,11 +3457,42 @@ function MarketSandbox() {
     const room = effCapacity - factory.stock;
     const targetUnits = Math.max(1, Math.min(room, Math.round(Number(units) || 0)));
     if (targetUnits <= 0) return;
-    const durationMs = targetUnits * FACTORY_SECONDS_PER_UNIT * 1e3;
+    const secPerUnit = factorySecPerUnit(factory.equipmentLevel);
+    const durationMs = targetUnits * secPerUnit * 1e3;
     setFactories((prev) => prev.map((f) => f.id === factoryId ? {
       ...f,
-      production: { targetUnits, startedAt: Date.now(), readyAt: Date.now() + durationMs }
+      production: { targetUnits, secPerUnit, startedAt: Date.now(), readyAt: Date.now() + durationMs }
     } : f));
+    setTimeout(saveGame, 50);
+  };
+  const cancelFactoryProduction = (factoryId) => {
+    const factory = factories.find((f) => f.id === factoryId);
+    if (!factory || !factory.production) return;
+    const line = FACTORY_LINES[factory.line];
+    const effCapacity = line.capacity + warehouseFactoryCapacityBonus(warehouses);
+    const { production } = factory;
+    const secPerUnit = production.secPerUnit || factorySecPerUnit(factory.equipmentLevel);
+    const elapsedSec = Math.max(0, (Date.now() - production.startedAt) / 1e3);
+    const completedUnits = Math.max(0, Math.min(production.targetUnits, Math.floor(elapsedSec / secPerUnit)));
+    const added = Math.max(0, Math.min(completedUnits, effCapacity - factory.stock));
+    setFactories((prev) => prev.map((f) => f.id === factoryId ? {
+      ...f,
+      stock: f.stock + added,
+      totalProduced: f.totalProduced + added,
+      production: null
+    } : f));
+    setTimeout(saveGame, 50);
+  };
+  const buyFactoryEquipment = (factoryId) => {
+    const factory = factories.find((f) => f.id === factoryId);
+    if (!factory) return;
+    const nextLevel = (factory.equipmentLevel || 0) + 1;
+    if (nextLevel >= FACTORY_EQUIPMENT_TIERS.length) return;
+    const cost = factoryEquipmentBuyCost(factory.category, nextLevel);
+    if (ipCash < cost) return;
+    setIpCash((c) => c - cost);
+    setFactories((prev) => prev.map((f) => f.id === factoryId ? { ...f, equipmentLevel: nextLevel } : f));
+    logTx(`\u041E\u0431\u043E\u0440\u0443\u0434\u043E\u0432\u0430\u043D\u0438\u0435 \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u0430 \xAB${factory.name}\xBB \xB7 \u0443\u0440\u043E\u0432\u0435\u043D\u044C ${nextLevel}`, cost, "out");
     setTimeout(saveGame, 50);
   };
   const respondToFactoryOrder = (factoryId, orderId, accept) => {
@@ -3473,7 +3532,7 @@ function MarketSandbox() {
     if (!cat) return;
     const qty = Math.max(0, Math.min(factory.stock, Math.round(Number(units) || 0)));
     if (qty <= 0) return;
-    const unitCost = FACTORY_UNIT_COST[factory.category];
+    const unitCost = factoryEffectiveUnitCost(factory.category, factory.equipmentLevel);
     const logisticsCost = Math.round(qty * unitCost * FACTORY_SHOP_TRANSFER_FEE_PCT);
     const src = resolvedPayFrom;
     const bal = getAccountBalance(src);
@@ -5089,6 +5148,7 @@ function MarketSandbox() {
         input{font-family:inherit;}
         button:focus-visible, input:focus-visible{outline:2px solid ${C.gold};outline-offset:2px;}
         @keyframes spin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}
+        @keyframes pulse{0%,100%{opacity:1;}50%{opacity:0.25;}}
         ::-webkit-scrollbar{width:0;height:0;}
       ` }),
     /* @__PURE__ */ jsx("div", { style: { width: "100%", maxWidth: 430, height: "100%", display: "flex", flexDirection: "column", overflow: "hidden", background: C.bg, color: C.ink, fontFamily: "'Space Grotesk', system-ui, sans-serif" }, children: !loaded ? /* @__PURE__ */ jsx("div", { style: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }, children: /* @__PURE__ */ jsx("div", { style: { color: C.inkDim, fontFamily: "'JetBrains Mono', monospace", fontSize: 13, letterSpacing: 1 }, children: "\u0417\u0410\u0413\u0420\u0423\u0417\u041A\u0410 \u0420\u042B\u041D\u041A\u0410\u2026" }) }) : !onboarded ? /* @__PURE__ */ jsxs("div", { style: { flex: 1, overflowY: "auto", padding: "24px 20px" }, children: [
@@ -6905,7 +6965,11 @@ function MarketSandbox() {
             if (f.id !== selectedBizId) return null;
             const line = FACTORY_LINES[f.line];
             const cat = PRODUCT_CATEGORIES.find((c) => c.id === f.category);
-            const unitCost = FACTORY_UNIT_COST[f.category];
+            const equipLevel = f.equipmentLevel || 0;
+            const unitCost = factoryEffectiveUnitCost(f.category, equipLevel);
+            const secPerUnit = factorySecPerUnit(equipLevel);
+            const nextTier = equipLevel + 1 < FACTORY_EQUIPMENT_TIERS.length ? FACTORY_EQUIPMENT_TIERS[equipLevel + 1] : null;
+            const nextTierCost = nextTier ? factoryEquipmentBuyCost(f.category, equipLevel + 1) : 0;
             const capacityBonus = warehouseFactoryCapacityBonus(warehouses);
             const effCapacity = line.capacity + capacityBonus;
             const stockPct = Math.round(f.stock / effCapacity * 100);
@@ -6944,8 +7008,21 @@ function MarketSandbox() {
                   " \u043A\u0430\u0436\u0434\u044B\u0435 ",
                   FACTORY_CYCLE_MS / 6e4,
                   " \u043C\u0438\u043D \xB7 \u0441\u043A\u043E\u0440\u043E\u0441\u0442\u044C ",
-                  FACTORY_SECONDS_PER_UNIT,
-                  " \u0441\u0435\u043A/\u0448\u0442"
+                  secPerUnit,
+                  " \u0441\u0435\u043A/\u0448\u0442 \xB7 \u043E\u0431\u043E\u0440\u0443\u0434\u043E\u0432\u0430\u043D\u0438\u0435 \u0443\u0440. ",
+                  equipLevel,
+                  "/",
+                  FACTORY_EQUIPMENT_TIERS.length - 1
+                ] }),
+                nextTier && /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, padding: "8px 12px", marginBottom: 10, gap: 8 }, children: [
+                  /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkDim }, children: [
+                    "\u0410\u043F\u0433\u0440\u0435\u0439\u0434 \u043E\u0431\u043E\u0440\u0443\u0434\u043E\u0432\u0430\u043D\u0438\u044F: ",
+                    nextTier.secPerUnit,
+                    " \u0441\u0435\u043A/\u0448\u0442 \xB7 \u0441\u0435\u0431\u0435\u0441\u0442\u043E\u0438\u043C\u043E\u0441\u0442\u044C +",
+                    Math.round((nextTier.costMult - 1) * 100),
+                    "%"
+                  ] }),
+                  /* @__PURE__ */ jsx("button", { onClick: () => buyFactoryEquipment(f.id), disabled: ipCash < nextTierCost, style: { padding: "7px 12px", borderRadius: 8, border: "none", fontWeight: 700, fontSize: 11.5, whiteSpace: "nowrap", background: ipCash >= nextTierCost ? C.gold : C.surface, color: ipCash >= nextTierCost ? "#161207" : C.inkFaint }, children: `+1 \xB7 ${fmt(nextTierCost)}` })
                 ] }),
                 f.production ? (() => {
                   const prodSecLeft = Math.max(0, Math.ceil((f.production.readyAt - Date.now()) / 1e3));
@@ -6953,7 +7030,8 @@ function MarketSandbox() {
                   const prodPct = Math.round((1 - prodSecLeft / prodTotalSec) * 100);
                   return /* @__PURE__ */ jsxs("div", { style: { background: C.surface2, border: `1px solid ${C.gold}55`, borderRadius: 10, padding: 12, marginBottom: 10 }, children: [
                     /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 11.5, marginBottom: 6 }, children: [
-                      /* @__PURE__ */ jsxs("span", { style: { fontWeight: 700 }, children: [
+                      /* @__PURE__ */ jsxs("span", { style: { fontWeight: 700, display: "flex", alignItems: "center", gap: 5 }, children: [
+                        /* @__PURE__ */ jsx("span", { style: { width: 6, height: 6, borderRadius: 3, background: C.gold, animation: "pulse 1.6s ease-in-out infinite" } }),
                         "\u041F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0438\u0442\u0441\u044F ",
                         f.production.targetUnits,
                         " \u0448\u0442"
@@ -6964,13 +7042,14 @@ function MarketSandbox() {
                         String(prodSecLeft % 60).padStart(2, "0")
                       ] })
                     ] }),
-                    /* @__PURE__ */ jsx("div", { style: { height: 5, borderRadius: 3, background: C.surface, overflow: "hidden" }, children: /* @__PURE__ */ jsx("div", { style: { height: "100%", width: `${prodPct}%`, background: C.gold } }) })
+                    /* @__PURE__ */ jsx("div", { style: { height: 5, borderRadius: 3, background: C.surface, overflow: "hidden" }, children: /* @__PURE__ */ jsx("div", { style: { height: "100%", width: `${prodPct}%`, background: C.gold, transition: "width 0.6s ease" } }) }),
+                    /* @__PURE__ */ jsx("button", { onClick: () => cancelFactoryProduction(f.id), style: { width: "100%", marginTop: 8, padding: 8, borderRadius: 8, border: `1px solid ${C.red}55`, background: "transparent", color: C.red, fontSize: 11.5, fontWeight: 600 }, children: "\u041E\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u043E" })
                   ] });
                 })() : (() => {
                   const room = effCapacity - f.stock;
                   const pu = factoryProductionInputs[f.id] ?? "";
                   const units = Math.max(0, Math.min(room, Math.round(Number(pu) || 0)));
-                  const durationSec = units * FACTORY_SECONDS_PER_UNIT;
+                  const durationSec = Math.round(units * secPerUnit);
                   const durationLabel = durationSec >= 60 ? `${Math.floor(durationSec / 60)} \u043C\u0438\u043D ${durationSec % 60 ? durationSec % 60 + " \u0441\u0435\u043A" : ""}`.trim() : `${durationSec} \u0441\u0435\u043A`;
                   return /* @__PURE__ */ jsxs("div", { style: { background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, padding: 12, marginBottom: 10 }, children: [
                     /* @__PURE__ */ jsx("div", { style: { fontSize: 11.5, fontWeight: 700, marginBottom: 8 }, children: "\u041D\u0430\u0447\u0430\u0442\u044C \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u043E" }),
@@ -7084,6 +7163,9 @@ function MarketSandbox() {
             const netLastCycle = stats ? stats.grossRevenue - stats.wagesThisCycle - stats.opex : null;
             const loadingPct = stats ? Math.round(stats.processedTurnover / tier.throughputCapacity * 100) : 0;
             const wageOverdue = w.wageDue > tier.wagePerStaff * 1.5;
+            void warehouseTick;
+            const cycleFraction = Math.min(1, Math.max(0, 1 - secLeft / (WAREHOUSE_CYCLE_MS / 1e3)));
+            const liveTurnover = stats ? Math.round(stats.processedTurnover * cycleFraction) : 0;
             return /* @__PURE__ */ jsxs("div", { style: { marginBottom: 22, paddingTop: 14, borderTop: `1px solid ${C.border}` }, children: [
               /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${w.condition < 30 ? C.red + "55" : C.gold + "55"}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
                 /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }, children: [
@@ -7103,6 +7185,19 @@ function MarketSandbox() {
                       fmt(w.wageDue)
                     ] })
                   ] })
+                ] }),
+                /* @__PURE__ */ jsxs("div", { style: { background: `${C.gold}0F`, border: `1px solid ${C.gold}33`, borderRadius: 10, padding: "10px 12px", marginBottom: 12 }, children: [
+                  /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }, children: [
+                    /* @__PURE__ */ jsxs("span", { style: { fontSize: 10, color: C.inkDim, textTransform: "uppercase", letterSpacing: 0.5 }, children: [
+                      "\u041E\u0431\u043E\u0440\u043E\u0442 \u0442\u0435\u043A\u0443\u0449\u0435\u0433\u043E \u0446\u0438\u043A\u043B\u0430 ",
+                      /* @__PURE__ */ jsx("span", { style: { display: "inline-block", width: 6, height: 6, borderRadius: 3, background: C.green, marginLeft: 5, marginRight: 2, animation: "pulse 1.6s ease-in-out infinite" } })
+                    ] }),
+                    /* @__PURE__ */ jsxs("span", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 14, fontWeight: 700, color: C.gold, transition: "all 0.6s ease" }, children: [
+                      fmt(liveTurnover),
+                      stats ? ` / ${fmt(stats.processedTurnover)}` : ""
+                    ] })
+                  ] }),
+                  /* @__PURE__ */ jsx("div", { style: { height: 4, borderRadius: 2, background: C.surface2, overflow: "hidden" }, children: /* @__PURE__ */ jsx("div", { style: { height: "100%", width: `${Math.round(cycleFraction * 100)}%`, background: C.gold, transition: "width 0.6s ease" } }) })
                 ] }),
                 stats ? /* @__PURE__ */ jsxs(Fragment, { children: [
                   /* @__PURE__ */ jsxs("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }, children: [
