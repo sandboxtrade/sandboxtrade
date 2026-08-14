@@ -579,6 +579,23 @@ function warehouseEfficiency(tier, staffLevel, equipmentLevel, condition) {
   const equipRatio = clamp01(equipmentLevel / tier.maxEquipment, 0, 1);
   return clamp01(tier.effFloor + tier.effStaffW * staffRatio + tier.effEquipW * equipRatio + tier.effCondW * (condition / 100), 0.15, 1.15);
 }
+function estimateWarehouseCycle(w, warehouseList, companies, reputation) {
+  const tier = WAREHOUSE_TIERS[w.tierId];
+  if (!tier) return { processedTurnover: 0, grossRevenue: 0, rate: 0 };
+  const zzonePerf = companyPerfPct(companies, "ZZONE");
+  const rate = warehouseRate(zzonePerf);
+  const demandMult = zzoneDemandMult(zzonePerf);
+  const marketVolume = WAREHOUSE_BASE_ZZONE_VOLUME * demandMult;
+  const sorted = [...(warehouseList || [])].sort((a, b) => a.openedAt - b.openedAt);
+  const rank = Math.max(0, sorted.findIndex((x) => x.id === w.id));
+  const share = tier.contractShare * warehouseContractShareMult(reputation) * warehouseRankMult(rank);
+  const availableToWarehouse = marketVolume * share;
+  const baseTurnover = Math.min(availableToWarehouse, tier.throughputCapacity);
+  const efficiency = warehouseEfficiency(tier, w.staffLevel, w.equipmentLevel, w.condition);
+  const processedTurnover = baseTurnover * efficiency;
+  const grossRevenue = Math.round(processedTurnover * rate * WAREHOUSE_CYCLE_HOUR_FRACTION);
+  return { processedTurnover, grossRevenue, rate };
+}
 var MANAGER_SALARY = 5e3;
 var MANAGER_SALARY_CYCLE_MS = 30 * 60 * 1e3;
 var PRODUCT_CATEGORIES = [
@@ -6312,7 +6329,7 @@ function MarketSandbox() {
             ] }),
             /* @__PURE__ */ jsx("button", { onClick: () => setConfirmCloseVenture(true), style: { width: "100%", padding: 12, borderRadius: 10, border: `1px solid ${C.red}55`, background: "transparent", color: C.red, fontSize: 13, fontWeight: 600, marginTop: 14 }, children: "\u0417\u0430\u043A\u0440\u044B\u0442\u044C \u0431\u0438\u0437\u043D\u0435\u0441" })
           ] }),
-          resellShops.length > 0 && (() => {
+          resellShops.some((s) => s.id === selectedBizId) && (() => {
             const totalRevenue = resellShops.reduce((s, x) => s + x.totalRevenue, 0);
             const totalUnits = resellShops.reduce((s, x) => s + x.totalUnitsSold, 0);
             const totalStockValue = resellShops.reduce((s, x) => s + Object.values(x.categories || {}).reduce((cs, c) => cs + c.stock * c.avgCost, 0), 0);
@@ -7165,7 +7182,9 @@ function MarketSandbox() {
             const wageOverdue = w.wageDue > tier.wagePerStaff * 1.5;
             void warehouseTick;
             const cycleFraction = Math.min(1, Math.max(0, 1 - secLeft / (WAREHOUSE_CYCLE_MS / 1e3)));
-            const liveTurnover = stats ? Math.round(stats.processedTurnover * cycleFraction) : 0;
+            const estCycle = estimateWarehouseCycle(w, warehouses, companies, reputation);
+            const projectedTurnover = stats ? stats.processedTurnover : estCycle.processedTurnover;
+            const liveTurnover = Math.round(projectedTurnover * cycleFraction);
             return /* @__PURE__ */ jsxs("div", { style: { marginBottom: 22, paddingTop: 14, borderTop: `1px solid ${C.border}` }, children: [
               /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${w.condition < 30 ? C.red + "55" : C.gold + "55"}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
                 /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }, children: [
