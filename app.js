@@ -35,7 +35,9 @@ var NPC_SEED = [
   // Азия Импэкс — объединяет бывших Гуанчжоу Трейд (Китай) и Стамбул Текстиль (Турция): дешёвый и средний сегмент, долгая доставка
   { name: "\u0410\u0437\u0438\u044F \u0418\u043C\u043F\u044D\u043A\u0441", ticker: "ASIM", sector: "\u041F\u043E\u0442\u0440\u0435\u0431\u0442\u043E\u0432\u0430\u0440\u044B", price: 18, vol: 1, supply: 4e6 },
   // Вест Логистика — объединяет бывших Дойче Варенхандель (премиум) и Локальный Склад (без границы): быстрый и премиальный сегмент
-  { name: "\u0412\u0435\u0441\u0442 \u041B\u043E\u0433\u0438\u0441\u0442\u0438\u043A\u0430", ticker: "VSLG", sector: "\u041F\u043E\u0442\u0440\u0435\u0431\u0442\u043E\u0432\u0430\u0440\u044B", price: 55, vol: 0.5, supply: 12e5 }
+  { name: "\u0412\u0435\u0441\u0442 \u041B\u043E\u0433\u0438\u0441\u0442\u0438\u043A\u0430", ticker: "VSLG", sector: "\u041F\u043E\u0442\u0440\u0435\u0431\u0442\u043E\u0432\u0430\u0440\u044B", price: 55, vol: 0.5, supply: 12e5 },
+  // ZZONE — маркетплейс, на котором продаются магазины перепродажи игрока; его состояние на бирже двигает спрос и ставку партнёрских складов
+  { name: "ZZONE", ticker: "ZZONE", sector: "\u0422\u0435\u0445\u043D\u043E\u043B\u043E\u0433\u0438\u0438", price: 24, vol: 0.6, supply: 5e7 }
 ];
 var MACRO_ACCOUNT = { handle: "@FinVestnik", name: "Финансовый Вестник", color: "#E8B14C", verified: true };
 var ROLE_AUTHORS = {
@@ -458,6 +460,97 @@ var OFFLINE_TICKS_PER_HOUR = 6;
 var OFFLINE_TICK_MS = 60 * 60 * 1e3 / OFFLINE_TICKS_PER_HOUR;
 var OFFLINE_AD_DURATION_TICKS = 3;
 var OFFLINE_AD_MULT = 1.35;
+var WAREHOUSE_CYCLE_MS = 60 * 60 * 1e3;
+var WAREHOUSE_BASE_ZZONE_VOLUME = 16e7;
+var WAREHOUSE_BASE_MARKET_CAPACITY = 16e7;
+var WAREHOUSE_BASE_RATE = 0.02;
+var WAREHOUSE_TIERS = {
+  medium: {
+    id: "medium",
+    name: "\u0421\u0440\u0435\u0434\u043D\u0438\u0439 \u0441\u043A\u043B\u0430\u0434",
+    openingCost: 1e5,
+    throughputCapacity: 1e6,
+    storageCapacity: 4e4,
+    contractShare: 0.0059,
+    maxStaff: 14,
+    wagePerStaff: 459,
+    startStaff: 8,
+    maxTransport: 3,
+    transportBuyCost: 8e3,
+    transportUpkeep: 300,
+    maxEquipment: 3,
+    equipmentBuyCost: 6e3,
+    equipmentUpkeep: 233,
+    electricity: 1e3,
+    misc: 700,
+    effFloor: 0.35,
+    effStaffW: 0.35,
+    effEquipW: 0.12,
+    effCondW: 0.1
+  },
+  large: {
+    id: "large",
+    name: "\u0411\u043E\u043B\u044C\u0448\u043E\u0439 \u0441\u043A\u043B\u0430\u0434",
+    openingCost: 25e4,
+    throughputCapacity: 25e5,
+    storageCapacity: 1e5,
+    contractShare: 0.0142,
+    maxStaff: 33,
+    wagePerStaff: 463,
+    startStaff: 18,
+    maxTransport: 6,
+    transportBuyCost: 18e3,
+    transportUpkeep: 350,
+    maxEquipment: 6,
+    equipmentBuyCost: 14e3,
+    equipmentUpkeep: 300,
+    electricity: 2200,
+    misc: 1200,
+    effFloor: 0.36,
+    effStaffW: 0.35,
+    effEquipW: 0.12,
+    effCondW: 0.1
+  }
+};
+var WAREHOUSE_STAFF_ROLES = [
+  { id: "stocker", name: "\u041A\u043B\u0430\u0434\u043E\u0432\u0449\u0438\u043A", share: 0.22 },
+  { id: "sorter", name: "\u0421\u043E\u0440\u0442\u0438\u0440\u043E\u0432\u0449\u0438\u043A", share: 0.22 },
+  { id: "packer", name: "\u0423\u043F\u0430\u043A\u043E\u0432\u0449\u0438\u043A", share: 0.17 },
+  { id: "operator", name: "\u041E\u043F\u0435\u0440\u0430\u0442\u043E\u0440", share: 0.14 },
+  { id: "driver", name: "\u0412\u043E\u0434\u0438\u0442\u0435\u043B\u044C", share: 0.14 },
+  { id: "wmanager", name: "\u041C\u0435\u043D\u0435\u0434\u0436\u0435\u0440 \u0441\u043A\u043B\u0430\u0434\u0430", share: 0.06 },
+  { id: "shift", name: "\u041D\u0430\u0447\u0430\u043B\u044C\u043D\u0438\u043A \u0441\u043C\u0435\u043D\u044B", share: 0.05 }
+];
+function clamp01(v, lo, hi) {
+  return Math.max(lo, Math.min(hi, v));
+}
+function zzoneDemandMult(perf) {
+  return clamp01(1 + perf / 120, 0.35, 1.35);
+}
+function warehouseMarketCapMult(perf) {
+  return clamp01(1 + perf / 400, 0.75, 1.15);
+}
+function warehouseDeficitMult(perf) {
+  const demand = WAREHOUSE_BASE_ZZONE_VOLUME * zzoneDemandMult(perf);
+  const cap = WAREHOUSE_BASE_MARKET_CAPACITY * warehouseMarketCapMult(perf);
+  const ratio = demand / Math.max(1, cap);
+  return clamp01(0.7 + ratio * 0.3, 0.7, 1.3);
+}
+function warehouseRate(perf) {
+  return WAREHOUSE_BASE_RATE * zzoneDemandMult(perf) * warehouseDeficitMult(perf);
+}
+function warehouseContractShareMult(rep) {
+  return clamp01(0.6 + rep / 250, 0.8, 1);
+}
+var WAREHOUSE_OWN_DECAY = 0.35;
+function warehouseRankMult(rank) {
+  return 1 / (1 + rank * WAREHOUSE_OWN_DECAY);
+}
+function warehouseEfficiency(tier, staffLevel, equipmentLevel, condition) {
+  const staffRatio = clamp01(staffLevel / tier.maxStaff, 0, 1);
+  const equipRatio = clamp01(equipmentLevel / tier.maxEquipment, 0, 1);
+  return clamp01(tier.effFloor + tier.effStaffW * staffRatio + tier.effEquipW * equipRatio + tier.effCondW * (condition / 100), 0.15, 1.15);
+}
 var MANAGER_SALARY = 5e3;
 var MANAGER_SALARY_CYCLE_MS = 30 * 60 * 1e3;
 var PRODUCT_CATEGORIES = [
@@ -1040,6 +1133,7 @@ function MarketSandbox() {
   const [tradeAmountInput, setTradeAmountInput] = useState("");
   const [resellShops, setResellShops] = useState([]);
   const [factories, setFactories] = useState([]);
+  const [warehouses, setWarehouses] = useState([]);
   const [orderQtyInputs, setOrderQtyInputs] = useState({});
   const [orderCategorySel, setOrderCategorySel] = useState({});
   const [listedPriceInputs, setListedPriceInputs] = useState({});
@@ -1054,6 +1148,8 @@ function MarketSandbox() {
   const [transferForm, setTransferForm] = useState({ from: "", to: "", amount: "" });
   const [closeCardDestSel, setCloseCardDestSel] = useState({});
   const [confirmCloseFactory, setConfirmCloseFactory] = useState(null);
+  const [confirmCloseWarehouse, setConfirmCloseWarehouse] = useState(null);
+  const [warehouseSetupTier, setWarehouseSetupTier] = useState("medium");
   const [confirmCloseCard, setConfirmCloseCard] = useState(null);
   const [tenders, setTenders] = useState([]);
   const [tenderTrackRecord, setTenderTrackRecord] = useState({ won: 0, lost: 0, completed: 0, failed: 0 });
@@ -1162,6 +1258,7 @@ function MarketSandbox() {
   const leveragedPositionsRef = useRef(leveragedPositions);
   const resellShopsRef = useRef(resellShops);
   const factoriesRef = useRef(factories);
+  const warehousesRef = useRef(warehouses);
   const transactionsRef = useRef(transactions);
   const ipCashRef = useRef(ipCash);
   const ipTaxOwedRef = useRef(ipTaxOwed);
@@ -1297,6 +1394,9 @@ function MarketSandbox() {
   useEffect(() => {
     factoriesRef.current = factories;
   }, [factories]);
+  useEffect(() => {
+    warehousesRef.current = warehouses;
+  }, [warehouses]);
   useEffect(() => {
     transactionsRef.current = transactions;
   }, [transactions]);
@@ -1599,6 +1699,7 @@ function MarketSandbox() {
       return { ...rest, categories: cats, orders: (s.orders || []).map((o) => o.category ? o : { ...o, category: "accessories" }) };
     }) : []);
     setFactories(Array.isArray(data.factories) ? data.factories : []);
+    setWarehouses(Array.isArray(data.warehouses) ? data.warehouses : []);
     setIpCash(typeof data.ipCash === "number" ? data.ipCash : 0);
     setIpTaxOwed(typeof data.ipTaxOwed === "number" ? data.ipTaxOwed : 0);
     setQuarterRevenue(typeof data.quarterRevenue === "number" ? data.quarterRevenue : 0);
@@ -1707,6 +1808,7 @@ function MarketSandbox() {
     leveragedPositions: leveragedPositionsRef.current,
     resellShops: resellShopsRef.current,
     factories: factoriesRef.current,
+    warehouses: warehousesRef.current,
     ipCash: ipCashRef.current,
     ipTaxOwed: ipTaxOwedRef.current,
     quarterRevenue: quarterRevenueRef.current,
@@ -2206,11 +2308,11 @@ function MarketSandbox() {
     }
   }, [companies, playerVentureId, investorPersona]);
   useEffect(() => {
-    const validIds = [...playerVentureId ? ["venture"] : [], ...resellShops.map((s) => s.id), ...factories.map((f) => f.id)];
+    const validIds = [...playerVentureId ? ["venture"] : [], ...resellShops.map((s) => s.id), ...factories.map((f) => f.id), ...warehouses.map((w) => w.id)];
     if (selectedBizId !== null && !validIds.includes(selectedBizId)) {
       setSelectedBizId(validIds[0] || null);
     }
-  }, [playerVentureId, resellShops, factories, selectedBizId]);
+  }, [playerVentureId, resellShops, factories, warehouses, selectedBizId]);
   useEffect(() => {
     if (!loaded) return;
     const id = setInterval(() => {
@@ -2787,6 +2889,72 @@ function MarketSandbox() {
   useEffect(() => {
     if (!loaded) return;
     const id = setInterval(() => {
+      const list = warehousesRef.current;
+      const due = list.filter((w) => Date.now() >= w.nextCycleAt);
+      if (!due.length) return;
+      let ipCashDelta = 0;
+      const zzonePerf = companyPerfPct(companiesRef.current, "ZZONE");
+      const rep = reputationRef.current;
+      const rate = warehouseRate(zzonePerf);
+      const demandMult = zzoneDemandMult(zzonePerf);
+      const marketVolume = WAREHOUSE_BASE_ZZONE_VOLUME * demandMult;
+      const updates = {};
+      const rankById = {};
+      [...list].sort((a, b) => a.openedAt - b.openedAt).forEach((w, idx) => {
+        rankById[w.id] = idx;
+      });
+      due.forEach((w) => {
+        const tier = WAREHOUSE_TIERS[w.tierId];
+        const share = tier.contractShare * warehouseContractShareMult(rep) * warehouseRankMult(rankById[w.id] || 0);
+        const availableToWarehouse = marketVolume * share;
+        const baseTurnover = Math.min(availableToWarehouse, tier.throughputCapacity);
+        const efficiency = warehouseEfficiency(tier, w.staffLevel, w.equipmentLevel, w.condition);
+        const processedTurnover = baseTurnover * efficiency;
+        const grossRevenue = Math.round(processedTurnover * rate);
+        const wagesThisCycle = Math.round(w.staffLevel * tier.wagePerStaff);
+        const opex = tier.electricity + w.transportLevel * tier.transportUpkeep + w.equipmentLevel * tier.equipmentUpkeep + tier.misc;
+        const available = ipCashRef.current + ipCashDelta + grossRevenue;
+        const paidOpex = Math.min(opex, Math.max(0, available));
+        ipCashDelta += grossRevenue - paidOpex;
+        if (grossRevenue > 0) {
+          setQuarterRevenue((r) => r + grossRevenue);
+          trackIpTurnover(grossRevenue);
+        }
+        logTx(`\u0421\u043A\u043B\u0430\u0434 ZZONE \xB7 \xAB${w.name}\xBB: \u0432\u044B\u0440\u0443\u0447\u043A\u0430`, grossRevenue, "in");
+        if (paidOpex > 0) logTx(`\u0421\u043A\u043B\u0430\u0434 ZZONE \xB7 \xAB${w.name}\xBB: \u044D\u043A\u0441\u043F\u043B\u0443\u0430\u0442\u0430\u0446\u0438\u044F/\u0442\u0440\u0430\u043D\u0441\u043F\u043E\u0440\u0442/\u043E\u0431\u043E\u0440\u0443\u0434\u043E\u0432\u0430\u043D\u0438\u0435`, paidOpex, "out");
+        const newWageDue = Math.round((w.wageDue + wagesThisCycle) * 100) / 100;
+        let condition = w.condition;
+        let staffLevel = w.staffLevel;
+        if (newWageDue <= 1) {
+          condition = Math.min(100, condition + 5);
+        } else if (newWageDue > tier.wagePerStaff * Math.max(1, staffLevel) * 2.5) {
+          const attrition = Math.max(1, Math.ceil(staffLevel * 0.2));
+          staffLevel = Math.max(0, staffLevel - attrition);
+          condition = Math.max(0, condition - 20);
+          pushPost({ text: `\u0421\u043A\u043B\u0430\u0434 ZZONE \xAB${w.name}\xBB: \u0437\u0430\u0440\u043F\u043B\u0430\u0442\u0430 \u043D\u0435 \u0432\u044B\u043F\u043B\u0430\u0447\u0435\u043D\u0430 \u2014 ${attrition} \u0447\u0435\u043B\u043E\u0432\u0435\u043A \u0443\u0432\u043E\u043B\u0438\u043B\u0438\u0441\u044C`, positive: false, isMacro: false });
+        } else {
+          condition = Math.max(0, condition - 10);
+        }
+        updates[w.id] = {
+          wageDue: newWageDue,
+          condition,
+          staffLevel,
+          totalRevenue: w.totalRevenue + grossRevenue,
+          totalNetProfit: w.totalNetProfit + (grossRevenue - paidOpex - wagesThisCycle),
+          cyclesRun: w.cyclesRun + 1,
+          nextCycleAt: Date.now() + WAREHOUSE_CYCLE_MS,
+          lastCycleStats: { grossRevenue, wagesThisCycle, opex: paidOpex, efficiency, rate, processedTurnover: Math.round(processedTurnover), availableToWarehouse: Math.round(availableToWarehouse) }
+        };
+      });
+      if (ipCashDelta !== 0) setIpCash((c) => Math.max(0, c + ipCashDelta));
+      setWarehouses((prev) => prev.map((w) => updates[w.id] ? { ...w, ...updates[w.id] } : w));
+      setTimeout(saveGame, 50);
+    }, 3e4);
+    return () => clearInterval(id);
+  }, [loaded]);
+  useEffect(() => {
+    if (!loaded) return;
+    const id = setInterval(() => {
       const list = factoriesRef.current;
       const due = list.filter((f) => Date.now() >= f.nextTickAt);
       if (!due.length) return;
@@ -3219,6 +3387,107 @@ function MarketSandbox() {
       return { ...s, categories: { ...s.categories, [cat.id]: { ...cur, stock: newStock, avgCost: Math.round(newAvgCost * 100) / 100 } } };
     }));
     logTx(`\u041F\u0435\u0440\u0435\u0432\u043E\u0434 \u043F\u0440\u043E\u0434\u0443\u043A\u0446\u0438\u0438 \xAB${factory.name}\xBB \u2192 \xAB${shop.name}\xBB (${cat.name} \xD7${qty}, \u043B\u043E\u0433\u0438\u0441\u0442\u0438\u043A\u0430)`, logisticsCost, "out");
+    setTimeout(saveGame, 50);
+  };
+  const openWarehouse = (tierId, name) => {
+    const tier = WAREHOUSE_TIERS[tierId];
+    if (!tier) return;
+    const src = resolvedPayFrom;
+    const bal = getAccountBalance(src);
+    if (bal < tier.openingCost) return;
+    adjustAccountBalance(src, -tier.openingCost);
+    const newId = makeId("warehouse");
+    setWarehouses((prev) => [...prev, {
+      id: newId,
+      name: name && name.trim() ? name.trim() : `${tier.name} \u2116${prev.length + 1}`,
+      tierId,
+      staffLevel: tier.startStaff,
+      transportLevel: 0,
+      equipmentLevel: 0,
+      condition: 100,
+      wageDue: 0,
+      totalRevenue: 0,
+      totalNetProfit: 0,
+      cyclesRun: 0,
+      lastCycleStats: null,
+      nextCycleAt: Date.now() + WAREHOUSE_CYCLE_MS,
+      openedAt: Date.now()
+    }]);
+    logTx(`\u0421\u043A\u043B\u0430\u0434 ZZONE: \u043E\u0442\u043A\u0440\u044B\u0442\u0438\u0435 \xB7 ${tier.name}`, tier.openingCost, "out");
+    setSelectedBizId(newId);
+    setBizPath(null);
+    setActiveTab("company");
+    setTimeout(saveGame, 50);
+  };
+  const closeWarehouse = (warehouseId) => {
+    setWarehouses((prev) => prev.filter((w) => w.id !== warehouseId));
+    if (selectedBizId === warehouseId) setSelectedBizId(null);
+    setConfirmCloseWarehouse(null);
+    setTimeout(saveGame, 50);
+  };
+  const setWarehouseStaffLevel = (warehouseId, level) => {
+    setWarehouses((prev) => prev.map((w) => {
+      if (w.id !== warehouseId) return w;
+      const tier = WAREHOUSE_TIERS[w.tierId];
+      const next = Math.max(0, Math.min(tier.maxStaff, Math.round(Number(level) || 0)));
+      return { ...w, staffLevel: next };
+    }));
+    setTimeout(saveGame, 50);
+  };
+  const buyWarehouseTransport = (warehouseId) => {
+    const wh = warehouses.find((w) => w.id === warehouseId);
+    if (!wh) return;
+    const tier = WAREHOUSE_TIERS[wh.tierId];
+    if (wh.transportLevel >= tier.maxTransport || ipCash < tier.transportBuyCost) return;
+    setIpCash((c) => c - tier.transportBuyCost);
+    setWarehouses((prev) => prev.map((w) => w.id === warehouseId ? { ...w, transportLevel: w.transportLevel + 1 } : w));
+    logTx(`\u0421\u043A\u043B\u0430\u0434 ZZONE: \u0442\u0440\u0430\u043D\u0441\u043F\u043E\u0440\u0442 \xB7 ${wh.name}`, tier.transportBuyCost, "out");
+    setTimeout(saveGame, 50);
+  };
+  const buyWarehouseEquipment = (warehouseId) => {
+    const wh = warehouses.find((w) => w.id === warehouseId);
+    if (!wh) return;
+    const tier = WAREHOUSE_TIERS[wh.tierId];
+    if (wh.equipmentLevel >= tier.maxEquipment || ipCash < tier.equipmentBuyCost) return;
+    setIpCash((c) => c - tier.equipmentBuyCost);
+    setWarehouses((prev) => prev.map((w) => w.id === warehouseId ? { ...w, equipmentLevel: w.equipmentLevel + 1 } : w));
+    logTx(`\u0421\u043A\u043B\u0430\u0434 ZZONE: \u043E\u0431\u043E\u0440\u0443\u0434\u043E\u0432\u0430\u043D\u0438\u0435 \xB7 ${wh.name}`, tier.equipmentBuyCost, "out");
+    setTimeout(saveGame, 50);
+  };
+  const payWarehouseWages = (warehouseId) => {
+    const wh = warehouses.find((w) => w.id === warehouseId);
+    if (!wh || wh.wageDue <= 0) return;
+    const paid = Math.min(wh.wageDue, ipCash);
+    if (paid <= 0) return;
+    setIpCash((c) => c - paid);
+    setWarehouses((prev) => prev.map((w) => w.id === warehouseId ? { ...w, wageDue: Math.round((w.wageDue - paid) * 100) / 100 } : w));
+    logTx(`\u0417\u0430\u0440\u043F\u043B\u0430\u0442\u0430 \u0441\u043A\u043B\u0430\u0434\u0430 ZZONE \xB7 ${wh.name}`, paid, "out");
+    setTimeout(saveGame, 50);
+  };
+  const upgradeWarehouseTier = (warehouseId) => {
+    const wh = warehouses.find((w) => w.id === warehouseId);
+    if (!wh || wh.tierId !== "medium") return;
+    const from = WAREHOUSE_TIERS.medium;
+    const to = WAREHOUSE_TIERS.large;
+    const delta = to.openingCost - from.openingCost;
+    const src = resolvedPayFrom;
+    const bal = getAccountBalance(src);
+    if (bal < delta) return;
+    adjustAccountBalance(src, -delta);
+    setWarehouses((prev) => prev.map((w) => {
+      if (w.id !== warehouseId) return w;
+      const staffRatio = w.staffLevel / from.maxStaff;
+      const transportRatio = from.maxTransport > 0 ? w.transportLevel / from.maxTransport : 0;
+      const equipRatio = from.maxEquipment > 0 ? w.equipmentLevel / from.maxEquipment : 0;
+      return {
+        ...w,
+        tierId: "large",
+        staffLevel: Math.min(to.maxStaff, Math.round(to.maxStaff * staffRatio)),
+        transportLevel: Math.min(to.maxTransport, Math.round(to.maxTransport * transportRatio)),
+        equipmentLevel: Math.min(to.maxEquipment, Math.round(to.maxEquipment * equipRatio))
+      };
+    }));
+    logTx(`\u0421\u043A\u043B\u0430\u0434 ZZONE: \u0440\u0430\u0441\u0448\u0438\u0440\u0435\u043D\u0438\u0435 \u0434\u043E \xAB${to.name}\xBB \xB7 ${wh.name}`, delta, "out");
     setTimeout(saveGame, 50);
   };
   const placeSupplierOrder = (shopId, supplierId, categoryId) => {
@@ -4598,6 +4867,7 @@ function MarketSandbox() {
     setTradeLeverage(1);
     setResellShops([]);
     setFactories([]);
+    setWarehouses([]);
     setOrderQtyInputs({});
     setOrderCategorySel({});
     setListedPriceInputs({});
@@ -5941,7 +6211,7 @@ function MarketSandbox() {
               ] })
             ] });
           })(),
-          (playerVenture || resellShops.length > 0 || factories.length > 0) && /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8, overflowX: "auto", paddingBottom: 4, marginBottom: 18 }, children: [
+          (playerVenture || resellShops.length > 0 || factories.length > 0 || warehouses.length > 0) && /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8, overflowX: "auto", paddingBottom: 4, marginBottom: 18 }, children: [
             playerVenture && /* @__PURE__ */ jsxs("button", { onClick: () => setSelectedBizId("venture"), style: { flexShrink: 0, display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", borderRadius: 20, border: `1px solid ${selectedBizId === "venture" ? C.gold : C.border}`, background: selectedBizId === "venture" ? `${C.gold}22` : C.surface, color: selectedBizId === "venture" ? C.gold : C.inkDim, fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap" }, children: [
               playerVenture.kind === "crypto" ? "\u{1FA99}" : "\u{1F3E2}",
               " ",
@@ -5956,6 +6226,11 @@ function MarketSandbox() {
               f.name,
               f.pendingOrders.length > 0 ? ` (${f.pendingOrders.length})` : ""
             ] }, f.id)),
+            warehouses.map((w) => /* @__PURE__ */ jsxs("button", { onClick: () => setSelectedBizId(w.id), style: { flexShrink: 0, display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", borderRadius: 20, border: `1px solid ${selectedBizId === w.id ? C.gold : w.wageDue > 0 ? C.red + "55" : C.border}`, background: selectedBizId === w.id ? `${C.gold}22` : C.surface, color: selectedBizId === w.id ? C.gold : C.inkDim, fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap" }, children: [
+              "\u{1F4E6} ",
+              w.name,
+              w.wageDue > 0 ? " \u26A0" : ""
+            ] }, w.id)),
             /* @__PURE__ */ jsxs("button", { onClick: () => setSelectedBizId(null), style: { flexShrink: 0, display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", borderRadius: 20, border: `1px dashed ${C.border}`, background: "none", color: C.inkFaint, fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap" }, children: [
               /* @__PURE__ */ jsx(Plus, { size: 13 }),
               " \u0415\u0449\u0451 \u0431\u0438\u0437\u043D\u0435\u0441"
@@ -6566,10 +6841,153 @@ function MarketSandbox() {
               })
             ] }, f.id);
           }),
+          warehouses.map((w) => {
+            if (w.id !== selectedBizId) return null;
+            const tier = WAREHOUSE_TIERS[w.tierId];
+            const stats = w.lastCycleStats;
+            const secLeft = Math.max(0, Math.ceil((w.nextCycleAt - Date.now()) / 1e3));
+            const netLastCycle = stats ? stats.grossRevenue - stats.wagesThisCycle - stats.opex : null;
+            const loadingPct = stats ? Math.round(stats.processedTurnover / tier.throughputCapacity * 100) : 0;
+            const wageOverdue = w.wageDue > tier.wagePerStaff * 1.5;
+            return /* @__PURE__ */ jsxs("div", { style: { marginBottom: 22, paddingTop: 14, borderTop: `1px solid ${C.border}` }, children: [
+              /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${w.condition < 30 ? C.red + "55" : C.gold + "55"}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
+                /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }, children: [
+                  /* @__PURE__ */ jsxs("div", { children: [
+                    /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.gold, textTransform: "uppercase", letterSpacing: 1 }, children: "ZZONE FULFILLMENT" }),
+                    /* @__PURE__ */ jsx("div", { style: { fontSize: 18, fontWeight: 700, marginTop: 4 }, children: w.name }),
+                    /* @__PURE__ */ jsx("div", { style: { fontSize: 11.5, color: C.inkDim, marginTop: 2 }, children: tier.name })
+                  ] }),
+                  /* @__PURE__ */ jsxs("div", { style: { textAlign: "right" }, children: [
+                    /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: w.condition < 30 ? C.red : C.inkDim }, children: [
+                      "\u0421\u043E\u0441\u0442\u043E\u044F\u043D\u0438\u0435 ",
+                      Math.round(w.condition),
+                      "/100"
+                    ] }),
+                    w.wageDue > 0 && /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.red, marginTop: 2, fontWeight: 700 }, children: [
+                      "\u2696\uFE0F \u0434\u043E\u043B\u0433 ",
+                      fmt(w.wageDue)
+                    ] })
+                  ] })
+                ] }),
+                stats ? /* @__PURE__ */ jsxs(Fragment, { children: [
+                  /* @__PURE__ */ jsxs("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }, children: [
+                    /* @__PURE__ */ jsxs("div", { children: [
+                      /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkDim }, children: "\u041E\u0431\u0440\u0430\u0431\u043E\u0442\u0430\u043D\u043E \u0437\u0430 \u0446\u0438\u043A\u043B" }),
+                      /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 15, fontWeight: 700 }, children: fmt(stats.processedTurnover) })
+                    ] }),
+                    /* @__PURE__ */ jsxs("div", { children: [
+                      /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkDim }, children: "\u0421\u0442\u0430\u0432\u043A\u0430 ZZONE" }),
+                      /* @__PURE__ */ jsxs("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 15, fontWeight: 700 }, children: [
+                        (stats.rate * 100).toFixed(2),
+                        "%"
+                      ] })
+                    ] }),
+                    /* @__PURE__ */ jsxs("div", { children: [
+                      /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkDim }, children: "\u0412\u0430\u043B\u043E\u0432\u0430\u044F \u0432\u044B\u0440\u0443\u0447\u043A\u0430" }),
+                      /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 15, fontWeight: 700, color: C.green }, children: fmt(stats.grossRevenue) })
+                    ] }),
+                    /* @__PURE__ */ jsxs("div", { children: [
+                      /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkDim }, children: "\u0427\u0438\u0441\u0442\u0430\u044F \u043F\u0440\u0438\u0431\u044B\u043B\u044C" }),
+                      /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 15, fontWeight: 700, color: netLastCycle >= 0 ? C.green : C.red }, children: fmt(netLastCycle) })
+                    ] })
+                  ] }),
+                  /* @__PURE__ */ jsxs("div", { style: { marginBottom: 4 }, children: [
+                    /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 10.5, color: C.inkDim, marginBottom: 3 }, children: [
+                      /* @__PURE__ */ jsx("span", { children: "\u0417\u0430\u0433\u0440\u0443\u0437\u043A\u0430 \u043F\u0440\u043E\u043F\u0443\u0441\u043A\u043D\u043E\u0439 \u0441\u043F\u043E\u0441\u043E\u0431\u043D\u043E\u0441\u0442\u0438" }),
+                      /* @__PURE__ */ jsxs("span", { children: [
+                        loadingPct,
+                        "%"
+                      ] })
+                    ] }),
+                    /* @__PURE__ */ jsx("div", { style: { height: 5, borderRadius: 3, background: C.surface2, overflow: "hidden" }, children: /* @__PURE__ */ jsx("div", { style: { height: "100%", width: `${Math.min(100, loadingPct)}%`, background: loadingPct >= 95 ? C.gold : C.green } }) })
+                  ] }),
+                  /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint, marginTop: 8 }, children: [
+                    "\u0414\u043E\u0441\u0442\u0443\u043F\u043D\u043E \u043E\u0442 ZZONE: ",
+                    fmt(stats.availableToWarehouse),
+                    " \xB7 \u043F\u0440\u043E\u043F\u0443\u0441\u043A\u043D\u0430\u044F: ",
+                    fmt(tier.throughputCapacity),
+                    "/\u0447\u0430\u0441"
+                  ] })
+                ] }) : /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkFaint, textAlign: "center", padding: "10px 0" }, children: "\u041F\u0435\u0440\u0432\u044B\u0439 \u0440\u0430\u0441\u0447\u0451\u0442 \u0447\u0435\u0440\u0435\u0437 \u043D\u0435\u0441\u043A\u043E\u043B\u044C\u043A\u043E \u043C\u0438\u043D\u0443\u0442" }),
+                /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkFaint, marginTop: 10 }, children: [
+                  "\u0421\u043B\u0435\u0434\u0443\u044E\u0449\u0438\u0439 \u0440\u0430\u0441\u0447\u0451\u0442 \u0447\u0435\u0440\u0435\u0437 ",
+                  Math.floor(secLeft / 60),
+                  ":",
+                  String(secLeft % 60).padStart(2, "0"),
+                  " \xB7 \u0446\u0438\u043A\u043B\u043E\u0432 \u043E\u0442\u0440\u0430\u0431\u043E\u0442\u0430\u043D\u043E: ",
+                  w.cyclesRun,
+                  " \xB7 \u0432\u044B\u0440\u0443\u0447\u043A\u0430 \u0432\u0441\u0435\u0433\u043E: ",
+                  fmt(w.totalRevenue)
+                ] })
+              ] }),
+              wageOverdue && /* @__PURE__ */ jsxs("div", { style: { background: `${C.red}18`, border: `1px solid ${C.red}55`, borderRadius: 10, padding: 12, marginBottom: 14, fontSize: 11.5, color: C.red }, children: [
+                "\u0417\u0430\u0434\u043E\u043B\u0436\u0435\u043D\u043D\u043E\u0441\u0442\u044C \u043F\u043E \u0437\u0430\u0440\u043F\u043B\u0430\u0442\u0435 \u0440\u0430\u0441\u0442\u0451\u0442 \u2014 \u043F\u0440\u0438 \u0441\u0438\u043B\u044C\u043D\u043E\u0439 \u0437\u0430\u0434\u043E\u043B\u0436\u0435\u043D\u043D\u043E\u0441\u0442\u0438 \u0447\u0430\u0441\u0442\u044C \u0441\u043E\u0442\u0440\u0443\u0434\u043D\u0438\u043A\u043E\u0432 \u0443\u0432\u043E\u043B\u0438\u0442\u0441\u044F \u0441\u0430\u043C\u0430."
+              ] }),
+              /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }, children: "\u0417\u0430\u0440\u043F\u043B\u0430\u0442\u0430" }),
+                /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }, children: [
+                  /* @__PURE__ */ jsxs("div", { style: { fontSize: 12.5, color: w.wageDue > 0 ? C.red : C.inkDim }, children: [
+                    "\u041A \u043E\u043F\u043B\u0430\u0442\u0435: ",
+                    fmt(w.wageDue)
+                  ] }),
+                  /* @__PURE__ */ jsx("button", { onClick: () => payWarehouseWages(w.id), disabled: w.wageDue <= 0 || ipCash <= 0, style: { padding: "8px 14px", borderRadius: 9, border: "none", fontWeight: 700, fontSize: 12, background: w.wageDue > 0 && ipCash > 0 ? C.gold : C.surface2, color: w.wageDue > 0 && ipCash > 0 ? "#161207" : C.inkFaint }, children: "\u041E\u043F\u043B\u0430\u0442\u0438\u0442\u044C (\u0441\u043E \u0441\u0447\u0451\u0442\u0430 \u0418\u041F)" })
+                ] }),
+                /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkDim, marginBottom: 6 }, children: [
+                  "\u0421\u043E\u0442\u0440\u0443\u0434\u043D\u0438\u043A\u0438: ",
+                  /* @__PURE__ */ jsx("b", { style: { color: C.ink }, children: w.staffLevel }),
+                  " / ",
+                  tier.maxStaff,
+                  " \xB7 ",
+                  fmt(tier.wagePerStaff),
+                  "/\u0447\u0435\u043B \u0432 \u0447\u0430\u0441"
+                ] }),
+                /* @__PURE__ */ jsx("input", { type: "range", min: 0, max: tier.maxStaff, step: 1, value: w.staffLevel, onChange: (e) => setWarehouseStaffLevel(w.id, e.target.value), style: { width: "100%" } }),
+                /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint, marginTop: 8, lineHeight: 1.6 }, children: [
+                  "\u0420\u043E\u043B\u0438: ",
+                  WAREHOUSE_STAFF_ROLES.map((r) => `${r.name} \u2248${Math.round(w.staffLevel * r.share)}`).join(" \xB7 ")
+                ] })
+              ] }),
+              /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 10, marginBottom: 14 }, children: [
+                /* @__PURE__ */ jsxs("div", { style: { flex: 1, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 14 }, children: [
+                  /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkDim, marginBottom: 6 }, children: "\u0422\u0440\u0430\u043D\u0441\u043F\u043E\u0440\u0442" }),
+                  /* @__PURE__ */ jsxs("div", { style: { fontSize: 15, fontWeight: 700, marginBottom: 8 }, children: [
+                    w.transportLevel,
+                    " / ",
+                    tier.maxTransport
+                  ] }),
+                  /* @__PURE__ */ jsx("button", { onClick: () => buyWarehouseTransport(w.id), disabled: w.transportLevel >= tier.maxTransport || ipCash < tier.transportBuyCost, style: { width: "100%", padding: 8, borderRadius: 8, border: "none", fontWeight: 700, fontSize: 11.5, background: w.transportLevel < tier.maxTransport && ipCash >= tier.transportBuyCost ? C.gold : C.surface2, color: w.transportLevel < tier.maxTransport && ipCash >= tier.transportBuyCost ? "#161207" : C.inkFaint }, children: w.transportLevel >= tier.maxTransport ? "\u041C\u0430\u043A\u0441\u0438\u043C\u0443\u043C" : `+1 \xB7 ${fmt(tier.transportBuyCost)}` })
+                ] }),
+                /* @__PURE__ */ jsxs("div", { style: { flex: 1, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 14 }, children: [
+                  /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkDim, marginBottom: 6 }, children: "\u041E\u0431\u043E\u0440\u0443\u0434\u043E\u0432\u0430\u043D\u0438\u0435" }),
+                  /* @__PURE__ */ jsxs("div", { style: { fontSize: 15, fontWeight: 700, marginBottom: 8 }, children: [
+                    w.equipmentLevel,
+                    " / ",
+                    tier.maxEquipment
+                  ] }),
+                  /* @__PURE__ */ jsx("button", { onClick: () => buyWarehouseEquipment(w.id), disabled: w.equipmentLevel >= tier.maxEquipment || ipCash < tier.equipmentBuyCost, style: { width: "100%", padding: 8, borderRadius: 8, border: "none", fontWeight: 700, fontSize: 11.5, background: w.equipmentLevel < tier.maxEquipment && ipCash >= tier.equipmentBuyCost ? C.gold : C.surface2, color: w.equipmentLevel < tier.maxEquipment && ipCash >= tier.equipmentBuyCost ? "#161207" : C.inkFaint }, children: w.equipmentLevel >= tier.maxEquipment ? "\u041C\u0430\u043A\u0441\u0438\u043C\u0443\u043C" : `+1 \xB7 ${fmt(tier.equipmentBuyCost)}` })
+                ] })
+              ] }),
+              w.tierId === "medium" && /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.gold}55`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 12.5, fontWeight: 700, marginBottom: 4 }, children: "\u0420\u0430\u0441\u0448\u0438\u0440\u0438\u0442\u044C \u0434\u043E \u0431\u043E\u043B\u044C\u0448\u043E\u0433\u043E \u0441\u043A\u043B\u0430\u0434\u0430" }),
+                /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkDim, marginBottom: 10 }, children: [
+                  "\u0412\u044B\u0448\u0435 \u043F\u0440\u043E\u043F\u0443\u0441\u043A\u043D\u0430\u044F \u0441\u043F\u043E\u0441\u043E\u0431\u043D\u043E\u0441\u0442\u044C \u0438 \u0434\u043E\u043B\u044F \u043A\u043E\u043D\u0442\u0440\u0430\u043A\u0442\u0430 ZZONE \u2014 \u0434\u043E\u043F\u043B\u0430\u0442\u0430 ",
+                  fmt(WAREHOUSE_TIERS.large.openingCost - tier.openingCost)
+                ] }),
+                /* @__PURE__ */ jsx("button", { onClick: () => upgradeWarehouseTier(w.id), disabled: resolvedBal < WAREHOUSE_TIERS.large.openingCost - tier.openingCost, style: { width: "100%", padding: 10, borderRadius: 10, border: "none", fontWeight: 700, fontSize: 12.5, background: resolvedBal >= WAREHOUSE_TIERS.large.openingCost - tier.openingCost ? C.gold : C.surface2, color: resolvedBal >= WAREHOUSE_TIERS.large.openingCost - tier.openingCost ? "#161207" : C.inkFaint }, children: "\u0420\u0430\u0441\u0448\u0438\u0440\u0438\u0442\u044C" })
+              ] }),
+              confirmCloseWarehouse === w.id ? /* @__PURE__ */ jsxs("div", { style: { background: C.surface2, border: `1px solid ${C.red}55`, borderRadius: 10, padding: 10 }, children: [
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 11.5, color: C.inkDim, marginBottom: 8 }, children: "\u0417\u0430\u043A\u0440\u044B\u0442\u044C \u0441\u043A\u043B\u0430\u0434? \u041D\u0435\u043E\u043F\u043B\u0430\u0447\u0435\u043D\u043D\u0430\u044F \u0437\u0430\u0440\u043F\u043B\u0430\u0442\u0430 \u0441\u043F\u0438\u0448\u0435\u0442\u0441\u044F, \u0432\u043B\u043E\u0436\u0435\u043D\u043D\u044B\u0435 \u0432 \u0442\u0440\u0430\u043D\u0441\u043F\u043E\u0440\u0442/\u043E\u0431\u043E\u0440\u0443\u0434\u043E\u0432\u0430\u043D\u0438\u0435 \u0434\u0435\u043D\u044C\u0433\u0438 \u043D\u0435 \u0432\u0435\u0440\u043D\u0443\u0442\u0441\u044F." }),
+                /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8 }, children: [
+                  /* @__PURE__ */ jsx("button", { onClick: () => closeWarehouse(w.id), style: { flex: 1, padding: 9, borderRadius: 9, border: "none", background: C.red, color: "#fff", fontWeight: 700, fontSize: 12 }, children: "\u041F\u043E\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u044C" }),
+                  /* @__PURE__ */ jsx("button", { onClick: () => setConfirmCloseWarehouse(null), style: { flex: 1, padding: 9, borderRadius: 9, border: `1px solid ${C.border}`, background: "transparent", color: C.inkDim, fontSize: 12 }, children: "\u041E\u0442\u043C\u0435\u043D\u0430" })
+                ] })
+              ] }) : /* @__PURE__ */ jsx("button", { onClick: () => setConfirmCloseWarehouse(w.id), style: { width: "100%", padding: 9, borderRadius: 9, border: `1px solid ${C.red}55`, background: "transparent", color: C.red, fontSize: 12, fontWeight: 600 }, children: "\u0417\u0430\u043A\u0440\u044B\u0442\u044C \u0441\u043A\u043B\u0430\u0434" })
+            ] }, w.id);
+          }),
           selectedBizId === null && (!bizPath ? /* @__PURE__ */ jsxs("div", { children: [
             /* @__PURE__ */ jsxs("div", { style: { textAlign: "center", padding: "16px 0" }, children: [
               /* @__PURE__ */ jsx(Building2, { size: 30, style: { color: C.gold } }),
-              /* @__PURE__ */ jsx("div", { style: { fontSize: 18, fontWeight: 700, marginTop: 8 }, children: playerVenture || resellShops.length ? "\u0414\u043E\u0431\u0430\u0432\u0438\u0442\u044C \u0435\u0449\u0451 \u0431\u0438\u0437\u043D\u0435\u0441" : "\u0417\u0430\u043F\u0443\u0441\u0442\u0438 \u0441\u0432\u043E\u0439 \u0431\u0438\u0437\u043D\u0435\u0441" }),
+              /* @__PURE__ */ jsx("div", { style: { fontSize: 18, fontWeight: 700, marginTop: 8 }, children: playerVenture || resellShops.length || factories.length || warehouses.length ? "\u0414\u043E\u0431\u0430\u0432\u0438\u0442\u044C \u0435\u0449\u0451 \u0431\u0438\u0437\u043D\u0435\u0441" : "\u0417\u0430\u043F\u0443\u0441\u0442\u0438 \u0441\u0432\u043E\u0439 \u0431\u0438\u0437\u043D\u0435\u0441" }),
               /* @__PURE__ */ jsx("div", { style: { fontSize: 13, color: C.inkDim, marginTop: 4 }, children: "\u0421 \u0447\u0435\u0433\u043E \u043D\u0430\u0447\u043D\u0451\u043C?" })
             ] }),
             !playerVenture && /* @__PURE__ */ jsxs("button", { onClick: () => {
@@ -6597,6 +7015,10 @@ function MarketSandbox() {
             /* @__PURE__ */ jsxs("button", { onClick: () => setBizPath("factory-setup"), style: { ...choiceCardStyle(false), width: "100%", marginBottom: 10, display: "block" }, children: [
               /* @__PURE__ */ jsx("div", { style: { fontWeight: 700, fontSize: 15 }, children: "\u0421\u0432\u043E\u0451 \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u043E" }),
               /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginTop: 4 }, children: "\u0418\u0437\u0433\u043E\u0442\u043E\u0432\u043B\u0435\u043D\u0438\u0435 \u043F\u043E \u0441\u0435\u0431\u0435\u0441\u0442\u043E\u0438\u043C\u043E\u0441\u0442\u0438 \u2192 \u0437\u0430\u044F\u0432\u043A\u0438 \u043E\u043F\u0442\u043E\u0432\u044B\u0445 \u043F\u043E\u043A\u0443\u043F\u0430\u0442\u0435\u043B\u0435\u0439" })
+            ] }),
+            /* @__PURE__ */ jsxs("button", { onClick: () => setBizPath("warehouse-setup"), style: { ...choiceCardStyle(false), width: "100%", marginBottom: 10, display: "block" }, children: [
+              /* @__PURE__ */ jsx("div", { style: { fontWeight: 700, fontSize: 15 }, children: "\u041F\u0430\u0440\u0442\u043D\u0451\u0440\u0441\u043A\u0438\u0439 \u0441\u043A\u043B\u0430\u0434 ZZONE" }),
+              /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginTop: 4 }, children: "\u041E\u0431\u0440\u0430\u0431\u043E\u0442\u043A\u0430 \u0442\u043E\u0432\u0430\u0440\u043E\u0432 \u043C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441\u0430 \u2014 \u043F\u0440\u043E\u0446\u0435\u043D\u0442 \u043E\u0442 \u043E\u0431\u043E\u0440\u043E\u0442\u0430, \u0448\u0442\u0430\u0442, \u0442\u0440\u0430\u043D\u0441\u043F\u043E\u0440\u0442" })
             ] }),
             [
               { name: "\u041F\u0435\u0440\u0435\u043A\u0443\u043F \u0430\u0432\u0442\u043E", desc: "\u0421\u043A\u0443\u043F\u043A\u0430 \u0438 \u043F\u0435\u0440\u0435\u043F\u0440\u043E\u0434\u0430\u0436\u0430 \u043C\u0430\u0448\u0438\u043D" },
@@ -6729,6 +7151,60 @@ function MarketSandbox() {
                   disabled: resolvedBal < totalCost,
                   style: { width: "100%", padding: 14, borderRadius: 12, border: "none", fontWeight: 700, background: resolvedBal >= totalCost ? C.gold : C.surface2, color: resolvedBal >= totalCost ? "#161207" : C.inkFaint },
                   children: resolvedBal >= totalCost ? `\u041E\u0442\u043A\u0440\u044B\u0442\u044C \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u043E \u2014 ${fmt(totalCost)}` : `\u041D\u0435 \u0445\u0432\u0430\u0442\u0430\u0435\u0442 ${fmt(totalCost - resolvedBal)}`
+                }
+              )
+            ] });
+          })() : bizPath === "warehouse-setup" ? (() => {
+            const tier = WAREHOUSE_TIERS[warehouseSetupTier];
+            return /* @__PURE__ */ jsxs("div", { children: [
+              /* @__PURE__ */ jsx("button", { onClick: () => setBizPath("real"), style: { background: "none", border: "none", color: C.inkDim, fontSize: 12.5, marginBottom: 12, padding: 0 }, children: "\u2190 \u041D\u0430\u0437\u0430\u0434" }),
+              /* @__PURE__ */ jsxs("div", { style: { textAlign: "center", padding: "8px 0 16px" }, children: [
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 18, fontWeight: 700 }, children: "\u041D\u043E\u0432\u044B\u0439 \u0441\u043A\u043B\u0430\u0434 ZZONE" }),
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 13, color: C.inkDim, marginTop: 4 }, children: "\u041F\u0440\u0438\u0451\u043C, \u0441\u043E\u0440\u0442\u0438\u0440\u043E\u0432\u043A\u0430, \u0443\u043F\u0430\u043A\u043E\u0432\u043A\u0430 \u0438 \u043E\u0442\u0433\u0440\u0443\u0437\u043A\u0430 \u0442\u043E\u0432\u0430\u0440\u043E\u0432 \u043F\u043B\u043E\u0449\u0430\u0434\u043A\u0438 \u2014 \u0432\u044B\u0440\u0443\u0447\u043A\u0430 \u043A\u0430\u043A % \u043E\u0442 \u043E\u0431\u0440\u0430\u0431\u043E\u0442\u0430\u043D\u043D\u043E\u0433\u043E \u043E\u0431\u043E\u0440\u043E\u0442\u0430" })
+              ] }),
+              /* @__PURE__ */ jsx("div", { style: { display: "flex", gap: 8, marginBottom: 14 }, children: Object.values(WAREHOUSE_TIERS).map((t) => /* @__PURE__ */ jsxs("button", { onClick: () => setWarehouseSetupTier(t.id), style: choiceCardStyle(warehouseSetupTier === t.id), children: [
+                /* @__PURE__ */ jsx("div", { style: { fontWeight: 700, fontSize: 13 }, children: t.name }),
+                /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkDim, marginTop: 4 }, children: [
+                  fmt(t.openingCost),
+                  /* @__PURE__ */ jsx("br", {}),
+                  t.maxStaff,
+                  " \u0447\u0435\u043B \xB7 \u0434\u043E ",
+                  fmt(t.throughputCapacity),
+                  "/\u0447\u0430\u0441"
+                ] })
+              ] }, t.id)) }),
+              /* @__PURE__ */ jsx("label", { style: { fontSize: 11, color: C.inkDim, textTransform: "uppercase", letterSpacing: 1 }, children: "\u041D\u0430\u0437\u0432\u0430\u043D\u0438\u0435 \u0441\u043A\u043B\u0430\u0434\u0430" }),
+              /* @__PURE__ */ jsx("input", { value: form.name, onChange: (e) => setForm((f) => ({ ...f, name: e.target.value })), placeholder: "\u041D\u0430\u043F\u0440. \u0421\u043A\u043B\u0430\u0434 \u21161", style: inputStyle }),
+              (() => {
+                const payOptions = [
+                  ...BANK_ACCOUNTS.filter((b) => bankAccounts[b.id] && !bankAccounts[b.id].frozen).map((b) => ({ id: b.id, label: `${b.name} (\u2022\u2022\u2022\u2022 ${bankAccounts[b.id].cardLast4})` })),
+                  ...greyAccount && !greyAccount.frozen ? [{ id: "grey", label: `${GREY_BANK.name} (\u2022\u2022\u2022\u2022 ${greyAccount.cardLast4})` }] : []
+                ];
+                if (!payOptions.length) return null;
+                return /* @__PURE__ */ jsxs("div", { style: { marginBottom: 14 }, children: [
+                  /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkDim, marginBottom: 6 }, children: "\u041F\u043B\u0430\u0442\u0438\u0442\u044C \u043A\u0430\u0440\u0442\u043E\u0439" }),
+                  /* @__PURE__ */ jsx("select", { value: resolvedPayFrom, onChange: (e) => setPayFromAccount(e.target.value), style: { width: "100%", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, color: C.ink, fontSize: 13, padding: "10px 10px" }, children: payOptions.map((o) => /* @__PURE__ */ jsx("option", { value: o.id, children: o.label }, o.id)) })
+                ] });
+              })(),
+              /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14, fontSize: 11.5, color: C.inkDim, lineHeight: 1.7 }, children: [
+                "\u0421\u0442\u0430\u0440\u0442\u043E\u0432\u044B\u0439 \u0448\u0442\u0430\u0442: ",
+                tier.startStaff,
+                " \u0438\u0437 ",
+                tier.maxStaff,
+                " \u2014 \u0437\u0430\u0440\u043F\u043B\u0430\u0442\u0430 \u043D\u0430\u0447\u0438\u0441\u043B\u044F\u0435\u0442\u0441\u044F \u043A\u0430\u0436\u0434\u044B\u0439 \u0447\u0430\u0441, \u043D\u043E \u0441\u043F\u0438\u0441\u044B\u0432\u0430\u0435\u0442\u0441\u044F \u0442\u043E\u043B\u044C\u043A\u043E \u043F\u043E \u043E\u043F\u043B\u0430\u0442\u0435.",
+                /* @__PURE__ */ jsx("br", {}),
+                "\u0422\u0440\u0430\u043D\u0441\u043F\u043E\u0440\u0442 \u0438 \u043E\u0431\u043E\u0440\u0443\u0434\u043E\u0432\u0430\u043D\u0438\u0435 \u043F\u043E\u043A\u0443\u043F\u0430\u044E\u0442\u0441\u044F \u043E\u0442\u0434\u0435\u043B\u044C\u043D\u043E, \u0441\u043E \u0441\u0447\u0451\u0442\u0430 \u0418\u041F, \u043F\u043E\u0441\u043B\u0435 \u043E\u0442\u043A\u0440\u044B\u0442\u0438\u044F.",
+                /* @__PURE__ */ jsx("br", {}),
+                "\u0412\u044B\u0440\u0443\u0447\u043A\u0430 \u0438 \u0441\u0442\u0430\u0432\u043A\u0430 ZZONE \u0437\u0430\u0432\u0438\u0441\u044F\u0442 \u043E\u0442 \u0441\u043E\u0441\u0442\u043E\u044F\u043D\u0438\u044F ZZONE \u043D\u0430 \u0431\u0438\u0440\u0436\u0435 \u2014 \u043F\u0440\u0438 \u043F\u0430\u0434\u0435\u043D\u0438\u0438 \u0441\u043A\u043B\u0430\u0434 \u043C\u043E\u0436\u0435\u0442 \u0432\u0440\u0435\u043C\u0435\u043D\u043D\u043E \u0440\u0430\u0431\u043E\u0442\u0430\u0442\u044C \u0432 \u043C\u0438\u043D\u0443\u0441."
+              ] }),
+              /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkFaint, textAlign: "center", marginBottom: 14 }, children: "\u041E\u043F\u043B\u0430\u0442\u0430 \u043E\u0442\u043A\u0440\u044B\u0442\u0438\u044F \u2014 \u0441 \u043B\u0438\u0447\u043D\u043E\u0433\u043E \u0441\u0447\u0451\u0442\u0430. \u0414\u0430\u043B\u044C\u0448\u0435 \u0432\u0441\u0451 \u0447\u0435\u0440\u0435\u0437 \u0441\u0447\u0451\u0442 \u0418\u041F." }),
+              /* @__PURE__ */ jsx(
+                "button",
+                {
+                  onClick: () => openWarehouse(warehouseSetupTier, form.name),
+                  disabled: resolvedBal < tier.openingCost,
+                  style: { width: "100%", padding: 14, borderRadius: 12, border: "none", fontWeight: 700, background: resolvedBal >= tier.openingCost ? C.gold : C.surface2, color: resolvedBal >= tier.openingCost ? "#161207" : C.inkFaint },
+                  children: resolvedBal >= tier.openingCost ? `\u041E\u0442\u043A\u0440\u044B\u0442\u044C \u0441\u043A\u043B\u0430\u0434 \u2014 ${fmt(tier.openingCost)}` : `\u041D\u0435 \u0445\u0432\u0430\u0442\u0430\u0435\u0442 ${fmt(tier.openingCost - resolvedBal)}`
                 }
               )
             ] });
