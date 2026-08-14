@@ -449,8 +449,13 @@ var FACTORY_QUALITY_TIERS = [
 var FACTORY_EQUIPMENT_COST = { clothes: 5e3, accessories: 1e4, phones: 1e4, laptops: 1e4 };
 var FACTORY_UNIT_COST = { clothes: 4, accessories: 7, phones: 16, laptops: 22 };
 var FACTORY_CYCLE_MS = 30 * 60 * 1e3;
-var FACTORY_ORDER_WINDOW_MS = 12 * 60 * 1e3;
+var FACTORY_ORDER_WINDOW_MS = 60 * 60 * 1e3;
+var FACTORY_ORDER_POOL_SIZE = 5;
 var FACTORY_SHOP_TRANSFER_FEE_PCT = 0.18;
+var FACTORY_WAREHOUSE_CAPACITY_BONUS = { medium: 200, large: 500 };
+function warehouseFactoryCapacityBonus(warehouseList) {
+  return (warehouseList || []).reduce((sum, w) => sum + (FACTORY_WAREHOUSE_CAPACITY_BONUS[w.tierId] || 0), 0);
+}
 var FACTORY_BUYER_NAMES = ["\u0420\u0438\u0442\u0435\u0439\u043B-\u0441\u0435\u0442\u044C \xAB\u0414\u043E\u043C\u0438\u043D\u043E\xBB", "\u041E\u043F\u0442\u043E\u0432\u0438\u043A \u0441 \u0440\u044B\u043D\u043A\u0430", "\u0418\u043D\u0442\u0435\u0440\u043D\u0435\u0442-\u043C\u0430\u0433\u0430\u0437\u0438\u043D \xAB\u041A\u0430\u043A\u0442\u0443\u0441\xBB", "\u0414\u0438\u0441\u0442\u0440\u0438\u0431\u044C\u044E\u0442\u043E\u0440 \xAB\u0412\u043E\u043B\u043D\u0430\xBB", "\u0421\u0435\u0442\u0435\u0432\u043E\u0439 \u0437\u0430\u043A\u0443\u043F\u0449\u0438\u043A", "\u0427\u0430\u0441\u0442\u043D\u044B\u0439 \u043E\u043F\u0442"];
 var OFFLINE_STORE_TIERS = {
   small: { id: "small", name: "\u041C\u0430\u043B\u0435\u043D\u044C\u043A\u0438\u0439 \u043C\u0430\u0433\u0430\u0437\u0438\u043D", openingCost: 1e4, rent: 2e3, salary: 1800, electricity: 200, extraMin: 100, extraMax: 2e3, adCost: 1200, healthyStockValue: 8e3, footfall: 55, maxHourlyRevenue: 15e3 },
@@ -460,7 +465,8 @@ var OFFLINE_TICKS_PER_HOUR = 6;
 var OFFLINE_TICK_MS = 60 * 60 * 1e3 / OFFLINE_TICKS_PER_HOUR;
 var OFFLINE_AD_DURATION_TICKS = 3;
 var OFFLINE_AD_MULT = 1.35;
-var WAREHOUSE_CYCLE_MS = 60 * 60 * 1e3;
+var WAREHOUSE_CYCLE_MS = 15 * 60 * 1e3;
+var WAREHOUSE_CYCLE_HOUR_FRACTION = WAREHOUSE_CYCLE_MS / (60 * 60 * 1e3);
 var WAREHOUSE_BASE_ZZONE_VOLUME = 16e7;
 var WAREHOUSE_BASE_MARKET_CAPACITY = 16e7;
 var WAREHOUSE_BASE_RATE = 0.02;
@@ -469,9 +475,9 @@ var WAREHOUSE_TIERS = {
     id: "medium",
     name: "\u0421\u0440\u0435\u0434\u043D\u0438\u0439 \u0441\u043A\u043B\u0430\u0434",
     openingCost: 1e5,
-    throughputCapacity: 1e6,
+    throughputCapacity: 2.4e6,
     storageCapacity: 4e4,
-    contractShare: 0.0059,
+    contractShare: 0.0115,
     maxStaff: 14,
     wagePerStaff: 459,
     startStaff: 8,
@@ -492,9 +498,9 @@ var WAREHOUSE_TIERS = {
     id: "large",
     name: "\u0411\u043E\u043B\u044C\u0448\u043E\u0439 \u0441\u043A\u043B\u0430\u0434",
     openingCost: 25e4,
-    throughputCapacity: 25e5,
+    throughputCapacity: 5.4e6,
     storageCapacity: 1e5,
-    contractShare: 0.0142,
+    contractShare: 0.026,
     maxStaff: 33,
     wagePerStaff: 463,
     startStaff: 18,
@@ -585,7 +591,7 @@ var AD_TIERS = [
 var MANAGER_AD_TIER_MAP = { min: "basic", mid: "featured", max: "blast" };
 var MANAGER_PRICE_STRATEGY_MULT = { below: 0.85, market: 1.05, above: 1.3 };
 var MANAGER_PRICE_STRATEGY_LABEL = { below: "\u041D\u0438\u0436\u0435 \u0440\u044B\u043D\u043A\u0430", market: "\u041F\u043E \u0440\u044B\u043D\u043A\u0443", above: "\u0412\u044B\u0448\u0435 \u0440\u044B\u043D\u043A\u0430" };
-var MANAGER_AD_TIER_LABEL = { min: "\u041C\u0438\u043D\u0438\u043C\u0430\u043B\u044C\u043D\u0430\u044F", mid: "\u0421\u0440\u0435\u0434\u043D\u044F\u044F", max: "\u041C\u0430\u043A\u0441\u0438\u043C\u0430\u043B\u044C\u043D\u0430\u044F" };
+var MANAGER_AD_TIER_LABEL = { min: "\xD71.5", mid: "\xD72.2", max: "\xD73.2 \u043C\u0430\u043A\u0441" };
 function computeAdBoost(activeAds) {
   if (!activeAds || !activeAds.length) return 1;
   const sorted = [...activeAds].sort((a, b) => b.boostMult - a.boostMult);
@@ -606,7 +612,7 @@ var PITCH_ANGLES = [
   { id: "cap", label: "\u041A\u0430\u043F\u0438\u0442\u0430\u043B\u0438\u0437\u0430\u0446\u0438\u044E", icon: "\u{1F4CA}" }
 ];
 var STORAGE_KEY = "market-sandbox-v6";
-var SAVE_VERSION = 2;
+var SAVE_VERSION = 3;
 var LocalStorageSaveAdapter = {
   async save(key, payload) {
     await window.storage.set(key, JSON.stringify(payload));
@@ -636,6 +642,22 @@ var SAVE_MIGRATIONS = {
         return a;
       }) } : s
     )) : data.resellShops
+  }),
+  // v2 -> v3: the manager used to live inside offlineStore.manager and only ran while the
+  // shop had a physical offline store. He actually reads/writes the SAME shared stock,
+  // listedPrice, and ads that the online marketplace sales tick uses — so he was already
+  // capable of running the online side too, just gated off for shops without a physical
+  // store. Moved to shop.manager (top-level) so any shop can hire one for online-only
+  // restocking/pricing/ads, regardless of whether it also has an offline store.
+  3: (data) => ({
+    ...data,
+    resellShops: Array.isArray(data.resellShops) ? data.resellShops.map((s) => {
+      if (s && s.offlineStore && s.offlineStore.manager && !s.manager) {
+        const { manager, ...restOffline } = s.offlineStore;
+        return { ...s, manager, offlineStore: restOffline };
+      }
+      return s;
+    }) : data.resellShops
   })
 };
 function migrateSaveData(data) {
@@ -1142,6 +1164,7 @@ function MarketSandbox() {
   const [confirmCloseOffline, setConfirmCloseOffline] = useState(null);
   const [managerFormInputs, setManagerFormInputs] = useState({});
   const [factoryTransferInputs, setFactoryTransferInputs] = useState({});
+  const [factoryProductionInputs, setFactoryProductionInputs] = useState({});
   const [favorites, setFavorites] = useState({});
   const [marketFilterCat, setMarketFilterCat] = useState("all");
   const [marketSort, setMarketSort] = useState("default");
@@ -2716,101 +2739,14 @@ function MarketSandbox() {
           return;
         }
         let cats = { ...shop.categories || {} };
-        let manager = os.manager ? { ...os.manager } : null;
+        const manager = shop.manager;
         let adUntilTick = os.adUntilTick;
-        if (manager && manager.hired) {
-          if (Date.now() >= manager.nextSalaryAt) {
-            const cyclesPassed = Math.max(1, Math.floor((Date.now() - manager.nextSalaryAt) / MANAGER_SALARY_CYCLE_MS) + 1);
-            manager.salaryDue += MANAGER_SALARY * cyclesPassed;
-            manager.nextSalaryAt += cyclesPassed * MANAGER_SALARY_CYCLE_MS;
-          }
-          if (manager.salaryDue >= MANAGER_SALARY * 3) {
-            pushPost({ text: `\xAB${shop.name}\xBB: \u043C\u0435\u043D\u0435\u0434\u0436\u0435\u0440 \u0443\u0432\u043E\u043B\u0438\u043B\u0441\u044F \u2014 \u0437\u0430\u0440\u043F\u043B\u0430\u0442\u0430 \u043D\u0435 \u0432\u044B\u043F\u043B\u0430\u0447\u0438\u0432\u0430\u043B\u0430\u0441\u044C \u0441\u043B\u0438\u0448\u043A\u043E\u043C \u0434\u043E\u043B\u0433\u043E`, positive: false, isMacro: false });
-            manager = null;
-          }
-        }
-        let managerNewAds = null;
-        if (manager && manager.hired) {
-          const priceMult = MANAGER_PRICE_STRATEGY_MULT[manager.priceStrategy] || MANAGER_PRICE_STRATEGY_MULT.market;
-          const preferredSupplier = manager.supplierId && manager.supplierId !== "auto" ? SUPPLIERS.find((s) => s.id === manager.supplierId) : null;
-          const candidateSuppliers = preferredSupplier ? [preferredSupplier] : SUPPLIERS;
-          PRODUCT_CATEGORIES.forEach((cat) => {
-            const c = cats[cat.id];
-            if (!c) return;
-            let next = c;
-            const targetStock = manager.minStock * 2;
-            if (next.stock < manager.minStock && targetStock > next.stock) {
-              let needed = targetStock - next.stock;
-              if (manager.supplierId && manager.supplierId.indexOf("factory:") === 0) {
-                const factoryId = manager.supplierId.slice(8);
-                const factory = factoriesRef.current.find((f) => f.id === factoryId && f.category === cat.id);
-                const factoryStockLeft = factory ? Math.max(0, factory.stock - (factoryStockUsed[factory.id] || 0)) : 0;
-                if (factory && factoryStockLeft > 0 && needed > 0) {
-                  const unitCost = FACTORY_UNIT_COST[cat.id];
-                  const logisticsUnitCost = unitCost * FACTORY_SHOP_TRANSFER_FEE_PCT;
-                  const available2 = ipCashRef.current + ipCashDelta;
-                  const affordableByLogistics = logisticsUnitCost > 0 ? Math.floor(available2 / logisticsUnitCost) : needed;
-                  const fromFactory = Math.max(0, Math.min(needed, factoryStockLeft, affordableByLogistics));
-                  if (fromFactory > 0) {
-                    const logisticsCost = Math.round(fromFactory * logisticsUnitCost);
-                    ipCashDelta -= logisticsCost;
-                    factoryStockUsed[factory.id] = (factoryStockUsed[factory.id] || 0) + fromFactory;
-                    const newStock = next.stock + fromFactory;
-                    const newAvgCost = next.stock > 0 ? (next.avgCost * next.stock + unitCost * fromFactory) / newStock : unitCost;
-                    next = { ...next, stock: newStock, avgCost: Math.round(newAvgCost * 100) / 100 };
-                    needed -= fromFactory;
-                    logTx(`\u041C\u0435\u043D\u0435\u0434\u0436\u0435\u0440: \u043F\u0435\u0440\u0435\u0432\u043E\u0434 \u0441\u043E \u0441\u0432\u043E\u0435\u0433\u043E \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u0430 \xB7 \xAB${shop.name}\xBB (${cat.name} \xD7${fromFactory})`, logisticsCost, "out");
-                  }
-                }
-              }
-              const bestSupplier = needed > 0 ? candidateSuppliers.reduce((best, s) => {
-                const perf = companyPerfPct(companiesRef.current, s.companyTicker);
-                const price = s.pricePerUnit * cat.priceMult * marketIndexRef.current * supplierHealthPriceMult(perf);
-                return !best || price < best.price ? { supplier: s, price } : best;
-              }, null) : null;
-              if (bestSupplier) {
-                const unitPrice = Math.round(bestSupplier.price * 100) / 100;
-                const available2 = ipCashRef.current + ipCashDelta;
-                const affordableUnits = unitPrice > 0 ? Math.floor(available2 / unitPrice) : 0;
-                const buyUnits = Math.max(0, Math.min(needed, affordableUnits));
-                if (buyUnits > 0) {
-                  const cost = Math.round(buyUnits * unitPrice * 100) / 100;
-                  ipCashDelta -= cost;
-                  const newStock = next.stock + buyUnits;
-                  const newAvgCost = next.stock > 0 ? (next.avgCost * next.stock + unitPrice * buyUnits) / newStock : unitPrice;
-                  next = { ...next, stock: newStock, avgCost: Math.round(newAvgCost * 100) / 100 };
-                  logTx(`\u041C\u0435\u043D\u0435\u0434\u0436\u0435\u0440: \u0434\u043E\u043A\u0443\u043F\u043A\u0430 \u043E\u0441\u0442\u0430\u0442\u043A\u0430 \xB7 \xAB${shop.name}\xBB (${cat.name}, ${bestSupplier.supplier.flag} ${bestSupplier.supplier.country})`, cost, "out");
-                }
-              }
-            }
-            if (next.avgCost > 0) {
-              const fairPrice = next.avgCost * 1.5 * cat.marginMult * marketIndexRef.current;
-              const targetPrice = Math.round(fairPrice * priceMult * 100) / 100;
-              if (Math.abs((next.listedPrice || 0) - targetPrice) > 0.01) next = { ...next, listedPrice: targetPrice };
-            }
-            if (next !== c) cats[cat.id] = next;
-          });
-          if (manager.autoAdEnabled && os.tickCount >= adUntilTick) {
-            const available2 = ipCashRef.current + ipCashDelta;
-            if (available2 >= tier.adCost) {
-              ipCashDelta -= tier.adCost;
-              adUntilTick = os.tickCount + OFFLINE_AD_DURATION_TICKS;
-              logTx(`\u041C\u0435\u043D\u0435\u0434\u0436\u0435\u0440: \u0440\u0435\u043A\u043B\u0430\u043C\u0430 \u0442\u043E\u0447\u043A\u0438 \xB7 \xAB${shop.name}\xBB`, tier.adCost, "out");
-            }
-          }
-          if (manager.autoAdEnabled) {
-            const adTierId = MANAGER_AD_TIER_MAP[manager.adTier] || "featured";
-            const onlineTier = AD_TIERS.find((t) => t.id === adTierId);
-            const activeAds = (shop.ads || []).filter((a) => Date.now() < a.adUntil);
-            const activeBoost = activeAds.length ? computeAdBoost(activeAds) : 1;
-            if (onlineTier && activeBoost < onlineTier.boostMult) {
-              const available3 = ipCashRef.current + ipCashDelta;
-              if (available3 >= onlineTier.cost) {
-                ipCashDelta -= onlineTier.cost;
-                managerNewAds = [{ id: makeId("ad"), tierId: onlineTier.id, boostMult: onlineTier.boostMult, adUntil: Date.now() + onlineTier.durationMin * 6e4 }];
-                logTx(`\u041C\u0435\u043D\u0435\u0434\u0436\u0435\u0440: \u0440\u0435\u043A\u043B\u0430\u043C\u0430 \u043E\u043D\u043B\u0430\u0439\u043D \xB7 \xAB${shop.name}\xBB (${onlineTier.name})`, onlineTier.cost, "out");
-              }
-            }
+        if (manager && manager.hired && manager.autoAdEnabled && os.tickCount >= adUntilTick) {
+          const available2 = ipCashRef.current + ipCashDelta;
+          if (available2 >= tier.adCost) {
+            ipCashDelta -= tier.adCost;
+            adUntilTick = os.tickCount + OFFLINE_AD_DURATION_TICKS;
+            logTx(`\u041C\u0435\u043D\u0435\u0434\u0436\u0435\u0440: \u0440\u0435\u043A\u043B\u0430\u043C\u0430 \u0442\u043E\u0447\u043A\u0438 \xB7 \xAB${shop.name}\xBB`, tier.adCost, "out");
           }
         }
         const catValues = PRODUCT_CATEGORIES.map((cat) => {
@@ -2873,12 +2809,125 @@ function MarketSandbox() {
         updates[shop.id] = {
           categories: newCategories,
           totalRevenue: shop.totalRevenue + revenue,
-          offlineStore: { ...os, boostHealth, missedTicks, adUntilTick, manager, growthLevel, tickCount: os.tickCount + 1, nextTickAt: Date.now() + OFFLINE_TICK_MS, totalOfflineRevenue: os.totalOfflineRevenue + revenue },
-          ...managerNewAds ? { ads: [...shop.ads || [], ...managerNewAds] } : {}
+          offlineStore: { ...os, boostHealth, missedTicks, adUntilTick, growthLevel, tickCount: os.tickCount + 1, nextTickAt: Date.now() + OFFLINE_TICK_MS, totalOfflineRevenue: os.totalOfflineRevenue + revenue }
         };
       });
       if (ipCashDelta !== 0) setIpCash((c) => Math.max(0, c + ipCashDelta));
       setResellShops((prev) => prev.map((s) => updates[s.id] ? { ...s, ...updates[s.id] } : s));
+      if (Object.keys(factoryStockUsed).length) {
+        setFactories((prev) => prev.map((f) => factoryStockUsed[f.id] ? { ...f, stock: Math.max(0, f.stock - factoryStockUsed[f.id]), totalTransferredToShop: (f.totalTransferredToShop || 0) + factoryStockUsed[f.id] } : f));
+      }
+      setTimeout(saveGame, 50);
+    }, 15e3);
+    return () => clearInterval(id);
+  }, [loaded]);
+  useEffect(() => {
+    if (!loaded) return;
+    const id = setInterval(() => {
+      const shops = resellShopsRef.current;
+      const due = shops.filter((s) => s.manager?.hired);
+      if (!due.length) return;
+      let ipCashDelta = 0;
+      const updates = {};
+      const factoryStockUsed = {};
+      due.forEach((shop) => {
+        let manager = { ...shop.manager };
+        if (Date.now() >= manager.nextSalaryAt) {
+          const cyclesPassed = Math.max(1, Math.floor((Date.now() - manager.nextSalaryAt) / MANAGER_SALARY_CYCLE_MS) + 1);
+          manager.salaryDue += MANAGER_SALARY * cyclesPassed;
+          manager.nextSalaryAt += cyclesPassed * MANAGER_SALARY_CYCLE_MS;
+        }
+        if (manager.salaryDue >= MANAGER_SALARY * 3) {
+          pushPost({ text: `\xAB${shop.name}\xBB: \u043C\u0435\u043D\u0435\u0434\u0436\u0435\u0440 \u0443\u0432\u043E\u043B\u0438\u043B\u0441\u044F \u2014 \u0437\u0430\u0440\u043F\u043B\u0430\u0442\u0430 \u043D\u0435 \u0432\u044B\u043F\u043B\u0430\u0447\u0438\u0432\u0430\u043B\u0430\u0441\u044C \u0441\u043B\u0438\u0448\u043A\u043E\u043C \u0434\u043E\u043B\u0433\u043E`, positive: false, isMacro: false });
+          updates[shop.id] = { ...updates[shop.id], manager: null };
+          return;
+        }
+        let cats = { ...shop.categories || {} };
+        let managerNewAds = null;
+        const priceMult = MANAGER_PRICE_STRATEGY_MULT[manager.priceStrategy] || MANAGER_PRICE_STRATEGY_MULT.market;
+        const preferredSupplier = manager.supplierId && manager.supplierId !== "auto" ? SUPPLIERS.find((s) => s.id === manager.supplierId) : null;
+        const candidateSuppliers = preferredSupplier ? [preferredSupplier] : SUPPLIERS;
+        PRODUCT_CATEGORIES.forEach((cat) => {
+          const c = cats[cat.id];
+          if (!c) return;
+          let next = c;
+          const targetStock = manager.minStock * 2;
+          if (next.stock < manager.minStock && targetStock > next.stock) {
+            let needed = targetStock - next.stock;
+            if (manager.supplierId && manager.supplierId.indexOf("factory:") === 0) {
+              const factoryId = manager.supplierId.slice(8);
+              const factory = factoriesRef.current.find((f) => f.id === factoryId && f.category === cat.id);
+              const factoryStockLeft = factory ? Math.max(0, factory.stock - (factoryStockUsed[factory.id] || 0)) : 0;
+              if (factory && factoryStockLeft > 0 && needed > 0) {
+                const unitCost = FACTORY_UNIT_COST[cat.id];
+                const logisticsUnitCost = unitCost * FACTORY_SHOP_TRANSFER_FEE_PCT;
+                const available2 = ipCashRef.current + ipCashDelta;
+                const affordableByLogistics = logisticsUnitCost > 0 ? Math.floor(available2 / logisticsUnitCost) : needed;
+                const fromFactory = Math.max(0, Math.min(needed, factoryStockLeft, affordableByLogistics));
+                if (fromFactory > 0) {
+                  const logisticsCost = Math.round(fromFactory * logisticsUnitCost);
+                  ipCashDelta -= logisticsCost;
+                  factoryStockUsed[factory.id] = (factoryStockUsed[factory.id] || 0) + fromFactory;
+                  const newStock = next.stock + fromFactory;
+                  const newAvgCost = next.stock > 0 ? (next.avgCost * next.stock + unitCost * fromFactory) / newStock : unitCost;
+                  next = { ...next, stock: newStock, avgCost: Math.round(newAvgCost * 100) / 100 };
+                  needed -= fromFactory;
+                  logTx(`\u041C\u0435\u043D\u0435\u0434\u0436\u0435\u0440: \u043F\u0435\u0440\u0435\u0432\u043E\u0434 \u0441\u043E \u0441\u0432\u043E\u0435\u0433\u043E \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u0430 \xB7 \xAB${shop.name}\xBB (${cat.name} \xD7${fromFactory})`, logisticsCost, "out");
+                }
+              }
+            }
+            const bestSupplier = needed > 0 ? candidateSuppliers.reduce((best, s) => {
+              const perf = companyPerfPct(companiesRef.current, s.companyTicker);
+              const price = s.pricePerUnit * cat.priceMult * marketIndexRef.current * supplierHealthPriceMult(perf);
+              return !best || price < best.price ? { supplier: s, price } : best;
+            }, null) : null;
+            if (bestSupplier) {
+              const unitPrice = Math.round(bestSupplier.price * 100) / 100;
+              const available2 = ipCashRef.current + ipCashDelta;
+              const affordableUnits = unitPrice > 0 ? Math.floor(available2 / unitPrice) : 0;
+              const buyUnits = Math.max(0, Math.min(needed, affordableUnits));
+              if (buyUnits > 0) {
+                const cost = Math.round(buyUnits * unitPrice * 100) / 100;
+                ipCashDelta -= cost;
+                const newStock = next.stock + buyUnits;
+                const newAvgCost = next.stock > 0 ? (next.avgCost * next.stock + unitPrice * buyUnits) / newStock : unitPrice;
+                next = { ...next, stock: newStock, avgCost: Math.round(newAvgCost * 100) / 100 };
+                logTx(`\u041C\u0435\u043D\u0435\u0434\u0436\u0435\u0440: \u0434\u043E\u043A\u0443\u043F\u043A\u0430 \u043E\u0441\u0442\u0430\u0442\u043A\u0430 \xB7 \xAB${shop.name}\xBB (${cat.name}, ${bestSupplier.supplier.flag} ${bestSupplier.supplier.country})`, cost, "out");
+              }
+            }
+          }
+          if (next.avgCost > 0) {
+            const fairPrice = next.avgCost * 1.5 * cat.marginMult * marketIndexRef.current;
+            const targetPrice = Math.round(fairPrice * priceMult * 100) / 100;
+            if (Math.abs((next.listedPrice || 0) - targetPrice) > 0.01) next = { ...next, listedPrice: targetPrice };
+          }
+          if (next !== c) cats[cat.id] = next;
+        });
+        if (manager.autoAdEnabled) {
+          const adTierId = MANAGER_AD_TIER_MAP[manager.adTier] || "featured";
+          const onlineTier = AD_TIERS.find((t) => t.id === adTierId);
+          const activeAds = (shop.ads || []).filter((a) => Date.now() < a.adUntil);
+          const activeBoost = activeAds.length ? computeAdBoost(activeAds) : 1;
+          if (onlineTier && activeBoost < onlineTier.boostMult) {
+            const available3 = ipCashRef.current + ipCashDelta;
+            if (available3 >= onlineTier.cost) {
+              ipCashDelta -= onlineTier.cost;
+              managerNewAds = [{ id: makeId("ad"), tierId: onlineTier.id, boostMult: onlineTier.boostMult, adUntil: Date.now() + onlineTier.durationMin * 6e4 }];
+              logTx(`\u041C\u0435\u043D\u0435\u0434\u0436\u0435\u0440: \u0440\u0435\u043A\u043B\u0430\u043C\u0430 \u043D\u0430 \u043C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441\u0435 \xB7 \xAB${shop.name}\xBB (${onlineTier.name})`, onlineTier.cost, "out");
+            }
+          }
+        }
+        updates[shop.id] = {
+          ...updates[shop.id],
+          categories: cats,
+          manager,
+          ...managerNewAds ? { ads: [...shop.ads || [], ...managerNewAds] } : {}
+        };
+      });
+      if (ipCashDelta !== 0) setIpCash((c) => Math.max(0, c + ipCashDelta));
+      if (Object.keys(updates).length) {
+        setResellShops((prev) => prev.map((s) => updates[s.id] ? { ...s, ...updates[s.id] } : s));
+      }
       if (Object.keys(factoryStockUsed).length) {
         setFactories((prev) => prev.map((f) => factoryStockUsed[f.id] ? { ...f, stock: Math.max(0, f.stock - factoryStockUsed[f.id]), totalTransferredToShop: (f.totalTransferredToShop || 0) + factoryStockUsed[f.id] } : f));
       }
@@ -2910,9 +2959,9 @@ function MarketSandbox() {
         const baseTurnover = Math.min(availableToWarehouse, tier.throughputCapacity);
         const efficiency = warehouseEfficiency(tier, w.staffLevel, w.equipmentLevel, w.condition);
         const processedTurnover = baseTurnover * efficiency;
-        const grossRevenue = Math.round(processedTurnover * rate);
-        const wagesThisCycle = Math.round(w.staffLevel * tier.wagePerStaff);
-        const opex = tier.electricity + w.transportLevel * tier.transportUpkeep + w.equipmentLevel * tier.equipmentUpkeep + tier.misc;
+        const grossRevenue = Math.round(processedTurnover * rate * WAREHOUSE_CYCLE_HOUR_FRACTION);
+        const wagesThisCycle = Math.round(w.staffLevel * tier.wagePerStaff * WAREHOUSE_CYCLE_HOUR_FRACTION * 100) / 100;
+        const opex = (tier.electricity + w.transportLevel * tier.transportUpkeep + w.equipmentLevel * tier.equipmentUpkeep + tier.misc) * WAREHOUSE_CYCLE_HOUR_FRACTION;
         const available = ipCashRef.current + ipCashDelta + grossRevenue;
         const paidOpex = Math.min(opex, Math.max(0, available));
         ipCashDelta += grossRevenue - paidOpex;
@@ -2922,18 +2971,20 @@ function MarketSandbox() {
         }
         logTx(`\u0421\u043A\u043B\u0430\u0434 ZZONE \xB7 \xAB${w.name}\xBB: \u0432\u044B\u0440\u0443\u0447\u043A\u0430`, grossRevenue, "in");
         if (paidOpex > 0) logTx(`\u0421\u043A\u043B\u0430\u0434 ZZONE \xB7 \xAB${w.name}\xBB: \u044D\u043A\u0441\u043F\u043B\u0443\u0430\u0442\u0430\u0446\u0438\u044F/\u0442\u0440\u0430\u043D\u0441\u043F\u043E\u0440\u0442/\u043E\u0431\u043E\u0440\u0443\u0434\u043E\u0432\u0430\u043D\u0438\u0435`, paidOpex, "out");
-        const newWageDue = Math.round((w.wageDue + wagesThisCycle) * 100) / 100;
+        let newWageDue = Math.round((w.wageDue + wagesThisCycle) * 100) / 100;
         let condition = w.condition;
         let staffLevel = w.staffLevel;
         if (newWageDue <= 1) {
-          condition = Math.min(100, condition + 5);
+          condition = Math.min(100, condition + 5 * WAREHOUSE_CYCLE_HOUR_FRACTION);
         } else if (newWageDue > tier.wagePerStaff * Math.max(1, staffLevel) * 2.5) {
+          const staffBefore = staffLevel;
           const attrition = Math.max(1, Math.ceil(staffLevel * 0.2));
           staffLevel = Math.max(0, staffLevel - attrition);
-          condition = Math.max(0, condition - 20);
+          condition = Math.max(0, condition - 20 * WAREHOUSE_CYCLE_HOUR_FRACTION);
+          newWageDue = Math.round(newWageDue * (staffBefore > 0 ? staffLevel / staffBefore : 0) * 100) / 100;
           pushPost({ text: `\u0421\u043A\u043B\u0430\u0434 ZZONE \xAB${w.name}\xBB: \u0437\u0430\u0440\u043F\u043B\u0430\u0442\u0430 \u043D\u0435 \u0432\u044B\u043F\u043B\u0430\u0447\u0435\u043D\u0430 \u2014 ${attrition} \u0447\u0435\u043B\u043E\u0432\u0435\u043A \u0443\u0432\u043E\u043B\u0438\u043B\u0438\u0441\u044C`, positive: false, isMacro: false });
         } else {
-          condition = Math.max(0, condition - 10);
+          condition = Math.max(0, condition - 10 * WAREHOUSE_CYCLE_HOUR_FRACTION);
         }
         updates[w.id] = {
           wageDue: newWageDue,
@@ -2981,14 +3032,7 @@ function MarketSandbox() {
           posts.push({ text: `\u041F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u043E \xAB${f.name}\xBB \u0437\u0430\u043A\u0440\u044B\u043B\u043E\u0441\u044C \u2014 \u043D\u0435 \u043F\u043E\u0442\u044F\u043D\u0443\u043B\u043E \u0440\u0430\u0441\u0445\u043E\u0434\u044B`, positive: false, isMacro: false });
           return;
         }
-        const stock = Math.min(line.capacity, f.stock + line.unitsPerCycle);
-        const totalProduced = f.totalProduced + Math.max(0, stock - f.stock);
-        let pendingOrders = f.pendingOrders.filter((o) => o.expiresAt > Date.now());
-        const ordersExpired = f.ordersExpired + (f.pendingOrders.length - pendingOrders.length);
-        if (pendingOrders.length < 2 && Math.random() < 0.65) {
-          pendingOrders = [...pendingOrders, createFactoryOrder(f.category)];
-        }
-        updates[f.id] = { stock, totalProduced, pendingOrders, ordersExpired, missedTicks, nextTickAt: Date.now() + FACTORY_CYCLE_MS };
+        updates[f.id] = { missedTicks, nextTickAt: Date.now() + FACTORY_CYCLE_MS };
       });
       if (ipCashDelta !== 0) setIpCash((c) => Math.max(0, c + ipCashDelta));
       if (closeIds.length || Object.keys(updates).length) {
@@ -2997,6 +3041,46 @@ function MarketSandbox() {
       if (posts.length) pushPosts(posts.map((p) => ({ id: makeId("post"), ...p })));
       setTimeout(saveGame, 50);
     }, 15e3);
+    return () => clearInterval(id);
+  }, [loaded]);
+  useEffect(() => {
+    if (!loaded) return;
+    const id = setInterval(() => {
+      const list = factoriesRef.current;
+      const updates = {};
+      const posts = [];
+      list.forEach((f) => {
+        const line = FACTORY_LINES[f.line];
+        const effCapacity = line.capacity + warehouseFactoryCapacityBonus(warehousesRef.current);
+        let stock = f.stock;
+        let production = f.production;
+        let totalProduced = f.totalProduced;
+        let changed = false;
+        if (production && Date.now() >= production.readyAt) {
+          const added = Math.max(0, Math.min(production.targetUnits, effCapacity - stock));
+          stock += added;
+          totalProduced += added;
+          production = null;
+          changed = true;
+          posts.push({ text: `\u041F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u043E \xAB${f.name}\xBB: \u0433\u043E\u0442\u043E\u0432\u043E ${added} \u0448\u0442`, positive: true, isMacro: false });
+        }
+        let pendingOrders = f.pendingOrders.filter((o) => o.expiresAt > Date.now());
+        if (pendingOrders.length !== f.pendingOrders.length) changed = true;
+        while (pendingOrders.length < FACTORY_ORDER_POOL_SIZE && stock > 0) {
+          pendingOrders = [...pendingOrders, createFactoryOrder(f.category)];
+          changed = true;
+        }
+        const ordersExpired = f.ordersExpired + Math.max(0, f.pendingOrders.length - f.pendingOrders.filter((o) => o.expiresAt > Date.now()).length);
+        if (changed) {
+          updates[f.id] = { stock, production, totalProduced, pendingOrders, ordersExpired };
+        }
+      });
+      if (Object.keys(updates).length) {
+        setFactories((prev) => prev.map((f) => updates[f.id] ? { ...f, ...updates[f.id] } : f));
+        setTimeout(saveGame, 50);
+      }
+      if (posts.length) pushPosts(posts.map((p) => ({ id: makeId("post"), ...p })));
+    }, 5e3);
     return () => clearInterval(id);
   }, [loaded]);
   useEffect(() => {
@@ -3226,8 +3310,8 @@ function MarketSandbox() {
   };
   const hireManager = (shopId, { minStock, priceStrategy, adTier, autoAdEnabled, supplierId }) => {
     const shop = resellShops.find((s) => s.id === shopId);
-    if (!shop?.offlineStore) return;
-    setResellShops((prev) => prev.map((s) => s.id === shopId ? { ...s, offlineStore: { ...s.offlineStore, manager: {
+    if (!shop) return;
+    setResellShops((prev) => prev.map((s) => s.id === shopId ? { ...s, manager: {
       hired: true,
       minStock: Math.max(1, Math.round(Number(minStock) || 0)),
       priceStrategy: ["below", "market", "above"].includes(priceStrategy) ? priceStrategy : "market",
@@ -3236,25 +3320,25 @@ function MarketSandbox() {
       supplierId: supplierId || "auto",
       salaryDue: 0,
       nextSalaryAt: Date.now() + MANAGER_SALARY_CYCLE_MS
-    } } } : s));
+    } } : s));
     setTimeout(saveGame, 50);
   };
   const updateManagerSettings = (shopId, patch) => {
-    setResellShops((prev) => prev.map((s) => s.id === shopId && s.offlineStore?.manager ? { ...s, offlineStore: { ...s.offlineStore, manager: { ...s.offlineStore.manager, ...patch } } } : s));
+    setResellShops((prev) => prev.map((s) => s.id === shopId && s.manager ? { ...s, manager: { ...s.manager, ...patch } } : s));
     setTimeout(saveGame, 50);
   };
   const fireManager = (shopId) => {
-    setResellShops((prev) => prev.map((s) => s.id === shopId && s.offlineStore ? { ...s, offlineStore: { ...s.offlineStore, manager: null } } : s));
+    setResellShops((prev) => prev.map((s) => s.id === shopId ? { ...s, manager: null } : s));
     setTimeout(saveGame, 50);
   };
   const payManagerSalary = (shopId) => {
     const shop = resellShops.find((s) => s.id === shopId);
-    const due = shop?.offlineStore?.manager?.salaryDue || 0;
+    const due = shop?.manager?.salaryDue || 0;
     if (due <= 0) return;
     const paid = Math.min(due, ipCash);
     if (paid <= 0) return;
     setIpCash((c) => c - paid);
-    setResellShops((prev) => prev.map((s) => s.id === shopId && s.offlineStore?.manager ? { ...s, offlineStore: { ...s.offlineStore, manager: { ...s.offlineStore.manager, salaryDue: s.offlineStore.manager.salaryDue - paid } } } : s));
+    setResellShops((prev) => prev.map((s) => s.id === shopId && s.manager ? { ...s, manager: { ...s.manager, salaryDue: s.manager.salaryDue - paid } } : s));
     logTx(`\u0417\u0430\u0440\u043F\u043B\u0430\u0442\u0430 \u043C\u0435\u043D\u0435\u0434\u0436\u0435\u0440\u0430 \xB7 \xAB${shop.name}\xBB`, paid, "out");
     setTimeout(saveGame, 50);
   };
@@ -3274,6 +3358,7 @@ function MarketSandbox() {
       rating: 4,
       reviews: [],
       ads: [],
+      manager: null,
       qualityScore: 0.6
     }]);
     setSelectedBizId(newId);
@@ -3311,7 +3396,6 @@ function MarketSandbox() {
     if (bal < totalCost) return;
     adjustAccountBalance(src, -totalCost);
     const newId = makeId("factory");
-    const initialOrders = [createFactoryOrder(category), createFactoryOrder(category)].map((o) => ({ ...o, expiresAt: Date.now() + FACTORY_CYCLE_MS + FACTORY_ORDER_WINDOW_MS }));
     setFactories((prev) => [...prev, {
       id: newId,
       name: name && name.trim() ? name.trim() : `\u041F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u043E \u2116${prev.length + 1}`,
@@ -3319,13 +3403,14 @@ function MarketSandbox() {
       category,
       qualityTier: "standard",
       stock: 0,
+      production: null,
       totalProduced: 0,
       totalRevenue: 0,
       ordersFulfilled: 0,
       ordersDeclined: 0,
       ordersExpired: 0,
       missedTicks: 0,
-      pendingOrders: initialOrders,
+      pendingOrders: [],
       nextTickAt: Date.now() + FACTORY_CYCLE_MS,
       openedAt: Date.now()
     }]);
@@ -3333,6 +3418,21 @@ function MarketSandbox() {
     setBizPath(null);
     setActiveTab("company");
     logTx(`\u041E\u0442\u043A\u0440\u044B\u0442\u0438\u0435 \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u0430 \xB7 ${FACTORY_EQUIPMENT_COST[category] ? PRODUCT_CATEGORIES.find((c) => c.id === category)?.name : ""}`, totalCost, "out");
+    setTimeout(saveGame, 50);
+  };
+  const startFactoryProduction = (factoryId, units) => {
+    const factory = factories.find((f) => f.id === factoryId);
+    if (!factory || factory.production) return;
+    const line = FACTORY_LINES[factory.line];
+    const effCapacity = line.capacity + warehouseFactoryCapacityBonus(warehouses);
+    const room = effCapacity - factory.stock;
+    const targetUnits = Math.max(1, Math.min(room, Math.round(Number(units) || 0)));
+    if (targetUnits <= 0) return;
+    const durationMs = Math.max(2 * 60 * 1e3, Math.ceil(targetUnits / line.unitsPerCycle * FACTORY_CYCLE_MS));
+    setFactories((prev) => prev.map((f) => f.id === factoryId ? {
+      ...f,
+      production: { targetUnits, startedAt: Date.now(), readyAt: Date.now() + durationMs }
+    } : f));
     setTimeout(saveGame, 50);
   };
   const respondToFactoryOrder = (factoryId, orderId, accept) => {
@@ -3410,7 +3510,7 @@ function MarketSandbox() {
       totalNetProfit: 0,
       cyclesRun: 0,
       lastCycleStats: null,
-      nextCycleAt: Date.now() + WAREHOUSE_CYCLE_MS,
+      nextCycleAt: Date.now() + 2e4,
       openedAt: Date.now()
     }]);
     logTx(`\u0421\u043A\u043B\u0430\u0434 ZZONE: \u043E\u0442\u043A\u0440\u044B\u0442\u0438\u0435 \xB7 ${tier.name}`, tier.openingCost, "out");
@@ -6536,8 +6636,8 @@ function MarketSandbox() {
                   ] }),
                   /* @__PURE__ */ jsxs("div", { style: { marginTop: 14, paddingTop: 14, borderTop: `1px solid ${C.border}` }, children: [
                     /* @__PURE__ */ jsx("div", { style: { fontSize: 12.5, fontWeight: 700, marginBottom: 8 }, children: "\u041C\u0435\u043D\u0435\u0434\u0436\u0435\u0440 \u043F\u043E \u043F\u0440\u043E\u0434\u0430\u0436\u0430\u043C" }),
-                    os.manager?.hired ? (() => {
-                      const m = os.manager;
+                    shop.manager?.hired ? (() => {
+                      const m = shop.manager;
                       const overdue = m.salaryDue > 0;
                       const priceStrategy = m.priceStrategy || "market";
                       const adTier = m.adTier || "mid";
@@ -6623,6 +6723,98 @@ function MarketSandbox() {
                       ] });
                     })()
                   ] })
+                ] });
+              })(),
+              !shop.offlineStore && (() => {
+                const restockDraft = managerFormInputs[shop.id]?.minStock;
+                return /* @__PURE__ */ jsxs("div", { style: { marginBottom: 14 }, children: [
+                  /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }, children: "\u041C\u0435\u043D\u0435\u0434\u0436\u0435\u0440 \u043F\u043E \u043F\u0440\u043E\u0434\u0430\u0436\u0430\u043C" }),
+                  shop.manager?.hired ? (() => {
+                    const m = shop.manager;
+                    const overdue = m.salaryDue > 0;
+                    const priceStrategy = m.priceStrategy || "market";
+                    const adTier = m.adTier || "mid";
+                    const supplierId = m.supplierId || "auto";
+                    const draft = restockDraft ?? String(m.minStock);
+                    const commitMinStock = () => {
+                      const v = Math.max(1, Math.round(Number(draft) || 0));
+                      updateManagerSettings(shop.id, { minStock: v });
+                      setManagerFormInputs((prev) => ({ ...prev, [shop.id]: { ...prev[shop.id], minStock: String(v) } }));
+                    };
+                    return /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16 }, children: [
+                      /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint, marginBottom: 10, lineHeight: 1.6 }, children: [
+                        "\u0414\u0435\u0440\u0436\u0438\u0442 \u043E\u0441\u0442\u0430\u0442\u043E\u043A, \u0446\u0435\u043D\u0443 \u0438 \u0440\u0435\u043A\u043B\u0430\u043C\u0443 \u043D\u0430 \u043C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441\u0435 \u2014 \u0442\u0440\u0430\u0442\u0438\u0442 \u0441\u0440\u0435\u0434\u0441\u0442\u0432\u0430 \u0441\u043E \u0441\u0447\u0451\u0442\u0430 \u0418\u041F \u0441\u0430\u043C\u043E\u0441\u0442\u043E\u044F\u0442\u0435\u043B\u044C\u043D\u043E.",
+                        m.salaryDue >= MANAGER_SALARY * 2 && /* @__PURE__ */ jsxs(Fragment, { children: [
+                          /* @__PURE__ */ jsx("br", {}),
+                          /* @__PURE__ */ jsx("span", { style: { color: C.red }, children: "\u0415\u0449\u0451 \u0446\u0438\u043A\u043B \u0431\u0435\u0437 \u043E\u043F\u043B\u0430\u0442\u044B \u2014 \u0443\u0432\u043E\u043B\u0438\u0442\u0441\u044F \u0441\u0430\u043C." })
+                        ] })
+                      ] }),
+                      /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u0426\u0435\u043D\u0430" }),
+                      /* @__PURE__ */ jsx("div", { style: { display: "flex", gap: 6, marginBottom: 10 }, children: ["below", "market", "above"].map((k) => /* @__PURE__ */ jsx("button", { onClick: () => updateManagerSettings(shop.id, { priceStrategy: k }), style: segStyle(priceStrategy === k), children: MANAGER_PRICE_STRATEGY_LABEL[k] }, k)) }),
+                      /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u0420\u0435\u043A\u043B\u0430\u043C\u0430 \u043D\u0430 \u043C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441\u0435" }),
+                      /* @__PURE__ */ jsx("div", { style: { display: "flex", gap: 6, marginBottom: 10 }, children: ["min", "mid", "max"].map((k) => /* @__PURE__ */ jsx("button", { onClick: () => updateManagerSettings(shop.id, { adTier: k }), style: segStyle(adTier === k), children: MANAGER_AD_TIER_LABEL[k] }, k)) }),
+                      /* @__PURE__ */ jsxs("button", { onClick: () => updateManagerSettings(shop.id, { autoAdEnabled: !m.autoAdEnabled }), style: { width: "100%", textAlign: "left", padding: 10, borderRadius: 8, border: `1px solid ${C.border}`, background: C.surface2, color: C.ink, fontSize: 12, marginBottom: 10 }, children: [
+                        m.autoAdEnabled ? "\u2611" : "\u2610",
+                        " \u0414\u0435\u0440\u0436\u0430\u0442\u044C \u0440\u0435\u043A\u043B\u0430\u043C\u0443 \u0430\u043A\u0442\u0438\u0432\u043D\u043E\u0439 \u043F\u043E\u0441\u0442\u043E\u044F\u043D\u043D\u043E"
+                      ] }),
+                      /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u041C\u0438\u043D. \u043E\u0441\u0442\u0430\u0442\u043E\u043A (\u0434\u043E\u043A\u0443\u043F\u0430\u0435\u0442 \u0441\u0440\u0430\u0437\u0443 \u0434\u043E \u00D72)" }),
+                      /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8, marginBottom: 10 }, children: [
+                        /* @__PURE__ */ jsx("input", { type: "number", value: draft, onChange: (e) => setManagerFormInputs((prev) => ({ ...prev, [shop.id]: { ...prev[shop.id], minStock: e.target.value } })), onBlur: commitMinStock, style: { flex: 1, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 12, padding: "8px 10px" } }),
+                        /* @__PURE__ */ jsx("button", { onClick: commitMinStock, style: { padding: "0 14px", borderRadius: 8, border: `1px solid ${C.border}`, background: "transparent", color: C.inkDim, fontSize: 11.5 }, children: "OK" })
+                      ] }),
+                      /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u041F\u043E\u0441\u0442\u0430\u0432\u0449\u0438\u043A" }),
+                      /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }, children: [
+                        /* @__PURE__ */ jsx("button", { onClick: () => updateManagerSettings(shop.id, { supplierId: "auto" }), style: { ...segStyle(supplierId === "auto"), flex: "0 1 auto" }, children: "\u0410\u0432\u0442\u043E (\u0434\u0435\u0448\u0435\u0432\u043B\u0435)" }),
+                        ...SUPPLIERS.map((s) => /* @__PURE__ */ jsxs("button", { onClick: () => updateManagerSettings(shop.id, { supplierId: s.id }), style: { ...segStyle(supplierId === s.id), flex: "0 1 auto" }, children: [
+                          s.flag,
+                          " ",
+                          s.quality
+                        ] }, s.id)),
+                        ...factories.map((f) => /* @__PURE__ */ jsxs("button", { onClick: () => updateManagerSettings(shop.id, { supplierId: `factory:${f.id}` }), style: { ...segStyle(supplierId === `factory:${f.id}`), flex: "0 1 auto" }, children: [
+                          "\u{1F3ED} ",
+                          f.name
+                        ] }, f.id))
+                      ] }),
+                      /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }, children: [
+                        /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: overdue ? C.red : C.inkDim }, children: [
+                          "\u0417\u0430\u0440\u043F\u043B\u0430\u0442\u0430 \u043A \u043E\u043F\u043B\u0430\u0442\u0435: ",
+                          fmt(m.salaryDue)
+                        ] }),
+                        /* @__PURE__ */ jsx("button", { onClick: () => payManagerSalary(shop.id), disabled: !overdue || ipCash <= 0, style: { padding: "7px 12px", borderRadius: 8, border: "none", fontWeight: 700, fontSize: 11.5, background: overdue ? C.gold : C.surface2, color: overdue ? "#161207" : C.inkFaint }, children: "\u0417\u0430\u043F\u043B\u0430\u0442\u0438\u0442\u044C (\u0441\u043E \u0441\u0447\u0451\u0442\u0430 \u0418\u041F)" })
+                      ] }),
+                      /* @__PURE__ */ jsx("button", { onClick: () => fireManager(shop.id), style: { width: "100%", padding: 8, borderRadius: 8, border: `1px solid ${C.border}`, background: "transparent", color: C.inkDim, fontSize: 11 }, children: "\u0423\u0432\u043E\u043B\u0438\u0442\u044C" })
+                    ] });
+                  })() : (() => {
+                    const f = managerFormInputs[shop.id] || { minStock: "20", priceStrategy: "market", adTier: "mid", autoAdEnabled: true, supplierId: "auto" };
+                    const setF = (patch) => setManagerFormInputs((prev) => ({ ...prev, [shop.id]: { ...f, ...patch } }));
+                    return /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16 }, children: [
+                      /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginBottom: 10, lineHeight: 1.6 }, children: `\u0410\u0432\u0442\u043E\u043C\u0430\u0442\u0438\u0447\u0435\u0441\u043A\u0438 \u0434\u0435\u0440\u0436\u0438\u0442 \u043E\u0441\u0442\u0430\u0442\u043E\u043A, \u0446\u0435\u043D\u0443 \u0438 \u0440\u0435\u043A\u043B\u0430\u043C\u0443 \u043D\u0430 \u043C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441\u0435 \u2014 \u0431\u0435\u0437 \u0444\u0438\u0437\u0438\u0447\u0435\u0441\u043A\u043E\u0439 \u0442\u043E\u0447\u043A\u0438. \u0417\u0430\u0440\u043F\u043B\u0430\u0442\u0430 ${fmt(MANAGER_SALARY)} \u043A\u0430\u0436\u0434\u044B\u0435 ${MANAGER_SALARY_CYCLE_MS / 6e4} \u043C\u0438\u043D \u2014 \u043D\u0430\u0447\u0438\u0441\u043B\u044F\u0435\u0442\u0441\u044F, \u043D\u043E \u0441\u043F\u0438\u0441\u044B\u0432\u0430\u0435\u0442\u0441\u044F \u0442\u043E\u043B\u044C\u043A\u043E \u043A\u043E\u0433\u0434\u0430 \u0442\u044B \u0441\u0430\u043C \u043E\u043F\u043B\u0430\u0442\u0438\u0448\u044C \u0441\u043E \u0441\u0447\u0451\u0442\u0430 \u0418\u041F.` }),
+                      /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u0426\u0435\u043D\u0430" }),
+                      /* @__PURE__ */ jsx("div", { style: { display: "flex", gap: 6, marginBottom: 10 }, children: ["below", "market", "above"].map((k) => /* @__PURE__ */ jsx("button", { onClick: () => setF({ priceStrategy: k }), style: segStyle(f.priceStrategy === k), children: MANAGER_PRICE_STRATEGY_LABEL[k] }, k)) }),
+                      /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u0420\u0435\u043A\u043B\u0430\u043C\u0430 \u043D\u0430 \u043C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441\u0435" }),
+                      /* @__PURE__ */ jsx("div", { style: { display: "flex", gap: 6, marginBottom: 10 }, children: ["min", "mid", "max"].map((k) => /* @__PURE__ */ jsx("button", { onClick: () => setF({ adTier: k }), style: segStyle(f.adTier === k), children: MANAGER_AD_TIER_LABEL[k] }, k)) }),
+                      /* @__PURE__ */ jsxs("button", { onClick: () => setF({ autoAdEnabled: !f.autoAdEnabled }), style: { width: "100%", textAlign: "left", padding: 10, borderRadius: 8, border: `1px solid ${C.border}`, background: C.surface2, color: C.ink, fontSize: 12, marginBottom: 10 }, children: [
+                        f.autoAdEnabled ? "\u2611" : "\u2610",
+                        " \u0414\u0435\u0440\u0436\u0430\u0442\u044C \u0440\u0435\u043A\u043B\u0430\u043C\u0443 \u0430\u043A\u0442\u0438\u0432\u043D\u043E\u0439 \u043F\u043E\u0441\u0442\u043E\u044F\u043D\u043D\u043E"
+                      ] }),
+                      /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u041C\u0438\u043D. \u043E\u0441\u0442\u0430\u0442\u043E\u043A (\u0434\u043E\u043A\u0443\u043F\u0430\u0435\u0442 \u0441\u0440\u0430\u0437\u0443 \u0434\u043E \u00D72)" }),
+                      /* @__PURE__ */ jsx("input", { type: "number", value: f.minStock, onChange: (e) => setF({ minStock: e.target.value }), style: { width: "100%", marginBottom: 10, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 12, padding: "8px 10px" } }),
+                      /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u041F\u043E\u0441\u0442\u0430\u0432\u0449\u0438\u043A" }),
+                      /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }, children: [
+                        /* @__PURE__ */ jsx("button", { onClick: () => setF({ supplierId: "auto" }), style: { ...segStyle((f.supplierId || "auto") === "auto"), flex: "0 1 auto" }, children: "\u0410\u0432\u0442\u043E (\u0434\u0435\u0448\u0435\u0432\u043B\u0435)" }),
+                        ...SUPPLIERS.map((s) => /* @__PURE__ */ jsxs("button", { onClick: () => setF({ supplierId: s.id }), style: { ...segStyle(f.supplierId === s.id), flex: "0 1 auto" }, children: [
+                          s.flag,
+                          " ",
+                          s.quality
+                        ] }, s.id)),
+                        ...factories.map((fac) => /* @__PURE__ */ jsxs("button", { onClick: () => setF({ supplierId: `factory:${fac.id}` }), style: { ...segStyle(f.supplierId === `factory:${fac.id}`), flex: "0 1 auto" }, children: [
+                          "\u{1F3ED} ",
+                          fac.name
+                        ] }, fac.id))
+                      ] }),
+                      /* @__PURE__ */ jsx("button", { onClick: () => hireManager(shop.id, f), style: { width: "100%", padding: 10, borderRadius: 10, border: "none", fontWeight: 700, fontSize: 12.5, background: C.gold, color: "#161207" }, children: "\u041D\u0430\u043D\u044F\u0442\u044C \u043C\u0435\u043D\u0435\u0434\u0436\u0435\u0440\u0430" })
+                    ] });
+                  })()
                 ] });
               })(),
               shop.reviews.length > 0 && /* @__PURE__ */ jsxs(Fragment, { children: [
@@ -6713,7 +6905,9 @@ function MarketSandbox() {
             const line = FACTORY_LINES[f.line];
             const cat = PRODUCT_CATEGORIES.find((c) => c.id === f.category);
             const unitCost = FACTORY_UNIT_COST[f.category];
-            const stockPct = Math.round(f.stock / line.capacity * 100);
+            const capacityBonus = warehouseFactoryCapacityBonus(warehouses);
+            const effCapacity = line.capacity + capacityBonus;
+            const stockPct = Math.round(f.stock / effCapacity * 100);
             const secLeft = Math.max(0, Math.ceil((f.nextTickAt - Date.now()) / 1e3));
             return /* @__PURE__ */ jsxs("div", { style: { marginBottom: 22, paddingTop: 14, borderTop: `1px solid ${C.border}` }, children: [
               /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
@@ -6736,21 +6930,60 @@ function MarketSandbox() {
                     /* @__PURE__ */ jsxs("span", { children: [
                       f.stock,
                       "/",
-                      line.capacity,
-                      " \u0448\u0442"
+                      effCapacity,
+                      " \u0448\u0442",
+                      capacityBonus > 0 ? ` (+${capacityBonus} \u0441\u043E \u0441\u043A\u043B\u0430\u0434\u0430 ZZONE)` : ""
                     ] })
                   ] }),
                   /* @__PURE__ */ jsx("div", { style: { height: 5, borderRadius: 3, background: C.surface2, overflow: "hidden" }, children: /* @__PURE__ */ jsx("div", { style: { height: "100%", width: `${stockPct}%`, background: stockPct >= 90 ? C.gold : C.green } }) })
                 ] }),
-                /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkDim, marginBottom: 4 }, children: [
-                  "\u0420\u0430\u0441\u0445\u043E\u0434\u044B: ",
+                /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkDim, marginBottom: 10 }, children: [
+                  "\u0410\u0440\u0435\u043D\u0434\u0430/\u0437\u0430\u0440\u043F\u043B\u0430\u0442\u0430: ",
                   /* @__PURE__ */ jsx("b", { style: { color: C.ink }, children: fmt(line.upkeepPerCycle) }),
                   " \u043A\u0430\u0436\u0434\u044B\u0435 ",
                   FACTORY_CYCLE_MS / 6e4,
-                  " \u043C\u0438\u043D \xB7 \u0432\u044B\u043F\u0443\u0441\u043A ",
+                  " \u043C\u0438\u043D \xB7 \u0441\u043A\u043E\u0440\u043E\u0441\u0442\u044C ",
                   line.unitsPerCycle,
                   " \u0448\u0442/\u0446\u0438\u043A\u043B"
                 ] }),
+                f.production ? (() => {
+                  const prodSecLeft = Math.max(0, Math.ceil((f.production.readyAt - Date.now()) / 1e3));
+                  const prodTotalSec = Math.max(1, Math.ceil((f.production.readyAt - f.production.startedAt) / 1e3));
+                  const prodPct = Math.round((1 - prodSecLeft / prodTotalSec) * 100);
+                  return /* @__PURE__ */ jsxs("div", { style: { background: C.surface2, border: `1px solid ${C.gold}55`, borderRadius: 10, padding: 12, marginBottom: 10 }, children: [
+                    /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 11.5, marginBottom: 6 }, children: [
+                      /* @__PURE__ */ jsxs("span", { style: { fontWeight: 700 }, children: [
+                        "\u041F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0438\u0442\u0441\u044F ",
+                        f.production.targetUnits,
+                        " \u0448\u0442"
+                      ] }),
+                      /* @__PURE__ */ jsxs("span", { style: { color: C.inkDim }, children: [
+                        Math.floor(prodSecLeft / 60),
+                        ":",
+                        String(prodSecLeft % 60).padStart(2, "0")
+                      ] })
+                    ] }),
+                    /* @__PURE__ */ jsx("div", { style: { height: 5, borderRadius: 3, background: C.surface, overflow: "hidden" }, children: /* @__PURE__ */ jsx("div", { style: { height: "100%", width: `${prodPct}%`, background: C.gold } }) })
+                  ] });
+                })() : (() => {
+                  const room = effCapacity - f.stock;
+                  const pu = factoryProductionInputs[f.id] ?? "";
+                  const units = Math.max(0, Math.min(room, Math.round(Number(pu) || 0)));
+                  const durationMin = units > 0 ? Math.max(2, Math.ceil(units / line.unitsPerCycle * (FACTORY_CYCLE_MS / 6e4))) : 0;
+                  return /* @__PURE__ */ jsxs("div", { style: { background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, padding: 12, marginBottom: 10 }, children: [
+                    /* @__PURE__ */ jsx("div", { style: { fontSize: 11.5, fontWeight: 700, marginBottom: 8 }, children: "\u041D\u0430\u0447\u0430\u0442\u044C \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u043E" }),
+                    room <= 0 ? /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkFaint }, children: "\u0421\u043A\u043B\u0430\u0434 \u0437\u0430\u043F\u043E\u043B\u043D\u0435\u043D \u2014 \u0441\u043D\u0430\u0447\u0430\u043B\u0430 \u043F\u0440\u043E\u0434\u0430\u0439 \u043E\u0441\u0442\u0430\u0442\u043E\u043A" }) : /* @__PURE__ */ jsxs(Fragment, { children: [
+                      /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8 }, children: [
+                        /* @__PURE__ */ jsx("input", { type: "number", value: pu, onChange: (e) => setFactoryProductionInputs((prev) => ({ ...prev, [f.id]: e.target.value })), placeholder: `\u0434\u043E ${room} \u0448\u0442`, min: 1, max: room, style: { flex: 1, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 12, padding: "8px 10px" } }),
+                        /* @__PURE__ */ jsx("button", { onClick: () => setFactoryProductionInputs((prev) => ({ ...prev, [f.id]: String(room) })), style: { padding: "0 12px", borderRadius: 8, border: `1px solid ${C.border}`, background: "transparent", color: C.inkDim, fontSize: 11.5 }, children: "\u041C\u0430\u043A\u0441." })
+                      ] }),
+                      /* @__PURE__ */ jsx("button", { onClick: () => {
+                        startFactoryProduction(f.id, units);
+                        setFactoryProductionInputs((prev) => ({ ...prev, [f.id]: "" }));
+                      }, disabled: units <= 0, style: { width: "100%", marginTop: 8, padding: 10, borderRadius: 8, border: "none", fontWeight: 700, fontSize: 12.5, background: units > 0 ? C.gold : C.surface, color: units > 0 ? "#161207" : C.inkFaint }, children: units > 0 ? `\u041F\u0440\u043E\u0438\u0437\u0432\u0435\u0441\u0442\u0438 ${units} \u0448\u0442 \xB7 ~${durationMin} \u043C\u0438\u043D` : "\u0423\u043A\u0430\u0436\u0438 \u043A\u043E\u043B\u0438\u0447\u0435\u0441\u0442\u0432\u043E" })
+                    ] })
+                  ] });
+                })(),
                 /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkFaint, marginBottom: 10 }, children: [
                   "\u0412\u044B\u043F\u043E\u043B\u043D\u0435\u043D\u043E \u0437\u0430\u044F\u0432\u043E\u043A: ",
                   f.ordersFulfilled,
