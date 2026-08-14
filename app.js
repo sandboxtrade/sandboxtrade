@@ -451,6 +451,7 @@ var FACTORY_UNIT_COST = { clothes: 4, accessories: 7, phones: 16, laptops: 22 };
 var FACTORY_CYCLE_MS = 30 * 60 * 1e3;
 var FACTORY_ORDER_WINDOW_MS = 60 * 60 * 1e3;
 var FACTORY_ORDER_POOL_SIZE = 5;
+var FACTORY_SECONDS_PER_UNIT = 10;
 var FACTORY_SHOP_TRANSFER_FEE_PCT = 0.18;
 var FACTORY_WAREHOUSE_CAPACITY_BONUS = { medium: 200, large: 500 };
 function warehouseFactoryCapacityBonus(warehouseList) {
@@ -3428,7 +3429,7 @@ function MarketSandbox() {
     const room = effCapacity - factory.stock;
     const targetUnits = Math.max(1, Math.min(room, Math.round(Number(units) || 0)));
     if (targetUnits <= 0) return;
-    const durationMs = Math.max(2 * 60 * 1e3, Math.ceil(targetUnits / line.unitsPerCycle * FACTORY_CYCLE_MS));
+    const durationMs = targetUnits * FACTORY_SECONDS_PER_UNIT * 1e3;
     setFactories((prev) => prev.map((f) => f.id === factoryId ? {
       ...f,
       production: { targetUnits, startedAt: Date.now(), readyAt: Date.now() + durationMs }
@@ -6943,8 +6944,8 @@ function MarketSandbox() {
                   " \u043A\u0430\u0436\u0434\u044B\u0435 ",
                   FACTORY_CYCLE_MS / 6e4,
                   " \u043C\u0438\u043D \xB7 \u0441\u043A\u043E\u0440\u043E\u0441\u0442\u044C ",
-                  line.unitsPerCycle,
-                  " \u0448\u0442/\u0446\u0438\u043A\u043B"
+                  FACTORY_SECONDS_PER_UNIT,
+                  " \u0441\u0435\u043A/\u0448\u0442"
                 ] }),
                 f.production ? (() => {
                   const prodSecLeft = Math.max(0, Math.ceil((f.production.readyAt - Date.now()) / 1e3));
@@ -6969,7 +6970,8 @@ function MarketSandbox() {
                   const room = effCapacity - f.stock;
                   const pu = factoryProductionInputs[f.id] ?? "";
                   const units = Math.max(0, Math.min(room, Math.round(Number(pu) || 0)));
-                  const durationMin = units > 0 ? Math.max(2, Math.ceil(units / line.unitsPerCycle * (FACTORY_CYCLE_MS / 6e4))) : 0;
+                  const durationSec = units * FACTORY_SECONDS_PER_UNIT;
+                  const durationLabel = durationSec >= 60 ? `${Math.floor(durationSec / 60)} \u043C\u0438\u043D ${durationSec % 60 ? durationSec % 60 + " \u0441\u0435\u043A" : ""}`.trim() : `${durationSec} \u0441\u0435\u043A`;
                   return /* @__PURE__ */ jsxs("div", { style: { background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, padding: 12, marginBottom: 10 }, children: [
                     /* @__PURE__ */ jsx("div", { style: { fontSize: 11.5, fontWeight: 700, marginBottom: 8 }, children: "\u041D\u0430\u0447\u0430\u0442\u044C \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u043E" }),
                     room <= 0 ? /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkFaint }, children: "\u0421\u043A\u043B\u0430\u0434 \u0437\u0430\u043F\u043E\u043B\u043D\u0435\u043D \u2014 \u0441\u043D\u0430\u0447\u0430\u043B\u0430 \u043F\u0440\u043E\u0434\u0430\u0439 \u043E\u0441\u0442\u0430\u0442\u043E\u043A" }) : /* @__PURE__ */ jsxs(Fragment, { children: [
@@ -6980,7 +6982,7 @@ function MarketSandbox() {
                       /* @__PURE__ */ jsx("button", { onClick: () => {
                         startFactoryProduction(f.id, units);
                         setFactoryProductionInputs((prev) => ({ ...prev, [f.id]: "" }));
-                      }, disabled: units <= 0, style: { width: "100%", marginTop: 8, padding: 10, borderRadius: 8, border: "none", fontWeight: 700, fontSize: 12.5, background: units > 0 ? C.gold : C.surface, color: units > 0 ? "#161207" : C.inkFaint }, children: units > 0 ? `\u041F\u0440\u043E\u0438\u0437\u0432\u0435\u0441\u0442\u0438 ${units} \u0448\u0442 \xB7 ~${durationMin} \u043C\u0438\u043D` : "\u0423\u043A\u0430\u0436\u0438 \u043A\u043E\u043B\u0438\u0447\u0435\u0441\u0442\u0432\u043E" })
+                      }, disabled: units <= 0, style: { width: "100%", marginTop: 8, padding: 10, borderRadius: 8, border: "none", fontWeight: 700, fontSize: 12.5, background: units > 0 ? C.gold : C.surface, color: units > 0 ? "#161207" : C.inkFaint }, children: units > 0 ? `\u041F\u0440\u043E\u0438\u0437\u0432\u0435\u0441\u0442\u0438 ${units} \u0448\u0442 \xB7 ~${durationLabel}` : "\u0423\u043A\u0430\u0436\u0438 \u043A\u043E\u043B\u0438\u0447\u0435\u0441\u0442\u0432\u043E" })
                     ] })
                   ] });
                 })(),
