@@ -1204,6 +1204,7 @@ function MarketSandbox() {
   const [confirmCloseOffline, setConfirmCloseOffline] = useState(null);
   const [managerFormInputs, setManagerFormInputs] = useState({});
   const [factoryTransferInputs, setFactoryTransferInputs] = useState({});
+  const [warehouseWithdrawTarget, setWarehouseWithdrawTarget] = useState({});
   const [factoryProductionInputs, setFactoryProductionInputs] = useState({});
   const [favorites, setFavorites] = useState({});
   const [marketFilterCat, setMarketFilterCat] = useState("all");
@@ -1762,7 +1763,7 @@ function MarketSandbox() {
       return { ...rest, categories: cats, orders: (s.orders || []).map((o) => o.category ? o : { ...o, category: "accessories" }) };
     }) : []);
     setFactories(Array.isArray(data.factories) ? data.factories.map((f) => f.equipmentLevel == null ? { ...f, equipmentLevel: 0 } : f) : []);
-    setWarehouses(Array.isArray(data.warehouses) ? data.warehouses : []);
+    setWarehouses(Array.isArray(data.warehouses) ? data.warehouses.map((w) => ({ ...w, payoutBalance: w.payoutBalance || 0, totalProcessedTurnover: w.totalProcessedTurnover || 0 })) : []);
     setIpCash(typeof data.ipCash === "number" ? data.ipCash : 0);
     setIpTaxOwed(typeof data.ipTaxOwed === "number" ? data.ipTaxOwed : 0);
     setQuarterRevenue(typeof data.quarterRevenue === "number" ? data.quarterRevenue : 0);
@@ -3007,14 +3008,14 @@ function MarketSandbox() {
         const grossRevenue = Math.round(processedTurnover * rate * WAREHOUSE_CYCLE_HOUR_FRACTION);
         const wagesThisCycle = Math.round(w.staffLevel * tier.wagePerStaff * WAREHOUSE_CYCLE_HOUR_FRACTION * 100) / 100;
         const opex = (tier.electricity + w.transportLevel * tier.transportUpkeep + w.equipmentLevel * tier.equipmentUpkeep + tier.misc) * WAREHOUSE_CYCLE_HOUR_FRACTION;
-        const available = ipCashRef.current + ipCashDelta + grossRevenue;
+        const available = ipCashRef.current + ipCashDelta;
         const paidOpex = Math.min(opex, Math.max(0, available));
-        ipCashDelta += grossRevenue - paidOpex;
+        ipCashDelta -= paidOpex;
         if (grossRevenue > 0) {
           setQuarterRevenue((r) => r + grossRevenue);
           trackIpTurnover(grossRevenue);
         }
-        logTx(`\u0421\u043A\u043B\u0430\u0434 ZZONE \xB7 \xAB${w.name}\xBB: \u0432\u044B\u0440\u0443\u0447\u043A\u0430`, grossRevenue, "in");
+        logTx(`\u0421\u043A\u043B\u0430\u0434 ZZONE \xB7 \xAB${w.name}\xBB: \u0432\u044B\u0440\u0443\u0447\u043A\u0430 \u043D\u0430 \u0441\u0447\u0451\u0442 \u0441\u043A\u043B\u0430\u0434\u0430`, grossRevenue, "in");
         if (paidOpex > 0) logTx(`\u0421\u043A\u043B\u0430\u0434 ZZONE \xB7 \xAB${w.name}\xBB: \u044D\u043A\u0441\u043F\u043B\u0443\u0430\u0442\u0430\u0446\u0438\u044F/\u0442\u0440\u0430\u043D\u0441\u043F\u043E\u0440\u0442/\u043E\u0431\u043E\u0440\u0443\u0434\u043E\u0432\u0430\u043D\u0438\u0435`, paidOpex, "out");
         let newWageDue = Math.round((w.wageDue + wagesThisCycle) * 100) / 100;
         let condition = w.condition;
@@ -3037,6 +3038,8 @@ function MarketSandbox() {
           staffLevel,
           totalRevenue: w.totalRevenue + grossRevenue,
           totalNetProfit: w.totalNetProfit + (grossRevenue - paidOpex - wagesThisCycle),
+          totalProcessedTurnover: (w.totalProcessedTurnover || 0) + Math.round(processedTurnover),
+          payoutBalance: Math.round(((w.payoutBalance || 0) + grossRevenue) * 100) / 100,
           cyclesRun: w.cyclesRun + 1,
           nextCycleAt: Date.now() + WAREHOUSE_CYCLE_MS,
           lastCycleStats: { grossRevenue, wagesThisCycle, opex: paidOpex, efficiency, rate, processedTurnover: Math.round(processedTurnover), availableToWarehouse: Math.round(availableToWarehouse) }
@@ -3585,6 +3588,8 @@ function MarketSandbox() {
       wageDue: 0,
       totalRevenue: 0,
       totalNetProfit: 0,
+      totalProcessedTurnover: 0,
+      payoutBalance: 0,
       cyclesRun: 0,
       lastCycleStats: null,
       nextCycleAt: Date.now() + 2e4,
@@ -3639,6 +3644,22 @@ function MarketSandbox() {
     setIpCash((c) => c - paid);
     setWarehouses((prev) => prev.map((w) => w.id === warehouseId ? { ...w, wageDue: Math.round((w.wageDue - paid) * 100) / 100 } : w));
     logTx(`\u0417\u0430\u0440\u043F\u043B\u0430\u0442\u0430 \u0441\u043A\u043B\u0430\u0434\u0430 ZZONE \xB7 ${wh.name}`, paid, "out");
+    setTimeout(saveGame, 50);
+  };
+  const withdrawWarehousePayout = (warehouseId, destination) => {
+    const wh = warehouses.find((w) => w.id === warehouseId);
+    const amount = wh ? wh.payoutBalance || 0 : 0;
+    if (!wh || amount <= 0) return;
+    if (destination === "ip") {
+      setIpCash((c) => c + amount);
+    } else {
+      const acct = bankAccounts[destination];
+      if (!acct || acct.frozen) return;
+      setBankAccounts((prev) => prev[destination] ? { ...prev, [destination]: { ...prev[destination], balance: prev[destination].balance + amount } } : prev);
+    }
+    setWarehouses((prev) => prev.map((w) => w.id === warehouseId ? { ...w, payoutBalance: 0 } : w));
+    const destLabel = destination === "ip" ? "\u0418\u041F" : BANK_ACCOUNTS.find((b) => b.id === destination)?.name || "\u043A\u0430\u0440\u0442\u0430";
+    logTx(`\u0412\u044B\u0432\u043E\u0434 \u0441\u043E \u0441\u0447\u0451\u0442\u0430 \u0441\u043A\u043B\u0430\u0434\u0430 ZZONE \xB7 ${wh.name} \u2192 ${destLabel}`, amount, "in");
     setTimeout(saveGame, 50);
   };
   const upgradeWarehouseTier = (warehouseId) => {
@@ -7218,18 +7239,24 @@ function MarketSandbox() {
                   ] }),
                   /* @__PURE__ */ jsx("div", { style: { height: 4, borderRadius: 2, background: C.surface2, overflow: "hidden" }, children: /* @__PURE__ */ jsx("div", { style: { height: "100%", width: `${Math.round(cycleFraction * 100)}%`, background: C.gold, transition: "width 0.6s ease" } }) })
                 ] }),
+                /* @__PURE__ */ jsxs("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }, children: [
+                  /* @__PURE__ */ jsxs("div", { children: [
+                    /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkDim }, children: "\u041A\u043E\u043C\u0438\u0441\u0441\u0438\u044F ZZONE \u0441 \u043E\u0431\u043E\u0440\u043E\u0442\u0430" }),
+                    /* @__PURE__ */ jsxs("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 15, fontWeight: 700 }, children: [
+                      ((stats ? stats.rate : estCycle.rate) * 100).toFixed(2),
+                      "%"
+                    ] })
+                  ] }),
+                  /* @__PURE__ */ jsxs("div", { children: [
+                    /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkDim }, children: "\u0422\u043E\u0432\u0430\u0440\u0430 \u043F\u0440\u043E\u0448\u043B\u043E \u0432\u0441\u0435\u0433\u043E" }),
+                    /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 15, fontWeight: 700 }, children: fmt(w.totalProcessedTurnover || 0) })
+                  ] })
+                ] }),
                 stats ? /* @__PURE__ */ jsxs(Fragment, { children: [
                   /* @__PURE__ */ jsxs("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }, children: [
                     /* @__PURE__ */ jsxs("div", { children: [
                       /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkDim }, children: "\u041E\u0431\u0440\u0430\u0431\u043E\u0442\u0430\u043D\u043E \u0437\u0430 \u0446\u0438\u043A\u043B" }),
                       /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 15, fontWeight: 700 }, children: fmt(stats.processedTurnover) })
-                    ] }),
-                    /* @__PURE__ */ jsxs("div", { children: [
-                      /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkDim }, children: "\u0421\u0442\u0430\u0432\u043A\u0430 ZZONE" }),
-                      /* @__PURE__ */ jsxs("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 15, fontWeight: 700 }, children: [
-                        (stats.rate * 100).toFixed(2),
-                        "%"
-                      ] })
                     ] }),
                     /* @__PURE__ */ jsxs("div", { children: [
                       /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkDim }, children: "\u0412\u0430\u043B\u043E\u0432\u0430\u044F \u0432\u044B\u0440\u0443\u0447\u043A\u0430" }),
@@ -7267,6 +7294,19 @@ function MarketSandbox() {
                   w.cyclesRun,
                   " \xB7 \u0432\u044B\u0440\u0443\u0447\u043A\u0430 \u0432\u0441\u0435\u0433\u043E: ",
                   fmt(w.totalRevenue)
+                ] })
+              ] }),
+              /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }, children: "\u0421\u0447\u0451\u0442 \u0441\u043A\u043B\u0430\u0434\u0430 \xB7 \u0432\u044B\u043F\u043B\u0430\u0442\u044B ZZONE" }),
+                /* @__PURE__ */ jsxs("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 22, fontWeight: 700, marginBottom: 4 }, children: fmt(w.payoutBalance || 0) }),
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginBottom: 12 }, children: "\u0421\u044E\u0434\u0430 \u043F\u0430\u0434\u0430\u0435\u0442 \u0432\u044B\u0440\u0443\u0447\u043A\u0430 \u0441\u043A\u043B\u0430\u0434\u0430 \u043A\u0430\u0436\u0434\u044B\u0439 \u0446\u0438\u043A\u043B \u2014 \u0432\u044B\u0432\u0435\u0434\u0438 \u043D\u0430 \u0418\u041F \u0438\u043B\u0438 \u043D\u0430 \u043A\u0430\u0440\u0442\u0443, \u043A\u043E\u0433\u0434\u0430 \u0443\u0434\u043E\u0431\u043D\u043E" }),
+                /* @__PURE__ */ jsxs("div", { style: { display: "flex", flexWrap: "wrap", gap: 8 }, children: [
+                  /* @__PURE__ */ jsx("button", { onClick: () => withdrawWarehousePayout(w.id, "ip"), disabled: (w.payoutBalance || 0) <= 0, style: { flex: "1 1 auto", padding: "10px 12px", borderRadius: 9, border: "none", fontWeight: 700, fontSize: 12, background: (w.payoutBalance || 0) > 0 ? C.gold : C.surface2, color: (w.payoutBalance || 0) > 0 ? "#161207" : C.inkFaint }, children: "\u0412\u044B\u0432\u0435\u0441\u0442\u0438 \u043D\u0430 \u0418\u041F" }),
+                  ...Object.keys(bankAccounts).map((bId) => {
+                    const info = BANK_ACCOUNTS.find((b) => b.id === bId);
+                    const frozen = bankAccounts[bId]?.frozen;
+                    return /* @__PURE__ */ jsx("button", { onClick: () => withdrawWarehousePayout(w.id, bId), disabled: (w.payoutBalance || 0) <= 0 || frozen, style: { flex: "1 1 auto", padding: "10px 12px", borderRadius: 9, border: `1px solid ${C.border}`, fontWeight: 700, fontSize: 12, background: "transparent", color: (w.payoutBalance || 0) > 0 && !frozen ? C.ink : C.inkFaint }, children: `\u2192 ${info?.cardName || info?.name || bId}` }, bId);
+                  })
                 ] })
               ] }),
               wageOverdue && /* @__PURE__ */ jsxs("div", { style: { background: `${C.red}18`, border: `1px solid ${C.red}55`, borderRadius: 10, padding: 12, marginBottom: 14, fontSize: 11.5, color: C.red }, children: [
