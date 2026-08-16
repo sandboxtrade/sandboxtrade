@@ -1,10 +1,11 @@
+// Market Sandbox — V0.2 (соцсеть, фаза 1: SocialInfluenceEngine)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
 
 // MarketSandbox.tsx
 import { useState, useEffect, useRef } from "react";
-import { TrendingUp, Building2, X, Sparkles, RotateCcw, Briefcase, FlaskConical, Flame, CreditCard, MessageCircle, Heart, MessageSquare, RefreshCw, Landmark, ShoppingBag, Receipt, Send, Save, Plus, Check, EyeOff, ArrowLeftRight, Star } from "lucide-react";
+import { TrendingUp, Building2, X, Sparkles, RotateCcw, Briefcase, FlaskConical, CreditCard, MessageCircle, Heart, MessageSquare, RefreshCw, Landmark, ShoppingBag, Receipt, Send, Save, Plus, Check, EyeOff, ArrowLeftRight, Star } from "lucide-react";
 import { Fragment, jsx, jsxs } from "react/jsx-runtime";
 var C = {
   bg: "#0B0E14",
@@ -320,6 +321,17 @@ function companyPerfPct(companies, ticker) {
   const pct = (c.price - open) / open * 100;
   return Math.max(-60, Math.min(60, pct));
 }
+function companyRecentPerfPct(companies, ticker, candleWindow = 15) {
+  const c = companies && companies.find((x) => x.ticker === ticker);
+  if (!c || !c.candles || !c.candles.length) return 0;
+  const arr = c.candles;
+  const refIdx = Math.max(0, arr.length - candleWindow);
+  const refCandle = arr[refIdx];
+  const open = (refCandle && refCandle.o) || c.price;
+  if (!open) return 0;
+  const pct = (c.price - open) / open * 100;
+  return Math.max(-60, Math.min(60, pct));
+}
 function bankHealthRateMult(perfPct) {
   return 1 - perfPct / 200;
 }
@@ -439,8 +451,8 @@ var FOUNDER_PCT = { company: 0.6, crypto: 0.2 };
 var DAY_MS = 15e3;
 var RESELL_STARTUP = { registration: 500, rent: 800, equipment: 300 };
 var FACTORY_LINES = {
-  small20: { id: "small20", name: "\u041C\u0435\u043B\u043A\u043E\u0435 \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u043E (20 \u0441\u043E\u0442\u0440\u0443\u0434\u043D\u0438\u043A\u043E\u0432)", employees: 20, openingCost: 25e3, upkeepPerCycle: 8e3, unitsPerCycle: 50, capacity: 320, available: true },
-  large50: { id: "large50", name: "\u0411\u043E\u043B\u044C\u0448\u043E\u0435 \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u043E (50 \u0441\u043E\u0442\u0440\u0443\u0434\u043D\u0438\u043A\u043E\u0432)", employees: 50, openingCost: 65e3, upkeepPerCycle: 2e4, unitsPerCycle: 130, capacity: 800, available: true }
+  small20: { id: "small20", name: "\u041C\u0435\u043B\u043A\u043E\u0435 \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u043E (20 \u0441\u043E\u0442\u0440\u0443\u0434\u043D\u0438\u043A\u043E\u0432)", employees: 20, openingCost: 25e3, upkeepPerCycle: 2200, unitsPerCycle: 50, capacity: 320, available: true },
+  large50: { id: "large50", name: "\u0411\u043E\u043B\u044C\u0448\u043E\u0435 \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u043E (50 \u0441\u043E\u0442\u0440\u0443\u0434\u043D\u0438\u043A\u043E\u0432)", employees: 50, openingCost: 65e3, upkeepPerCycle: 5000, unitsPerCycle: 130, capacity: 800, available: true }
 };
 var FACTORY_QUALITY_TIERS = [
   { id: "low", name: "\u041D\u0438\u0437\u043A\u043E\u0435", available: false },
@@ -463,8 +475,10 @@ var FACTORY_EQUIPMENT_TIERS = [
 function factoryEquipmentTier(level) {
   return FACTORY_EQUIPMENT_TIERS[Math.max(0, Math.min(FACTORY_EQUIPMENT_TIERS.length - 1, level || 0))];
 }
-function factorySecPerUnit(equipmentLevel) {
-  return factoryEquipmentTier(equipmentLevel).secPerUnit;
+function factorySecPerUnit(equipmentLevel, lineId) {
+  const line = FACTORY_LINES[lineId] || FACTORY_LINES.small20;
+  const throughputMult = line.employees / FACTORY_LINES.small20.employees;
+  return factoryEquipmentTier(equipmentLevel).secPerUnit / throughputMult;
 }
 function factoryEffectiveUnitCost(category, equipmentLevel) {
   const base = FACTORY_UNIT_COST[category] || 0;
@@ -556,10 +570,10 @@ function clamp01(v, lo, hi) {
   return Math.max(lo, Math.min(hi, v));
 }
 function zzoneDemandMult(perf) {
-  return clamp01(1 + perf / 120, 0.35, 1.35);
+  return clamp01(1 + perf / 40, 0.55, 1.6);
 }
 function warehouseMarketCapMult(perf) {
-  return clamp01(1 + perf / 400, 0.75, 1.15);
+  return clamp01(1 + perf / 150, 0.8, 1.3);
 }
 function warehouseDeficitMult(perf) {
   const demand = WAREHOUSE_BASE_ZZONE_VOLUME * zzoneDemandMult(perf);
@@ -568,7 +582,13 @@ function warehouseDeficitMult(perf) {
   return clamp01(0.7 + ratio * 0.3, 0.7, 1.3);
 }
 function warehouseRate(perf) {
-  return WAREHOUSE_BASE_RATE * zzoneDemandMult(perf) * warehouseDeficitMult(perf);
+  const raw = WAREHOUSE_BASE_RATE * zzoneDemandMult(perf) * warehouseDeficitMult(perf);
+  return clamp01(raw, 0.013, 0.038);
+}
+var WAREHOUSE_THROUGHPUT_FLEX_MIN = 0.6;
+var WAREHOUSE_THROUGHPUT_FLEX_MAX = 1.7;
+function warehouseThroughputFlexMult(perf) {
+  return clamp01(1 + perf / 50, WAREHOUSE_THROUGHPUT_FLEX_MIN, WAREHOUSE_THROUGHPUT_FLEX_MAX);
 }
 function warehouseContractShareMult(rep) {
   return clamp01(0.6 + rep / 250, 0.8, 1);
@@ -584,8 +604,9 @@ function warehouseEfficiency(tier, staffLevel, equipmentLevel, condition, transp
   return clamp01(tier.effFloor + tier.effStaffW * staffRatio + tier.effEquipW * equipRatio + tier.effTransportW * transportRatio + tier.effCondW * (condition / 100), 0.15, 1.15);
 }
 var WAREHOUSE_GUARANTEE_BASE = 2e4;
+var WAREHOUSE_GUARANTEE_FLOOR_MULT = 0.25;
 function warehouseSubsidyMult(perf) {
-  return clamp01((perf + 60) / 60, 0, 1);
+  return clamp01((perf + 60) / 60, WAREHOUSE_GUARANTEE_FLOOR_MULT, 1);
 }
 function warehouseGuaranteedFloor(tier, perf) {
   const scale = tier.throughputCapacity / WAREHOUSE_TIERS.medium.throughputCapacity;
@@ -595,21 +616,23 @@ function estimateWarehouseCycle(w, warehouseList, companies, reputation) {
   const tier = WAREHOUSE_TIERS[w.tierId];
   if (!tier) return { processedTurnover: 0, grossRevenue: 0, rate: 0 };
   const zzonePerf = companyPerfPct(companies, "ZZONE");
-  const rate = warehouseRate(zzonePerf);
-  const demandMult = zzoneDemandMult(zzonePerf);
+  const zzoneRecentPerf = companyRecentPerfPct(companies, "ZZONE");
+  const rate = warehouseRate(zzoneRecentPerf);
+  const demandMult = zzoneDemandMult(zzoneRecentPerf);
   const marketVolume = WAREHOUSE_BASE_ZZONE_VOLUME * demandMult;
   const sorted = [...(warehouseList || [])].sort((a, b) => a.openedAt - b.openedAt);
   const rank = Math.max(0, sorted.findIndex((x) => x.id === w.id));
   const share = tier.contractShare * warehouseContractShareMult(reputation) * warehouseRankMult(rank);
   const availableToWarehouse = marketVolume * share;
-  const baseTurnover = Math.min(availableToWarehouse, tier.throughputCapacity);
+  const effectiveCapacity = tier.throughputCapacity * warehouseThroughputFlexMult(zzoneRecentPerf);
+  const baseTurnover = Math.min(availableToWarehouse, effectiveCapacity);
   const efficiency = warehouseEfficiency(tier, w.staffLevel, w.equipmentLevel, w.condition, w.transportLevel);
   const processedTurnover = baseTurnover * efficiency;
   const marketRevenue = Math.round(processedTurnover * rate * WAREHOUSE_CYCLE_HOUR_FRACTION);
   const floor = warehouseGuaranteedFloor(tier, zzonePerf);
   const subsidy = Math.max(0, floor - marketRevenue);
   const grossRevenue = marketRevenue + subsidy;
-  return { processedTurnover, grossRevenue, marketRevenue, subsidy, floor, rate };
+  return { processedTurnover, grossRevenue, marketRevenue, subsidy, floor, rate, effectiveCapacity };
 }
 var MANAGER_SALARY = 5e3;
 var MANAGER_SALARY_CYCLE_MS = 30 * 60 * 1e3;
@@ -658,8 +681,181 @@ var IP_BANK = { name: "\u0411\u0438\u0437\u043D\u0435\u0441\u041A\u0440\u0435\u0
 function newsImpactMult(c) {
   if (c.ticker === "TEHER") return 0.03;
   if (BANK_ACCOUNTS.some((b) => b.ticker === c.ticker) || c.ticker === IP_BANK.ticker) return 0.35;
-  if (c.sector === "\u041A\u0440\u0438\u043F\u0442\u043E") return 1;
+  if (c.sector === "Крипто") return 1;
   return 0.55;
+}
+
+// ===================== SOCIAL INFLUENCE ENGINE =====================
+// Многофакторная оценка поста (не "слово X = +10%"). Считает независимые
+// параметры текста, сравнивает с историей автора, распределяет реакцию по
+// сегментам аудитории и отдаёт ограниченное влияние на рынок с усталостью
+// от частых публикаций. Работает локально, без внешних API.
+
+var SOCIAL_HYPE_TERMS = [
+  ["гарантир", 22], ["1000%", 30], ["100% прибыл", 26], ["без риска", 24],
+  ["взлетит", 16], ["иксы", 14], ["не упусти", 16], ["успей", 12],
+  ["точно выстрелит", 20], ["взрывной рост", 18], ["революцион", 10],
+  ["уникальн", 8], ["лучший", 6], ["огромн", 8], ["сумасшедш", 10], ["хайп", 10]
+];
+var SOCIAL_MEASURED_TERMS = [
+  ["первые шаги", 10], ["постепенно", 8], ["планируем", 6], ["в разработке", 8],
+  ["подробности опубликуем", 10], ["направим на", 10], ["результаты", 8],
+  ["отчёт", 10], ["в тестировании", 8], ["ограниченн", 6], ["этап", 6], ["команда", 5]
+];
+var SOCIAL_SCAM_TERMS = [
+  ["гарантир", 20], ["без риска", 22], ["1000%", 28], ["100% прибыл", 28],
+  ["закупайтесь", 16], ["последний шанс", 20], ["успей", 10], ["не упусти", 12],
+  ["удвоит", 16], ["в 10 раз", 18], ["в 2 раза", 10]
+];
+function socialTextStats(text) {
+  const clean = (text || "").trim();
+  const words = clean.split(/\s+/).filter(Boolean);
+  const sentences = clean.split(/[.!?]+/).filter((s) => s.trim().length > 2);
+  const exclaims = (clean.match(/!/g) || []).length;
+  const capsLetters = (clean.match(/[A-ZА-ЯЁ]/g) || []).length;
+  const letters = (clean.match(/[A-Za-zА-Яа-яЁё]/g) || []).length;
+  const capsRatio = letters > 0 ? capsLetters / letters : 0;
+  const numberHits = (clean.match(/\d+([.,]\d+)?\s?%?/g) || []).length;
+  return { clean, wordCount: words.length, sentenceCount: Math.max(1, sentences.length), exclaims, capsRatio, numberHits };
+}
+function socialLexiconScore(text, terms) {
+  const low = (text || "").toLowerCase();
+  let sum = 0;
+  terms.forEach(([term, weight]) => {
+    if (low.includes(term)) sum += weight;
+  });
+  return sum;
+}
+function socialDiminish(raw, k) {
+  return Math.round(100 * (1 - Math.exp(-raw / (k || 40))));
+}
+function analyzeSocialPostText(text) {
+  const stats = socialTextStats(text);
+  const hypeRaw = socialLexiconScore(text, SOCIAL_HYPE_TERMS);
+  const measuredRaw = socialLexiconScore(text, SOCIAL_MEASURED_TERMS);
+  const scamRaw = socialLexiconScore(text, SOCIAL_SCAM_TERMS);
+  const hype = clamp01(socialDiminish(hypeRaw, 45), 0, 100);
+  const capsPenalty = stats.capsRatio > 0.35 ? (stats.capsRatio - 0.35) * 140 : 0;
+  const exclaimPenalty = Math.max(0, stats.exclaims - 1) * 9;
+  const scamRisk = clamp01(socialDiminish(scamRaw, 50) + capsPenalty + exclaimPenalty, 0, 100);
+  const specificity = clamp01(stats.numberHits * 14 + measuredRaw * 0.6, 0, 100);
+  const lengthOk = stats.wordCount >= 6 && stats.wordCount <= 60;
+  const clarity = clamp01((lengthOk ? 55 : 25) + Math.min(30, stats.sentenceCount * 8) - capsPenalty * 0.5 - exclaimPenalty * 0.5, 5, 100);
+  const informativeness = clamp01(specificity * 0.75 + (lengthOk ? 15 : 0), 0, 100);
+  const interest = clamp01(hype * 0.5 + informativeness * 0.35 + Math.min(15, stats.wordCount / 2), 0, 100);
+  return { stats, clarity, informativeness, hype, scamRisk, interest };
+}
+function socialSimilarityToRecent(text, history) {
+  const words = new Set((text || "").toLowerCase().split(/\W+/).filter((w) => w.length > 3));
+  if (!words.size || !history || !history.length) return 0;
+  let best = 0;
+  history.slice(0, 5).forEach((h) => {
+    const hw = new Set((h.text || "").toLowerCase().split(/\W+/).filter((w) => w.length > 3));
+    if (!hw.size) return;
+    let overlap = 0;
+    words.forEach((w) => {
+      if (hw.has(w)) overlap++;
+    });
+    const sim = overlap / Math.max(words.size, hw.size);
+    if (sim > best) best = sim;
+  });
+  return best;
+}
+function scoreSocialPost(text, context) {
+  const base = analyzeSocialPostText(text);
+  const history = context.postLog || [];
+  const repeatSim = socialSimilarityToRecent(text, history);
+  const novelty = clamp01(100 - repeatSim * 100, 0, 100);
+  const trust = context.authorTrust != null ? context.authorTrust : 50;
+  const credibility = clamp01(
+    base.clarity * 0.25 + base.informativeness * 0.3 + trust * 0.35 - base.scamRisk * 0.5 - repeatSim * 25,
+    0,
+    100
+  );
+  const freqPenaltyRaw = Math.max(0, (context.recentPostCount || 0) - 1) * 12;
+  const freqMult = clamp01(1 - freqPenaltyRaw / 100, 0.15, 1);
+  const audienceReactionRaw = credibility * 0.45 + base.hype * 0.3 + novelty * 0.1 + base.interest * 0.15 - base.scamRisk * 0.55;
+  const audienceReaction = Math.max(-100, Math.min(100, audienceReactionRaw * freqMult));
+  const engagement = clamp01(base.interest * 0.6 + base.hype * 0.3 + credibility * 0.1, 0, 100) * freqMult;
+  return {
+    clarity: base.clarity,
+    informativeness: base.informativeness,
+    credibility,
+    interest: base.interest,
+    hype: base.hype,
+    scamRisk: base.scamRisk,
+    novelty,
+    engagement,
+    audienceReaction,
+    freqMult
+  };
+}
+var SOCIAL_AUDIENCE_SEGMENTS = [
+  { id: "speculators", share: 0.3, hypeW: 1.1, credW: 0.3, scamW: -0.4 },
+  { id: "fans", share: 0.18, hypeW: 0.9, credW: 0.2, scamW: -0.15 },
+  { id: "longterm", share: 0.22, hypeW: 0.2, credW: 0.9, scamW: -0.6 },
+  { id: "skeptics", share: 0.18, hypeW: -0.2, credW: 0.5, scamW: -1 },
+  { id: "holders", share: 0.12, hypeW: 0.3, credW: 0.7, scamW: -1.2 }
+];
+function socialSegmentReactions(score) {
+  return SOCIAL_AUDIENCE_SEGMENTS.map((seg) => {
+    const raw = (score.hype - 50) / 50 * seg.hypeW * 40 + (score.credibility - 50) / 50 * seg.credW * 40 + score.scamRisk / 100 * seg.scamW * 60;
+    return { id: seg.id, share: seg.share, reaction: Math.max(-100, Math.min(100, raw)) };
+  });
+}
+function socialMarketInfluence(score, segReactions, ctx) {
+  const weighted = segReactions.reduce((s, r) => s + r.reaction * r.share, 0);
+  const assetVolMult = Math.min(1.6, ctx.assetVol || 1);
+  const liquidityDamp = ctx.liquidityDamp != null ? ctx.liquidityDamp : 1;
+  const reachMult = ctx.reachMult || 1;
+  const raw = weighted * 0.16 * assetVolMult * liquidityDamp * reachMult * score.freqMult;
+  return Math.max(-35, Math.min(35, raw));
+}
+function socialReactionBand(audienceReaction) {
+  if (audienceReaction >= 55) return { label: "\u043E\u0447\u0435\u043D\u044C \u0432\u044B\u0441\u043E\u043A\u0430\u044F", color: "green" };
+  if (audienceReaction >= 20) return { label: "\u0432\u044B\u0441\u043E\u043A\u0430\u044F", color: "green" };
+  if (audienceReaction >= -10) return { label: "\u0443\u043C\u0435\u0440\u0435\u043D\u043D\u0430\u044F", color: "gold" };
+  if (audienceReaction >= -35) return { label: "\u0441\u043B\u0430\u0431\u0430\u044F", color: "red" };
+  return { label: "\u043D\u0435\u0433\u0430\u0442\u0438\u0432\u043D\u0430\u044F", color: "red" };
+}
+var SOCIAL_COMMENTS_SUPPORT = [
+  "Если они реально это сделают, выглядит интересно.",
+  "Наконец конкретика, а не просто слова.",
+  "Подписан давно, пока не подводили.",
+  "Похоже на разумный шаг, посмотрим на результат."
+];
+var SOCIAL_COMMENTS_SKEPTIC = [
+  "Слишком много обещаний и мало цифр.",
+  "Уже не первый раз слышим что-то похожее.",
+  "Звучит как попытка привлечь внимание, а не новость.",
+  "Подожду подтверждения, прежде чем что-то делать."
+];
+var SOCIAL_COMMENTS_HYPE = [
+  "Всё, беру, пока не поздно!",
+  "Это может реально выстрелить.",
+  "Заходим все вместе 🚀"
+];
+var SOCIAL_COMMENTS_SCAM = [
+  "Обещания без деталей — классический памп.",
+  "Гарантии в такой теме — уже тревожный знак.",
+  "Кто-то опять готовит слив на хайпе."
+];
+function pickSocialComments(score, seed) {
+  const picks = [];
+  const rnd = (n) => (hashStr(seed + n) % 1000) / 1000;
+  if (score.scamRisk >= 55) {
+    picks.push(pickFrom(SOCIAL_COMMENTS_SCAM, hashStr(seed + "scam")));
+  } else if (score.credibility >= 60) {
+    picks.push(pickFrom(SOCIAL_COMMENTS_SUPPORT, hashStr(seed + "sup")));
+  } else {
+    picks.push(pickFrom(SOCIAL_COMMENTS_SKEPTIC, hashStr(seed + "skep")));
+  }
+  if (score.hype >= 60 && score.scamRisk < 55 && rnd(1) > 0.35) {
+    picks.push(pickFrom(SOCIAL_COMMENTS_HYPE, hashStr(seed + "hype")));
+  } else if (score.credibility < 45 && rnd(2) > 0.4) {
+    picks.push(pickFrom(SOCIAL_COMMENTS_SKEPTIC, hashStr(seed + "skep2")));
+  }
+  return picks;
 }
 var AD_TIERS = [
   { id: "basic", name: "\u0411\u0430\u043D\u043D\u0435\u0440 \u043D\u0430 \u043C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441\u0435", cost: 150, boostMult: 1.5, durationMin: 5 },
@@ -1220,7 +1416,11 @@ function MarketSandbox() {
   const [loanFeedback, setLoanFeedback] = useState({});
   const [bankRatings, setBankRatings] = useState({ mfo: 50, priv: 50, fed: 50 });
   const [ipBankRating, setIpBankRating] = useState(50);
-  const [hypePosts, setHypePosts] = useState([]);
+  const [playerSocialProfile, setPlayerSocialProfile] = useState({ trust: 50, postLog: [], lastPostAt: 0 });
+  const [composerText, setComposerText] = useState("");
+  const [composerAdBoost, setComposerAdBoost] = useState(false);
+  const [lastPostFeedback, setLastPostFeedback] = useState(null);
+  const [composerError, setComposerError] = useState(null);
   const [fines, setFines] = useState([]);
   const [courtCases, setCourtCases] = useState([]);
   const [courtHistory, setCourtHistory] = useState([]);
@@ -1300,6 +1500,8 @@ function MarketSandbox() {
   const [blackMarketVolume, setBlackMarketVolume] = useState(0);
   const [blackMarketHeat, setBlackMarketHeat] = useState(0);
   const [blackMarketRoundsDone, setBlackMarketRoundsDone] = useState(0);
+  const [blackMarketMuleRounds, setBlackMarketMuleRounds] = useState(0);
+  const [blackMarketOwnRounds, setBlackMarketOwnRounds] = useState(0);
   const [muleCards, setMuleCards] = useState({});
   const [muleTransferInputs, setMuleTransferInputs] = useState({});
   const [muleTransferDest, setMuleTransferDest] = useState({});
@@ -1322,6 +1524,7 @@ function MarketSandbox() {
   const touchStartYRef = useRef(null);
   const suspicionRef = useRef(0);
   const reputationRef = useRef(100);
+  const playerSocialProfileRef = useRef({ trust: 50, postLog: [], lastPostAt: 0 });
   const onboardedRef = useRef(onboarded);
   const holdingsRef = useRef(holdings);
   const ipHoldingsRef = useRef(ipHoldings);
@@ -1342,6 +1545,8 @@ function MarketSandbox() {
   const blackMarketRoundsRef = useRef([]);
   const launderStatsRef = useRef({ total: 0, byMule: {} });
   const blackMarketRoundsDoneRef = useRef(blackMarketRoundsDone);
+  const blackMarketMuleRoundsRef = useRef(blackMarketMuleRounds);
+  const blackMarketOwnRoundsRef = useRef(blackMarketOwnRounds);
   const muleCardsRef = useRef(muleCards);
   const ipBankRatingRef = useRef(ipBankRating);
   const jobRef = useRef(job);
@@ -1435,6 +1640,12 @@ function MarketSandbox() {
   useEffect(() => {
     blackMarketRoundsDoneRef.current = blackMarketRoundsDone;
   }, [blackMarketRoundsDone]);
+  useEffect(() => {
+    blackMarketMuleRoundsRef.current = blackMarketMuleRounds;
+  }, [blackMarketMuleRounds]);
+  useEffect(() => {
+    blackMarketOwnRoundsRef.current = blackMarketOwnRounds;
+  }, [blackMarketOwnRounds]);
   useEffect(() => {
     muleCardsRef.current = muleCards;
   }, [muleCards]);
@@ -1534,6 +1745,9 @@ function MarketSandbox() {
   useEffect(() => {
     reputationRef.current = reputation;
   }, [reputation]);
+  useEffect(() => {
+    playerSocialProfileRef.current = playerSocialProfile;
+  }, [playerSocialProfile]);
   useEffect(() => {
     if (!loaded) return;
     const id = setInterval(() => {
@@ -1827,6 +2041,7 @@ function MarketSandbox() {
     setBankRatings(data.bankRatings && typeof data.bankRatings === "object" ? { mfo: 50, priv: 50, fed: 50, ...data.bankRatings } : { mfo: 50, priv: 50, fed: 50 });
     setIpBankRating(typeof data.ipBankRating === "number" ? data.ipBankRating : 50);
     setReputation(typeof data.reputation === "number" ? data.reputation : 100);
+    setPlayerSocialProfile(data.playerSocialProfile && typeof data.playerSocialProfile === "object" ? { trust: typeof data.playerSocialProfile.trust === "number" ? data.playerSocialProfile.trust : 50, postLog: Array.isArray(data.playerSocialProfile.postLog) ? data.playerSocialProfile.postLog : [], lastPostAt: data.playerSocialProfile.lastPostAt || 0 } : { trust: 50, postLog: [], lastPostAt: 0 });
     setBankAccounts(rawBankAccounts);
     setBankTransferDest((() => {
       const raw = data.bankTransferDest && typeof data.bankTransferDest === "object" ? data.bankTransferDest : {};
@@ -1844,6 +2059,8 @@ function MarketSandbox() {
     setBlackMarketVolume(typeof data.blackMarketVolume === "number" ? data.blackMarketVolume : 0);
     setBlackMarketHeat(typeof data.blackMarketHeat === "number" ? data.blackMarketHeat : 0);
     setBlackMarketRoundsDone(typeof data.blackMarketRoundsDone === "number" ? data.blackMarketRoundsDone : 0);
+    setBlackMarketMuleRounds(typeof data.blackMarketMuleRounds === "number" ? data.blackMarketMuleRounds : 0);
+    setBlackMarketOwnRounds(typeof data.blackMarketOwnRounds === "number" ? data.blackMarketOwnRounds : 0);
     const restoredRounds = Array.isArray(data.blackMarketRounds) ? data.blackMarketRounds : data.blackMarketRound ? [data.blackMarketRound] : [];
     setBlackMarketRounds(restoredRounds);
     blackMarketRoundsRef.current = restoredRounds;
@@ -1933,6 +2150,7 @@ function MarketSandbox() {
     bankRatings: bankRatingsRef.current,
     ipBankRating: ipBankRatingRef.current,
     reputation: reputationRef.current,
+    playerSocialProfile: playerSocialProfileRef.current,
     bankAccounts: bankAccountsRef.current,
     bankTransferDest: bankTransferDestRef.current,
     transferSuspicion: transferSuspicionRef.current,
@@ -1943,6 +2161,8 @@ function MarketSandbox() {
     blackMarketVolume: blackMarketVolumeRef.current,
     blackMarketHeat: blackMarketHeatRef.current,
     blackMarketRoundsDone: blackMarketRoundsDoneRef.current,
+    blackMarketMuleRounds: blackMarketMuleRoundsRef.current,
+    blackMarketOwnRounds: blackMarketOwnRoundsRef.current,
     blackMarketRounds: blackMarketRoundsRef.current,
     launderStats: launderStatsRef.current,
     muleCards: muleCardsRef.current,
@@ -2180,6 +2400,20 @@ function MarketSandbox() {
       const bank = ev.dir === "crash" ? MACRO_CRASH : MACRO_RALLY;
       updateStory(ev.storyId, { status: "resolved" });
       pushPost({ role: "trader", kind: "development", text: pickFrom(bank.dev, Math.floor(Math.random() * 1e6)), positive: ev.dir !== "crash", isMacro: true, importance: ev.importance, storyId: ev.storyId });
+    } else if (ev.kind === "social_post_resolve") {
+      if (!c) return;
+      applyImpact(c.id, ev.remainingPct);
+      updateStory(ev.storyId, { status: ev.overshoot ? "developing" : "resolved" });
+      pushPost({ role: "trader", kind: "development", text: ev.remainingPct >= 0 ? `\u0418\u043D\u0442\u0435\u0440\u0435\u0441 \u043A ${ev.ticker} \u043F\u043E\u0441\u043B\u0435 \u043F\u0443\u0431\u043B\u0438\u043A\u0430\u0446\u0438\u0438 \u043F\u0440\u043E\u0434\u043E\u043B\u0436\u0430\u0435\u0442 \u0440\u0430\u0441\u0442\u0438` : `\u0418\u043D\u0442\u0435\u0440\u0435\u0441 \u043A ${ev.ticker} \u043F\u043E\u0441\u043B\u0435 \u043F\u0443\u0431\u043B\u0438\u043A\u0430\u0446\u0438\u0438 \u0431\u044B\u0441\u0442\u0440\u043E \u043E\u0441\u0442\u044B\u043B`, positive: ev.remainingPct >= 0, isMacro: false, ticker: ev.ticker, importance: 1, storyId: ev.storyId });
+      if (ev.overshoot) {
+        const dueAt = Date.now() + (30e3 + Math.random() * 40e3);
+        scheduleEvent({ id: makeId("sched"), kind: "social_post_correction", storyId: ev.storyId, companyId: c.id, ticker: ev.ticker, correctionPct: -Math.abs(ev.remainingPct) * 1.1, dueAt });
+      }
+    } else if (ev.kind === "social_post_correction") {
+      if (!c) return;
+      applyImpact(c.id, ev.correctionPct);
+      updateStory(ev.storyId, { status: "denied", reliability: "low" });
+      pushPost({ role: "insider", kind: "development", text: `\u0420\u044B\u043D\u043E\u043A \u043F\u0435\u0440\u0435\u043E\u0446\u0435\u043D\u0438\u043B \u043F\u043E\u0441\u0442 \u043F\u0440\u043E ${ev.ticker} \u2014 \u0447\u0430\u0441\u0442\u044C \u043F\u043E\u043A\u0443\u043F\u0430\u0442\u0435\u043B\u0435\u0439 \u0437\u0430\u043A\u0440\u044B\u0432\u0430\u0435\u0442 \u043F\u043E\u0437\u0438\u0446\u0438\u0438`, positive: false, isMacro: false, ticker: ev.ticker, importance: 2, storyId: ev.storyId });
     }
   };
   useEffect(() => {
@@ -2705,22 +2939,36 @@ function MarketSandbox() {
   }, [loaded]);
   const triggerBlackMarketBust = (reasonText) => {
     const volume = Math.round(blackMarketVolumeRef.current);
-    if (volume > 0) {
-      setFines((prev) => [{ id: makeId("fine"), label: "\u0424\u0438\u043D\u043C\u043E\u043D\u0438\u0442\u043E\u0440\u0438\u043D\u0433: \u043D\u0435\u0437\u0430\u043A\u043E\u043D\u043D\u044B\u0439 \u043E\u0431\u043E\u0440\u043E\u0442 \u0447\u0435\u0440\u0435\u0437 \u043F\u0440\u0438\u0451\u043C \u043F\u043B\u0430\u0442\u0435\u0436\u0435\u0439", amount: volume, paid: false }, ...prev].slice(0, 30));
+    if (volume <= 0) return;
+    const muleRounds = blackMarketMuleRoundsRef.current;
+    const ownRounds = blackMarketOwnRoundsRef.current;
+    const muleShare = muleRounds + ownRounds > 0 ? muleRounds / (muleRounds + ownRounds) : 0;
+    const evidence = [
+      { label: "\u0417\u0430\u0444\u0438\u043A\u0441\u0438\u0440\u043E\u0432\u0430\u043D \u043D\u0435\u043E\u0431\u044B\u0447\u043D\u044B\u0439 \u043E\u0431\u043E\u0440\u043E\u0442 \u0447\u0435\u0440\u0435\u0437 \u043F\u0440\u0438\u0451\u043C \u043F\u043B\u0430\u0442\u0435\u0436\u0435\u0439", positive: false },
+      { label: "\u0421\u0432\u044F\u0437\u044C \u0441 \u043F\u0440\u043E\u0434\u0430\u0436\u0430\u043C\u0438 \u0441\u043E\u0431\u0441\u0442\u0432\u0435\u043D\u043D\u043E\u0439 \u043C\u043E\u043D\u0435\u0442\u044B \u043F\u0440\u043E\u0441\u043B\u0435\u0436\u0435\u043D\u0430", positive: false }
+    ];
+    if (muleShare >= 0.6) {
+      evidence.push({ label: "\u0411\u043E\u043B\u044C\u0448\u0438\u043D\u0441\u0442\u0432\u043E \u043F\u043B\u0430\u0442\u0435\u0436\u0435\u0439 \u0448\u043B\u043E \u043D\u0430 \u0447\u0443\u0436\u0438\u0435 \u043A\u0430\u0440\u0442\u044B \u2014 \u043F\u0440\u044F\u043C\u0430\u044F \u0441\u0432\u044F\u0437\u044C \u0441 \u043E\u0442\u0432\u0435\u0442\u0447\u0438\u043A\u043E\u043C \u043D\u0435 \u0434\u043E\u043A\u0430\u0437\u0430\u043D\u0430", positive: true });
+    } else {
+      evidence.push({ label: "\u041F\u043B\u0430\u0442\u0435\u0436\u0438 \u043F\u0440\u0438\u043D\u0438\u043C\u0430\u043B\u0438\u0441\u044C \u043D\u0430\u043F\u0440\u044F\u043C\u0443\u044E \u043D\u0430 \u043B\u0438\u0447\u043D\u044B\u0435 \u0441\u0447\u0451\u0442\u0430", positive: false });
     }
-    setBankAccounts((prev) => {
-      const next = {};
-      Object.keys(prev).forEach((bId) => {
-        next[bId] = { ...prev[bId], frozen: true, frozenUntil: Date.now() + BLACKMARKET_FREEZE_MS };
-      });
-      return next;
+    createCourtCase({
+      source: "black_market",
+      plaintiffName: "\u0424\u0438\u043D\u043C\u043E\u043D\u0438\u0442\u043E\u0440\u0438\u043D\u0433",
+      amountClaimed: volume,
+      basis: reasonText || "\u0417\u0430\u0444\u0438\u043A\u0441\u0438\u0440\u043E\u0432\u0430\u043D\u0430 \u0441\u0445\u0435\u043C\u0430 \u043F\u0440\u0438\u0451\u043C\u0430 \u043F\u043B\u0430\u0442\u0435\u0436\u0435\u0439 \u0441 \u043F\u043E\u0441\u043B\u0435\u0434\u0443\u044E\u0449\u0435\u0439 \u043E\u0442\u043F\u0440\u0430\u0432\u043A\u043E\u0439 \u043A\u0440\u0438\u043F\u0442\u044B/\u0430\u043A\u0446\u0438\u0439. \u0424\u0438\u043D\u043C\u043E\u043D\u0438\u0442\u043E\u0440\u0438\u043D\u0433 \u0442\u0440\u0435\u0431\u0443\u0435\u0442 \u0434\u043E\u043A\u0430\u0437\u0430\u0442\u044C \u043D\u0435\u0437\u0430\u043A\u043E\u043D\u043D\u043E\u0441\u0442\u044C \u0447\u0435\u0440\u0435\u0437 \u0441\u0443\u0434.",
+      evidence,
+      linkedRefId: null,
+      fundingSide: "personal",
+      importance: 3
     });
-    setGreyAccount((a) => a ? { ...a, frozen: true, frozenUntil: Date.now() + BLACKMARKET_FREEZE_MS } : a);
-    pushPost({ text: reasonText || "\u0424\u0438\u043D\u043C\u043E\u043D\u0438\u0442\u043E\u0440\u0438\u043D\u0433 \u0432\u0441\u043A\u0440\u044B\u043B \u0441\u0445\u0435\u043C\u0443 \u043F\u0440\u0438\u0451\u043C\u0430 \u043F\u043B\u0430\u0442\u0435\u0436\u0435\u0439 \u2014 \u0432\u0441\u0435 \u0441\u0447\u0435\u0442\u0430 \u0437\u0430\u043C\u043E\u0440\u043E\u0436\u0435\u043D\u044B, \u0448\u0442\u0440\u0430\u0444 \u0432\u044B\u043F\u0438\u0441\u0430\u043D \u043D\u0430 \u0432\u0441\u044E \u043F\u0440\u043E\u0448\u0435\u0434\u0448\u0443\u044E \u0447\u0435\u0440\u0435\u0437 \u043D\u0438\u0445 \u0441\u0443\u043C\u043C\u0443", positive: false, isMacro: true });
-    adjustReputation(-35);
-    flagSuspicion(40);
+    pushPost({ text: "\u0424\u0438\u043D\u043C\u043E\u043D\u0438\u0442\u043E\u0440\u0438\u043D\u0433 \u0437\u0430\u043C\u0435\u0442\u0438\u043B \u0441\u0445\u0435\u043C\u0443 \u043F\u0440\u0438\u0451\u043C\u0430 \u043F\u043B\u0430\u0442\u0435\u0436\u0435\u0439 \u2014 \u0434\u0435\u043B\u043E \u043F\u0435\u0440\u0435\u0434\u0430\u043D\u043E \u0432 \u0441\u0443\u0434, \u0441\u0447\u0451\u0442\u0430 \u043F\u043E\u043A\u0430 \u043D\u0435 \u0442\u0440\u043E\u043D\u0443\u0442\u044B", positive: false, isMacro: true });
+    adjustReputation(-12);
+    flagSuspicion(20);
     setBlackMarketVolume(0);
     setBlackMarketHeat(0);
+    setBlackMarketMuleRounds(0);
+    setBlackMarketOwnRounds(0);
     setTimeout(saveGame, 50);
   };
   useEffect(() => {
@@ -3027,9 +3275,10 @@ function MarketSandbox() {
       if (!due.length) return;
       let ipCashDelta = 0;
       const zzonePerf = companyPerfPct(companiesRef.current, "ZZONE");
+      const zzoneRecentPerf = companyRecentPerfPct(companiesRef.current, "ZZONE");
       const rep = reputationRef.current;
-      const rate = warehouseRate(zzonePerf);
-      const demandMult = zzoneDemandMult(zzonePerf);
+      const rate = warehouseRate(zzoneRecentPerf);
+      const demandMult = zzoneDemandMult(zzoneRecentPerf);
       const marketVolume = WAREHOUSE_BASE_ZZONE_VOLUME * demandMult;
       const updates = {};
       const rankById = {};
@@ -3040,7 +3289,8 @@ function MarketSandbox() {
         const tier = WAREHOUSE_TIERS[w.tierId];
         const share = tier.contractShare * warehouseContractShareMult(rep) * warehouseRankMult(rankById[w.id] || 0);
         const availableToWarehouse = marketVolume * share;
-        const baseTurnover = Math.min(availableToWarehouse, tier.throughputCapacity);
+        const effectiveCapacity = tier.throughputCapacity * warehouseThroughputFlexMult(zzoneRecentPerf);
+        const baseTurnover = Math.min(availableToWarehouse, effectiveCapacity);
         const efficiency = warehouseEfficiency(tier, w.staffLevel, w.equipmentLevel, w.condition, w.transportLevel);
         const processedTurnover = baseTurnover * efficiency;
         const marketRevenue = Math.round(processedTurnover * rate * WAREHOUSE_CYCLE_HOUR_FRACTION);
@@ -3083,7 +3333,7 @@ function MarketSandbox() {
           payoutBalance: Math.round(((w.payoutBalance || 0) + grossRevenue) * 100) / 100,
           cyclesRun: w.cyclesRun + 1,
           nextCycleAt: Date.now() + WAREHOUSE_CYCLE_MS,
-          lastCycleStats: { grossRevenue, marketRevenue, subsidy, floor, wagesThisCycle, opex: paidOpex, efficiency, rate, processedTurnover: Math.round(processedTurnover), availableToWarehouse: Math.round(availableToWarehouse) }
+          lastCycleStats: { grossRevenue, marketRevenue, subsidy, floor, wagesThisCycle, opex: paidOpex, efficiency, rate, processedTurnover: Math.round(processedTurnover), availableToWarehouse: Math.round(availableToWarehouse), capacity: Math.round(effectiveCapacity) }
         };
       });
       if (ipCashDelta !== 0) setIpCash((c) => Math.max(0, c + ipCashDelta));
@@ -3267,12 +3517,13 @@ function MarketSandbox() {
     const company = companies.find((c) => c.id === companyId);
     if (!company || qty <= 0 || leverage <= 1) return;
     const useBankCard = account !== "personal" && BANK_ACCOUNTS.some((b) => b.id === account) && bankAccounts[account] && !bankAccounts[account].frozen;
+    const useMule = !useBankCard && muleCards[account] && !muleCards[account].frozen;
     const sizeRatio = qty / company.supply;
     const impactPct = Math.min(92, sizeRatio * 150);
     const avgExecPrice = company.price * (1 + impactPct / 200);
     const notional = avgExecPrice * qty;
     const margin = notional / leverage;
-    const curCash = useBankCard ? bankAccounts[account].balance : 0;
+    const curCash = useBankCard ? bankAccounts[account].balance : useMule ? muleCards[account].balance : 0;
     if (margin > curCash) return;
     const liquidationPrice = avgExecPrice * (1 - 0.9 / leverage);
     adjustAccountBalance(account, -margin);
@@ -3287,10 +3538,12 @@ function MarketSandbox() {
       liquidationPrice,
       account
     }]);
-    logTx(`\u041E\u0442\u043A\u0440\u044B\u0442\u0438\u0435 \u043F\u043E\u0437\u0438\u0446\u0438\u0438 ${company.ticker} \xD7${leverage}${useBankCard ? ` \xB7 ${BANK_ACCOUNTS.find((b) => b.id === account)?.name}` : ""}`, margin, "out");
+    const acctLabel = useBankCard ? ` \xB7 ${BANK_ACCOUNTS.find((b) => b.id === account)?.name}` : useMule ? " \xB7 \u0447\u0443\u0436\u0430\u044F \u043A\u0430\u0440\u0442\u0430" : "";
+    logTx(`\u041E\u0442\u043A\u0440\u044B\u0442\u0438\u0435 \u043F\u043E\u0437\u0438\u0446\u0438\u0438 ${company.ticker} \xD7${leverage}${acctLabel}`, margin, "out");
     applyImpact(companyId, impactPct);
-    if (sizeRatio > 0.08) flagSuspicion(sizeRatio * 35);
-    if (companyId === playerVentureId && sizeRatio > 0.05) flagSuspicion(sizeRatio * 40);
+    if (useMule) {
+    } else if (sizeRatio > 0.08) flagSuspicion(sizeRatio * 35);
+    if (!useMule && companyId === playerVentureId && sizeRatio > 0.05) flagSuspicion(sizeRatio * 40);
     setTimeout(saveGame, 50);
   };
   const closeLeveragedPosition = (positionId) => {
@@ -3310,7 +3563,9 @@ function MarketSandbox() {
     if (company) {
       applyImpact(pos.companyId, -impactPct);
       const recentPump = Date.now() - lastPumpAtRef.current < 12e4;
-      if (pos.companyId === playerVentureId && sizeRatio > 0.05) flagSuspicion(sizeRatio * 55 + (recentPump ? 20 : 0));
+      const useMule = !!muleCards[pos.account];
+      if (useMule) {
+      } else if (pos.companyId === playerVentureId && sizeRatio > 0.05) flagSuspicion(sizeRatio * 55 + (recentPump ? 20 : 0));
       else if (sizeRatio > 0.08) flagSuspicion(sizeRatio * 28);
     }
     setTimeout(saveGame, 50);
@@ -3466,9 +3721,9 @@ function MarketSandbox() {
     const unitCost = FACTORY_UNIT_COST[category];
     const roll = Math.random();
     let marginMult;
-    if (roll < 0.55) marginMult = 1.1 + Math.random() * 0.25;
-    else if (roll < 0.85) marginMult = 0.7 + Math.random() * 0.35;
-    else marginMult = 1.6 + Math.random() * 0.9;
+    if (roll < 0.5) marginMult = 1.5 + Math.random() * 0.4;
+    else if (roll < 0.82) marginMult = 1.1 + Math.random() * 0.4;
+    else marginMult = 2.2 + Math.random() * 1;
     const compTicker = category === "clothes" || category === "accessories" ? "ASIM" : "VSLG";
     const perf = companyPerfPct(companiesRef.current, compTicker);
     const compMult = Math.max(0.9, Math.min(1.1, 1 + perf / 600));
@@ -3525,7 +3780,7 @@ function MarketSandbox() {
     const room = effCapacity - factory.stock;
     const targetUnits = Math.max(1, Math.min(room, Math.round(Number(units) || 0)));
     if (targetUnits <= 0) return;
-    const secPerUnit = factorySecPerUnit(factory.equipmentLevel);
+    const secPerUnit = factorySecPerUnit(factory.equipmentLevel, factory.line);
     const durationMs = targetUnits * secPerUnit * 1e3;
     setFactories((prev) => prev.map((f) => f.id === factoryId ? {
       ...f,
@@ -3539,7 +3794,7 @@ function MarketSandbox() {
     const line = FACTORY_LINES[factory.line];
     const effCapacity = line.capacity + warehouseFactoryCapacityBonus(warehouses);
     const { production } = factory;
-    const secPerUnit = production.secPerUnit || factorySecPerUnit(factory.equipmentLevel);
+    const secPerUnit = production.secPerUnit || factorySecPerUnit(factory.equipmentLevel, factory.line);
     const elapsedSec = Math.max(0, (Date.now() - production.startedAt) / 1e3);
     const completedUnits = Math.max(0, Math.min(production.targetUnits, Math.floor(elapsedSec / secPerUnit)));
     const added = Math.max(0, Math.min(completedUnits, effCapacity - factory.stock));
@@ -4107,6 +4362,10 @@ function MarketSandbox() {
       setIpCash((c) => c + delta);
       return;
     }
+    if (muleCards[accountId]) {
+      setMuleCards((prev) => prev[accountId] ? { ...prev, [accountId]: { ...prev[accountId], balance: prev[accountId].balance + delta } } : prev);
+      return;
+    }
     setBankAccounts((prev) => prev[accountId] ? { ...prev, [accountId]: { ...prev[accountId], balance: prev[accountId].balance + delta } } : prev);
   };
   const tenderTrackBonus = () => Math.min(8, tenderTrackRecord.completed * 1.5);
@@ -4352,14 +4611,17 @@ function MarketSandbox() {
       return { ...h, [companyId]: { ...prevH, qty: newQty } };
     });
     const isOwnCoin = companyId === playerVentureId;
+    const isMuleReceiving = !!muleCards[accountId];
     logTx(`\u0427\u0451\u0440\u043D\u044B\u0439 \u0440\u044B\u043D\u043E\u043A: \u043E\u0442\u043F\u0440\u0430\u0432\u043A\u0430 ${company.ticker} \u043F\u043E\u043B\u0443\u0447\u0430\u0442\u0435\u043B\u044E${isTeher ? " (\u043A\u043E\u043C\u0438\u0441\u0441\u0438\u044F TEHER 1%)" : ""}`, forward, "out");
     setBlackMarketVolume((v) => v + amount);
+    if (isMuleReceiving) setBlackMarketMuleRounds((n) => n + 1); else setBlackMarketOwnRounds((n) => n + 1);
     const ipLegitTurnover = resellShops.reduce((s, x) => s + x.totalRevenue, 0);
     if (accountId === "ip" && ipLegitTurnover < 200) {
-      triggerBlackMarketBust("\u041D\u043E\u0432\u043E\u0435 \u0418\u041F \u0431\u0435\u0437 \u0440\u0435\u0430\u043B\u044C\u043D\u043E\u0433\u043E \u043E\u0431\u043E\u0440\u043E\u0442\u0430 \u0441\u0440\u0430\u0437\u0443 \u043D\u0430\u0447\u0430\u043B\u043E \u0433\u043E\u043D\u044F\u0442\u044C \u043A\u0440\u0443\u043F\u043D\u044B\u0435 \u0441\u0443\u043C\u043C\u044B \u2014 \u0444\u0438\u043D\u043C\u043E\u043D\u0438\u0442\u043E\u0440\u0438\u043D\u0433 \u0437\u0430\u043C\u0435\u0442\u0438\u043B \u043C\u0433\u043D\u043E\u0432\u0435\u043D\u043D\u043E. \u0412\u0441\u0435 \u0441\u0447\u0435\u0442\u0430 \u0437\u0430\u043C\u043E\u0440\u043E\u0436\u0435\u043D\u044B, \u0448\u0442\u0440\u0430\u0444 \u0432\u044B\u043F\u0438\u0441\u0430\u043D.");
+      triggerBlackMarketBust("\u041D\u043E\u0432\u043E\u0435 \u0418\u041F \u0431\u0435\u0437 \u0440\u0435\u0430\u043B\u044C\u043D\u043E\u0433\u043E \u043E\u0431\u043E\u0440\u043E\u0442\u0430 \u0441\u0440\u0430\u0437\u0443 \u043D\u0430\u0447\u0430\u043B\u043E \u0433\u043E\u043D\u044F\u0442\u044C \u043A\u0440\u0443\u043F\u043D\u044B\u0435 \u0441\u0443\u043C\u043C\u044B \u2014 \u0444\u0438\u043D\u043C\u043E\u043D\u0438\u0442\u043E\u0440\u0438\u043D\u0433 \u0437\u0430\u043C\u0435\u0442\u0438\u043B \u043C\u0433\u043D\u043E\u0432\u0435\u043D\u043D\u043E.");
     } else {
       const coverMult = accountId === "ip" ? Math.max(0.25, 1 - Math.min(0.75, ipLegitTurnover / 25e3)) : 1;
-      setBlackMarketHeat((h) => Math.min(200, h + ((isOwnCoin ? 20 : 8) + amount / 500 * (isOwnCoin ? 1.6 : 1)) * coverMult));
+      const receiveMult = isMuleReceiving ? 0.4 : 1;
+      setBlackMarketHeat((h) => Math.min(200, h + ((isOwnCoin ? 20 : 8) + amount / 500 * (isOwnCoin ? 1.6 : 1)) * coverMult * receiveMult));
     }
     setBlackMarketRoundsDone((n) => n + 1);
     setBlackMarketRounds((prev) => prev.filter((r) => r.id !== roundId));
@@ -4594,23 +4856,67 @@ function MarketSandbox() {
       applyImpact(v.id, pop);
       flagLeveragedPumpPattern(v.id, pop);
       setCompanies((prev) => prev.map((c) => c.id === v.id ? { ...c, rdLevel: (c.rdLevel || 0) + 1, vol: Math.max(0.3, c.vol * 0.9) } : c));
-    } else {
-      const configs = {
-        hypeSocial: { cost: Math.round(150 * Math.pow(1.5, v.hypeLevel || 0)), successChance: 0.7, popRange: [3, 7], heat: 8, label: "\u043F\u043E\u0441\u0442 \u0432 \u0441\u043E\u0446\u0441\u0435\u0442\u044F\u0445" },
-        hypeBlogger: { cost: Math.round(450 * Math.pow(1.45, v.hypeLevel || 0)), successChance: 0.55, popRange: [7, 14], heat: 14, label: "\u0440\u0435\u043A\u043B\u0430\u043C\u0430 \u0443 \u0431\u043B\u043E\u0433\u0435\u0440\u043E\u0432" },
-        hypePR: { cost: Math.round(1e3 * Math.pow(1.4, v.hypeLevel || 0)), successChance: 0.4, popRange: [14, 25], heat: 20, label: "PR \u0432 \u0421\u041C\u0418" }
-      };
-      const config = configs[action];
-      if (!config || bal < config.cost || v.rugged) return;
-      adjustAccountBalance(src, -config.cost);
-      const success = Math.random() < config.successChance;
-      const pop = success ? (config.popRange[0] + Math.random() * (config.popRange[1] - config.popRange[0])) * repFactor : Math.random() < 0.3 ? -Math.random() * 4 : 0;
-      applyImpact(v.id, pop);
-      flagLeveragedPumpPattern(v.id, pop);
-      setCompanies((prev) => prev.map((c) => c.id === v.id ? { ...c, hypeLevel: (c.hypeLevel || 0) + 1, scamHeat: (c.scamHeat || 0) + config.heat } : c));
-      setHypePosts((prev) => [{ id: makeId("post"), label: config.label, success, likes: success ? Math.round(40 + Math.random() * 400) : Math.round(Math.random() * 20), comments: success ? Math.round(5 + Math.random() * 60) : Math.round(Math.random() * 5) }, ...prev].slice(0, 6));
     }
     setTimeout(saveGame, 50);
+  };
+  var SOCIAL_POST_MIN_CHARS = 12;
+  var SOCIAL_POST_MAX_CHARS = 240;
+  var SOCIAL_POST_COOLDOWN_MS = 20e3;
+  var SOCIAL_AD_BOOST_COST_BASE = 300;
+  const publishVenturePost = () => {
+    const v = companies.find((c) => c.id === playerVentureId);
+    const text = composerText.trim();
+    if (!v || v.rugged) return { ok: false, reason: "no-venture" };
+    if (text.length < SOCIAL_POST_MIN_CHARS || text.length > SOCIAL_POST_MAX_CHARS) {
+      setComposerError("\u041F\u043E\u0441\u0442 \u0434\u043E\u043B\u0436\u0435\u043D \u0431\u044B\u0442\u044C \u043E\u0442 12 \u0434\u043E 240 \u0441\u0438\u043C\u0432\u043E\u043B\u043E\u0432");
+      return { ok: false, reason: "length" };
+    }
+    const profile = playerSocialProfileRef.current;
+    const now = Date.now();
+    if (now - (profile.lastPostAt || 0) < SOCIAL_POST_COOLDOWN_MS) {
+      setComposerError("\u0410\u0443\u0434\u0438\u0442\u043E\u0440\u0438\u044F \u0435\u0449\u0451 \u043D\u0435 \u043E\u0441\u0442\u044B\u043B\u0430 \u043E\u0442 \u043F\u0440\u0435\u0434\u044B\u0434\u0443\u0449\u0435\u0433\u043E \u043F\u043E\u0441\u0442\u0430 \u2014 \u043F\u043E\u0434\u043E\u0436\u0434\u0438\u0442\u0435 \u043D\u0435\u043C\u043D\u043E\u0433\u043E");
+      return { ok: false, reason: "cooldown" };
+    }
+    const adBoostCost = composerAdBoost ? Math.round(SOCIAL_AD_BOOST_COST_BASE * Math.pow(1.4, v.hypeLevel || 0)) : 0;
+    const src = resolvedPayFrom;
+    if (adBoostCost > 0 && getAccountBalance(src) < adBoostCost) {
+      setComposerError("\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u043D\u0430 \u0440\u0435\u043A\u043B\u0430\u043C\u043D\u043E\u0435 \u043F\u0440\u043E\u0434\u0432\u0438\u0436\u0435\u043D\u0438\u0435");
+      return { ok: false, reason: "funds" };
+    }
+    setComposerError(null);
+    const recentPostCount = (profile.postLog || []).filter((p) => now - (p.ts || 0) < 15 * 60e3).length;
+    const followers = Math.round(150 + (v.marketingLevel || 0) * 280 + (v.hypeLevel || 0) * 180 + (v.rdLevel || 0) * 120 + (v.investorRounds || 0) * 400);
+    const reachMult = clamp01(0.4 + Math.log10(Math.max(10, followers)) / 3, 0.4, 1.4) * (composerAdBoost ? 1.8 : 1);
+    const score = scoreSocialPost(text, { authorTrust: profile.trust, postLog: profile.postLog, recentPostCount });
+    const segReactions = socialSegmentReactions(score);
+    const assetVol = v.vol || 1;
+    const liquidityDamp = clamp01(1 - Math.log10(Math.max(1, v.supply * v.price)) / 14, 0.35, 1);
+    const totalInfluence = socialMarketInfluence(score, segReactions, { assetVol, liquidityDamp, reachMult });
+    if (adBoostCost > 0) adjustAccountBalance(src, -adBoostCost);
+    const immediatePct = totalInfluence * 0.35;
+    applyImpact(v.id, immediatePct);
+    flagLeveragedPumpPattern(v.id, immediatePct);
+    const remainingPct = totalInfluence - immediatePct;
+    const band = socialReactionBand(score.audienceReaction);
+    const storyId = makeId("story");
+    const comments = pickSocialComments(score, v.id + now);
+    const mainPost = { role: "official", kind: "hype", text, positive: score.audienceReaction >= 0, isMacro: false, ticker: v.ticker, importance: score.engagement >= 55 ? 3 : score.engagement >= 25 ? 2 : 1, storyId };
+    const commentPosts = comments.map((c) => ({ role: score.scamRisk >= 55 ? "insider" : score.credibility >= 60 ? "trader" : "user", kind: "reaction", text: c, positive: score.credibility >= 55, isMacro: false, ticker: v.ticker, importance: 1, storyId }));
+    registerStory({ id: storyId, headline: text, category: v.sector === "\u041A\u0440\u0438\u043F\u0442\u043E" ? "crypto" : "companies", personal: true, importance: mainPost.importance, status: "developing", reliability: score.scamRisk >= 55 ? "low" : "official", ticker: v.ticker, marketImpactPct: immediatePct, createdAt: now, postCount: 1 + commentPosts.length });
+    pushPosts([mainPost, ...commentPosts].map((p) => ({ ...p, id: makeId("post"), storyId })));
+    if (Math.abs(remainingPct) > 0.3) {
+      const overshoot = score.scamRisk >= 55 && score.hype >= 55;
+      const dueAt = now + (25e3 + Math.random() * 45e3);
+      scheduleEvent({ id: makeId("sched"), kind: "social_post_resolve", storyId, companyId: v.id, ticker: v.ticker, remainingPct, overshoot, dueAt });
+    }
+    const trustDelta = score.scamRisk >= 55 ? -3 - score.scamRisk / 40 : score.credibility >= 60 ? 1.2 : score.credibility <= 30 ? -1.5 : 0.2;
+    const newTrust = Math.max(0, Math.min(100, profile.trust + trustDelta));
+    const newLog = [{ ts: now, text, ticker: v.ticker, score: { credibility: score.credibility, hype: score.hype, scamRisk: score.scamRisk } }, ...(profile.postLog || [])].slice(0, 30);
+    setPlayerSocialProfile({ trust: newTrust, postLog: newLog, lastPostAt: now });
+    setComposerText("");
+    setLastPostFeedback({ reach: Math.round(followers * reachMult), band, scamRisk: Math.round(score.scamRisk), demandPct: Math.round(totalInfluence * 10) / 10, ticker: v.ticker });
+    setTimeout(saveGame, 50);
+    return { ok: true };
   };
   const takeJob = (companyId, positionId) => {
     const position = POSITIONS.find((p) => p.id === positionId);
@@ -5114,7 +5420,9 @@ function MarketSandbox() {
     setTaxHistory([]);
     setFines([]);
     setTransactions([]);
-    setHypePosts([]);
+    setPlayerSocialProfile({ trust: 50, postLog: [], lastPostAt: 0 });
+    setComposerText("");
+    setLastPostFeedback(null);
     setConfirmCloseVenture(false);
     setBonds([]);
     setBondInputs({});
@@ -5221,9 +5529,6 @@ function MarketSandbox() {
   const marketingCost = playerVenture ? Math.round(800 * Math.pow(1.5, playerVenture.marketingLevel || 0)) : 0;
   const resolvedBal = getAccountBalance(resolvedPayFrom);
   const rdCost = playerVenture ? Math.round(1200 * Math.pow(1.4, playerVenture.rdLevel || 0)) : 0;
-  const hypeSocialCost = playerVenture ? Math.round(150 * Math.pow(1.35, playerVenture.hypeLevel || 0)) : 0;
-  const hypeBloggerCost = playerVenture ? Math.round(500 * Math.pow(1.3, playerVenture.hypeLevel || 0)) : 0;
-  const hypePRCost = playerVenture ? Math.round(1200 * Math.pow(1.25, playerVenture.hypeLevel || 0)) : 0;
   const ventureFollowers = playerVenture ? Math.round(150 + (playerVenture.marketingLevel || 0) * 280 + (playerVenture.hypeLevel || 0) * 180 + (playerVenture.rdLevel || 0) * 120 + (playerVenture.investorRounds || 0) * 400) : 0;
   const venturePosts = playerVenture ? (playerVenture.marketingLevel || 0) + (playerVenture.rdLevel || 0) + (playerVenture.hypeLevel || 0) : 0;
   const founderHolding = playerVenture ? holdings[playerVenture.id] : null;
@@ -5614,7 +5919,7 @@ function MarketSandbox() {
                 ] })
               ] }),
               !playerVenture.rugged && /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8 }, children: [
-                /* @__PURE__ */ jsx("button", { onClick: () => investInVenture(playerVenture.kind === "crypto" && playerVenture.strategy === "scam" ? "hypeSocial" : "marketing"), style: { flex: 1, padding: 10, borderRadius: 10, border: "none", fontWeight: 700, fontSize: 12.5, background: C.gold, color: "#161207" }, children: "\u041E\u043F\u0443\u0431\u043B\u0438\u043A\u043E\u0432\u0430\u0442\u044C \u043F\u043E\u0441\u0442" }),
+                /* @__PURE__ */ jsx("button", { onClick: () => setActiveTab("company"), style: { flex: 1, padding: 10, borderRadius: 10, border: "none", fontWeight: 700, fontSize: 12.5, background: C.gold, color: "#161207" }, children: "Опубликовать пост" }),
                 /* @__PURE__ */ jsx("button", { onClick: () => setActiveTab("company"), disabled: (playerVenture.investorCooldown || 0) > 0, style: { flex: 1, padding: 10, borderRadius: 10, border: "none", fontWeight: 700, fontSize: 12.5, background: (playerVenture.investorCooldown || 0) > 0 ? C.surface2 : C.green, color: (playerVenture.investorCooldown || 0) > 0 ? C.inkFaint : "#06210f" }, children: (playerVenture.investorCooldown || 0) > 0 ? `\u0416\u0434\u0451\u043C\u2026 ${playerVenture.investorCooldown}\u0441` : "\u041F\u0438\u0442\u0447 \u0432\u043E \u0432\u043A\u043B\u0430\u0434\u043A\u0435 \xAB\u0411\u0438\u0437\u043D\u0435\u0441\xBB" })
               ] })
             ] }) : /* @__PURE__ */ jsx("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 16, textAlign: "center" }, children: /* @__PURE__ */ jsx("div", { style: { fontSize: 13, color: C.inkDim }, children: "\u0417\u0430\u0432\u0435\u0434\u0438 \u0431\u0438\u0437\u043D\u0435\u0441 \u0432\u043E \u0432\u043A\u043B\u0430\u0434\u043A\u0435 \xAB\u0411\u0438\u0437\u043D\u0435\u0441\xBB, \u0447\u0442\u043E\u0431\u044B \u043F\u043E\u043B\u0443\u0447\u0438\u0442\u044C \u0442\u0443\u0442 \u043F\u0440\u043E\u0444\u0438\u043B\u044C \u0438 \u043F\u0440\u0438\u0432\u043B\u0435\u043A\u0430\u0442\u044C \u043F\u043E\u0434\u043F\u0438\u0441\u0447\u0438\u043A\u043E\u0432 \u0438 \u0438\u043D\u0432\u0435\u0441\u0442\u043E\u0440\u043E\u0432" }) }),
@@ -6369,70 +6674,69 @@ function MarketSandbox() {
             playerVenture.kind !== "crypto" || playerVenture.strategy === "tech" ? /* @__PURE__ */ jsxs(Fragment, { children: [
               /* @__PURE__ */ jsxs("button", { onClick: () => investInVenture("marketing"), disabled: resolvedBal < marketingCost, style: actionBtnStyle(resolvedBal >= marketingCost), children: [
                 /* @__PURE__ */ jsx(Sparkles, { size: 16 }),
-                " \u041C\u0430\u0440\u043A\u0435\u0442\u0438\u043D\u0433 \u2014 ",
+                " Маркетинг — ",
                 fmt(marketingCost)
               ] }),
               /* @__PURE__ */ jsxs("button", { onClick: () => investInVenture("rd"), disabled: resolvedBal < rdCost, style: actionBtnStyle(resolvedBal >= rdCost), children: [
                 /* @__PURE__ */ jsx(FlaskConical, { size: 16 }),
-                " \u0420\u0430\u0437\u0440\u0430\u0431\u043E\u0442\u043A\u0430 \u2014 ",
+                " Разработка — ",
                 fmt(rdCost)
               ] }),
-              /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkFaint, lineHeight: 1.5, textAlign: "center", padding: "4px 8px" }, children: "\u041C\u0430\u0440\u043A\u0435\u0442\u0438\u043D\u0433 \u0440\u0430\u0437\u0433\u043E\u043D\u044F\u0435\u0442 \u0441\u043F\u0440\u043E\u0441 \u0438 \u0446\u0435\u043D\u0443. \u0420\u0430\u0437\u0440\u0430\u0431\u043E\u0442\u043A\u0430 \u0441\u043D\u0438\u0436\u0430\u0435\u0442 \u0432\u043E\u043B\u0430\u0442\u0438\u043B\u044C\u043D\u043E\u0441\u0442\u044C \u0438 \u0443\u043A\u0440\u0435\u043F\u043B\u044F\u0435\u0442 \u0434\u043E\u0432\u0435\u0440\u0438\u0435 \u043A \u043F\u0440\u043E\u0435\u043A\u0442\u0443." })
-            ] }) : /* @__PURE__ */ jsxs(Fragment, { children: [
-              /* @__PURE__ */ jsxs("button", { onClick: () => investInVenture("hypeSocial"), disabled: resolvedBal < hypeSocialCost || playerVenture.rugged, style: actionBtnStyle(resolvedBal >= hypeSocialCost && !playerVenture.rugged, C.red), children: [
-                /* @__PURE__ */ jsx(Flame, { size: 16 }),
-                " \u041F\u043E\u0441\u0442 \u0432 \u0441\u043E\u0446\u0441\u0435\u0442\u044F\u0445 \u2014 ",
-                fmt(hypeSocialCost),
-                " \xB7 \u0448\u0430\u043D\u0441 70%"
-              ] }),
-              /* @__PURE__ */ jsxs("button", { onClick: () => investInVenture("hypeBlogger"), disabled: resolvedBal < hypeBloggerCost || playerVenture.rugged, style: actionBtnStyle(resolvedBal >= hypeBloggerCost && !playerVenture.rugged, C.red), children: [
-                /* @__PURE__ */ jsx(Flame, { size: 16 }),
-                " \u0420\u0435\u043A\u043B\u0430\u043C\u0430 \u0443 \u0431\u043B\u043E\u0433\u0435\u0440\u043E\u0432 \u2014 ",
-                fmt(hypeBloggerCost),
-                " \xB7 \u0448\u0430\u043D\u0441 55%"
-              ] }),
-              /* @__PURE__ */ jsxs("button", { onClick: () => investInVenture("hypePR"), disabled: resolvedBal < hypePRCost || playerVenture.rugged, style: actionBtnStyle(resolvedBal >= hypePRCost && !playerVenture.rugged, C.red), children: [
-                /* @__PURE__ */ jsx(Flame, { size: 16 }),
-                " PR \u0432 \u0421\u041C\u0418 \u2014 ",
-                fmt(hypePRCost),
-                " \xB7 \u0448\u0430\u043D\u0441 40%"
-              ] }),
-              /* @__PURE__ */ jsxs("div", { style: { marginTop: 10, marginBottom: 6 }, children: [
-                /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 11, color: C.inkDim, marginBottom: 4 }, children: [
-                  /* @__PURE__ */ jsx("span", { children: "\u0420\u0438\u0441\u043A \u0440\u0430\u0437\u043E\u0431\u043B\u0430\u0447\u0435\u043D\u0438\u044F" }),
-                  /* @__PURE__ */ jsxs("span", { children: [
-                    Math.min(100, Math.round(playerVenture.scamHeat || 0)),
-                    "%"
-                  ] })
+              /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkFaint, lineHeight: 1.5, textAlign: "center", padding: "4px 8px" }, children: "Маркетинг разгоняет спрос и цену. Разработка снижает волатильность и укрепляет доверие к проекту." })
+            ] }) : null,
+            !playerVenture.rugged && (() => {
+              const adBoostCost = Math.round(SOCIAL_AD_BOOST_COST_BASE * Math.pow(1.4, playerVenture.hypeLevel || 0));
+              const charsLeft = SOCIAL_POST_MAX_CHARS - composerText.length;
+              const tooShort = composerText.trim().length > 0 && composerText.trim().length < SOCIAL_POST_MIN_CHARS;
+              const canPublish = composerText.trim().length >= SOCIAL_POST_MIN_CHARS && charsLeft >= 0;
+              const feedback = lastPostFeedback && lastPostFeedback.ticker === playerVenture.ticker ? lastPostFeedback : null;
+              const bandColor = feedback ? (feedback.band.color === "green" ? C.green : feedback.band.color === "red" ? C.red : C.gold) : C.gold;
+              return /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 13, fontWeight: 700, marginBottom: 8 }, children: "Опубликовать пост" }),
+                /* @__PURE__ */ jsx("textarea", { value: composerText, onChange: (e) => {
+                  setComposerText(e.target.value.slice(0, SOCIAL_POST_MAX_CHARS));
+                  setComposerError(null);
+                }, placeholder: "Расскажи аудитории новость своими словами — точность и конкретика убеждают лучше, чем обещания.", rows: 3, style: { width: "100%", background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, padding: 10, color: C.ink, fontSize: 13, resize: "none", fontFamily: "inherit" } }),
+                /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4, marginBottom: 10 }, children: [
+                  /* @__PURE__ */ jsx("span", { style: { fontSize: 10.5, color: tooShort ? C.red : C.inkFaint }, children: tooShort ? "Слишком коротко" : "Минимум 12 символов" }),
+                  /* @__PURE__ */ jsx("span", { style: { fontSize: 10.5, color: charsLeft < 20 ? C.gold : C.inkFaint }, children: `${charsLeft}` })
                 ] }),
-                /* @__PURE__ */ jsx("div", { style: { height: 6, borderRadius: 4, background: C.surface2, overflow: "hidden" }, children: /* @__PURE__ */ jsx("div", { style: { height: "100%", width: `${Math.min(100, playerVenture.scamHeat || 0)}%`, background: C.red } }) })
-              ] }),
-              /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkFaint, lineHeight: 1.5, textAlign: "center", padding: "4px 8px" }, children: "\u0412\u0441\u0435 \u0442\u0440\u0438 \u0445\u043E\u0434\u0430 \u043D\u0435 \u0433\u0430\u0440\u0430\u043D\u0442\u0438\u0440\u0443\u044E\u0442 \u0440\u0435\u0437\u0443\u043B\u044C\u0442\u0430\u0442 \u2014 \u0438\u043D\u043E\u0433\u0434\u0430 \u0434\u0435\u043D\u044C\u0433\u0438 \u043F\u043E\u0442\u0440\u0430\u0447\u0435\u043D\u044B \u0432\u043F\u0443\u0441\u0442\u0443\u044E. \u0421 \u043A\u0430\u0436\u0434\u044B\u043C \u0440\u0430\u0437\u043E\u043C \u0440\u0430\u0441\u0442\u0451\u0442 \u0448\u0430\u043D\u0441, \u0447\u0442\u043E \u043F\u0440\u043E\u0435\u043A\u0442 \u0440\u0430\u0437\u043E\u0431\u043B\u0430\u0447\u0430\u0442 \u2014 \u0438 \u0446\u0435\u043D\u0430 \u0440\u0443\u0445\u043D\u0435\u0442 \u043D\u0430\u0432\u0441\u0435\u0433\u0434\u0430." }),
-              hypePosts.length > 0 && /* @__PURE__ */ jsxs("div", { style: { marginTop: 14 }, children: [
-                /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }, children: "\u041B\u0435\u043D\u0442\u0430" }),
-                hypePosts.map((p) => /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 12, marginBottom: 8 }, children: [
-                  /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }, children: [
-                    /* @__PURE__ */ jsx("div", { style: { width: 26, height: 26, borderRadius: "50%", background: `${C.gold}22`, color: C.gold, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700 }, children: playerVenture.ticker.slice(0, 2) }),
-                    /* @__PURE__ */ jsxs("div", { style: { fontSize: 12.5, fontWeight: 600 }, children: [
-                      playerVenture.ticker,
-                      " \xB7 ",
-                      p.label
+                /* @__PURE__ */ jsxs("button", { onClick: () => setComposerAdBoost((b) => !b), style: { width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 12px", borderRadius: 10, border: `1px solid ${composerAdBoost ? C.gold : C.border}`, background: composerAdBoost ? `${C.gold}18` : "transparent", color: composerAdBoost ? C.gold : C.inkDim, fontSize: 12, fontWeight: 600, marginBottom: 10 }, children: [
+                  /* @__PURE__ */ jsxs("span", { children: [
+                    "Реклама — расширить охват · ",
+                    fmt(adBoostCost)
+                  ] }),
+                  /* @__PURE__ */ jsx("span", { children: composerAdBoost ? "✓" : "" })
+                ] }),
+                composerError && /* @__PURE__ */ jsx("div", { style: { fontSize: 11.5, color: C.red, marginBottom: 8 }, children: composerError }),
+                /* @__PURE__ */ jsx("button", { onClick: publishVenturePost, disabled: !canPublish, style: actionBtnStyle(canPublish), children: "Опубликовать" }),
+                feedback && /* @__PURE__ */ jsxs("div", { style: { marginTop: 12, background: C.surface2, borderRadius: 10, padding: 12 }, children: [
+                  /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 6 }, children: [
+                    /* @__PURE__ */ jsx("span", { style: { color: C.inkDim }, children: "Охват" }),
+                    /* @__PURE__ */ jsx("span", { style: { fontWeight: 700 }, children: feedback.reach.toLocaleString() })
+                  ] }),
+                  /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 6 }, children: [
+                    /* @__PURE__ */ jsx("span", { style: { color: C.inkDim }, children: "Реакция аудитории" }),
+                    /* @__PURE__ */ jsx("span", { style: { fontWeight: 700, color: bandColor }, children: feedback.band.label })
+                  ] }),
+                  /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 6 }, children: [
+                    /* @__PURE__ */ jsx("span", { style: { color: C.inkDim }, children: "Скепсис" }),
+                    /* @__PURE__ */ jsxs("span", { style: { fontWeight: 700, color: feedback.scamRisk >= 55 ? C.red : C.inkDim }, children: [
+                      feedback.scamRisk,
+                      "%"
                     ] })
                   ] }),
-                  /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: p.success ? C.green : C.inkFaint }, children: p.success ? "\u041F\u043E\u0441\u0442 \u0440\u0430\u0437\u043B\u0435\u0442\u0435\u043B\u0441\u044F \u043F\u043E \u043B\u0435\u043D\u0442\u0435" : "\u041F\u043E\u0447\u0442\u0438 \u043D\u0438\u043A\u0442\u043E \u043D\u0435 \u0437\u0430\u043C\u0435\u0442\u0438\u043B" }),
-                  /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 14, marginTop: 8, fontSize: 11, color: C.inkDim }, children: [
-                    /* @__PURE__ */ jsxs("span", { children: [
-                      "\u2665 ",
-                      p.likes
-                    ] }),
-                    /* @__PURE__ */ jsxs("span", { children: [
-                      "\u{1F4AC} ",
-                      p.comments
+                  /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12 }, children: [
+                    /* @__PURE__ */ jsx("span", { style: { color: C.inkDim }, children: "Покупательская активность" }),
+                    /* @__PURE__ */ jsxs("span", { style: { fontWeight: 700, color: feedback.demandPct >= 0 ? C.green : C.red }, children: [
+                      feedback.demandPct >= 0 ? "+" : "",
+                      feedback.demandPct,
+                      "%"
                     ] })
                   ] })
-                ] }, p.id))
-              ] })
-            ] }),
+                ] })
+              ] });
+            })(),
             /* @__PURE__ */ jsx("button", { onClick: () => setConfirmCloseVenture(true), style: { width: "100%", padding: 12, borderRadius: 10, border: `1px solid ${C.red}55`, background: "transparent", color: C.red, fontSize: 13, fontWeight: 600, marginTop: 14 }, children: "\u0417\u0430\u043A\u0440\u044B\u0442\u044C \u0431\u0438\u0437\u043D\u0435\u0441" })
           ] }),
           resellShops.some((s) => s.id === selectedBizId) && (() => {
@@ -7102,7 +7406,7 @@ function MarketSandbox() {
             const cat = PRODUCT_CATEGORIES.find((c) => c.id === f.category);
             const equipLevel = f.equipmentLevel || 0;
             const unitCost = factoryEffectiveUnitCost(f.category, equipLevel);
-            const secPerUnit = factorySecPerUnit(equipLevel);
+            const secPerUnit = factorySecPerUnit(equipLevel, f.line);
             const nextTier = equipLevel + 1 < FACTORY_EQUIPMENT_TIERS.length ? FACTORY_EQUIPMENT_TIERS[equipLevel + 1] : null;
             const nextTierCost = nextTier ? factoryEquipmentBuyCost(f.category, equipLevel + 1) : 0;
             const capacityBonus = warehouseFactoryCapacityBonus(warehouses);
@@ -7310,7 +7614,7 @@ function MarketSandbox() {
             const stats = w.lastCycleStats;
             const secLeft = Math.max(0, Math.ceil((w.nextCycleAt - Date.now()) / 1e3));
             const netLastCycle = stats ? stats.grossRevenue - stats.wagesThisCycle - stats.opex : null;
-            const loadingPct = stats ? Math.round(stats.processedTurnover / tier.throughputCapacity * 100) : 0;
+            const loadingPct = stats ? Math.round(stats.processedTurnover / (stats.capacity || tier.throughputCapacity) * 100) : 0;
             const wageOverdue = w.wageDue > tier.wagePerStaff * 1.5;
             void warehouseTick;
             const cycleFraction = Math.min(1, Math.max(0, 1 - secLeft / (WAREHOUSE_CYCLE_MS / 1e3)));
@@ -7353,6 +7657,10 @@ function MarketSandbox() {
                   /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline" }, children: [
                     /* @__PURE__ */ jsx("span", { style: { fontSize: 10, color: C.inkDim, textTransform: "uppercase", letterSpacing: 0.5 }, children: "\u041F\u0440\u0438\u0431\u044B\u043B\u044C \u0442\u0435\u043A\u0443\u0449\u0435\u0433\u043E \u0446\u0438\u043A\u043B\u0430" }),
                     /* @__PURE__ */ jsx("span", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 14, fontWeight: 700, color: liveNetProfit === null ? C.inkFaint : liveNetProfit >= 0 ? C.green : C.red, transition: "all 0.6s ease" }, children: liveNetProfit === null ? "\u2014" : fmt(liveNetProfit) })
+                  ] }),
+                  /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: 6, paddingTop: 6, borderTop: `1px solid ${C.gold}22` }, children: [
+                    /* @__PURE__ */ jsx("span", { style: { fontSize: 10, color: C.inkDim, textTransform: "uppercase", letterSpacing: 0.5 }, children: "\u0413\u0430\u0440\u0430\u043D\u0442\u0438\u044F ZZONE \u0432 \u044D\u0442\u043E\u043C \u043A\u0432\u0430\u0440\u0442\u0430\u043B\u0435" }),
+                    /* @__PURE__ */ jsx("span", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 12.5, fontWeight: 700, color: C.inkDim }, children: fmt(stats ? stats.floor : estCycle.floor) })
                   ] })
                 ] }),
                 /* @__PURE__ */ jsxs("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }, children: [
@@ -7378,14 +7686,7 @@ function MarketSandbox() {
                 /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }, children: "\u0421\u0447\u0451\u0442 \u0441\u043A\u043B\u0430\u0434\u0430 \xB7 \u0432\u044B\u043F\u043B\u0430\u0442\u044B ZZONE" }),
                 /* @__PURE__ */ jsxs("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 22, fontWeight: 700, marginBottom: 4 }, children: fmt(w.payoutBalance || 0) }),
                 /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginBottom: 12 }, children: "\u0421\u044E\u0434\u0430 \u043F\u0430\u0434\u0430\u0435\u0442 \u0432\u044B\u0440\u0443\u0447\u043A\u0430 \u0441\u043A\u043B\u0430\u0434\u0430 \u043A\u0430\u0436\u0434\u044B\u0439 \u0446\u0438\u043A\u043B \u2014 \u0432\u044B\u0432\u0435\u0434\u0438 \u043D\u0430 \u0418\u041F \u0438\u043B\u0438 \u043D\u0430 \u043A\u0430\u0440\u0442\u0443, \u043A\u043E\u0433\u0434\u0430 \u0443\u0434\u043E\u0431\u043D\u043E" }),
-                /* @__PURE__ */ jsxs("div", { style: { display: "flex", flexWrap: "wrap", gap: 8 }, children: [
-                  /* @__PURE__ */ jsx("button", { onClick: () => withdrawWarehousePayout(w.id, "ip"), disabled: (w.payoutBalance || 0) <= 0, style: { flex: "1 1 auto", padding: "10px 12px", borderRadius: 9, border: "none", fontWeight: 700, fontSize: 12, background: (w.payoutBalance || 0) > 0 ? C.gold : C.surface2, color: (w.payoutBalance || 0) > 0 ? "#161207" : C.inkFaint }, children: "\u0412\u044B\u0432\u0435\u0441\u0442\u0438 \u043D\u0430 \u0418\u041F" }),
-                  ...Object.keys(bankAccounts).map((bId) => {
-                    const info = BANK_ACCOUNTS.find((b) => b.id === bId);
-                    const frozen = bankAccounts[bId]?.frozen;
-                    return /* @__PURE__ */ jsx("button", { onClick: () => withdrawWarehousePayout(w.id, bId), disabled: (w.payoutBalance || 0) <= 0 || frozen, style: { flex: "1 1 auto", padding: "10px 12px", borderRadius: 9, border: `1px solid ${C.border}`, fontWeight: 700, fontSize: 12, background: "transparent", color: (w.payoutBalance || 0) > 0 && !frozen ? C.ink : C.inkFaint }, children: `\u2192 ${info?.cardName || info?.name || bId}` }, bId);
-                  })
-                ] })
+                /* @__PURE__ */ jsx("div", { style: { display: "flex", flexWrap: "wrap", gap: 8 }, children: /* @__PURE__ */ jsx("button", { onClick: () => withdrawWarehousePayout(w.id, "ip"), disabled: (w.payoutBalance || 0) <= 0, style: { flex: "1 1 auto", padding: "10px 12px", borderRadius: 9, border: "none", fontWeight: 700, fontSize: 12, background: (w.payoutBalance || 0) > 0 ? C.gold : C.surface2, color: (w.payoutBalance || 0) > 0 ? "#161207" : C.inkFaint }, children: "\u0412\u044B\u0432\u0435\u0441\u0442\u0438 \u043D\u0430 \u0418\u041F" }) })
               ] }),
               wageOverdue && /* @__PURE__ */ jsxs("div", { style: { background: `${C.red}18`, border: `1px solid ${C.red}55`, borderRadius: 10, padding: 12, marginBottom: 14, fontSize: 11.5, color: C.red }, children: [
                 "\u0417\u0430\u0434\u043E\u043B\u0436\u0435\u043D\u043D\u043E\u0441\u0442\u044C \u043F\u043E \u0437\u0430\u0440\u043F\u043B\u0430\u0442\u0435 \u0440\u0430\u0441\u0442\u0451\u0442 \u2014 \u043F\u0440\u0438 \u0441\u0438\u043B\u044C\u043D\u043E\u0439 \u0437\u0430\u0434\u043E\u043B\u0436\u0435\u043D\u043D\u043E\u0441\u0442\u0438 \u0447\u0430\u0441\u0442\u044C \u0441\u043E\u0442\u0440\u0443\u0434\u043D\u0438\u043A\u043E\u0432 \u0443\u0432\u043E\u043B\u0438\u0442\u0441\u044F \u0441\u0430\u043C\u0430."
@@ -8979,7 +9280,7 @@ function MarketSandbox() {
             /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginTop: 6, textAlign: "center" }, children: tradeIsGrey ? `\u041E\u0444\u0448\u043E\u0440\u043D\u044B\u0439 \u0441\u0447\u0451\u0442: \u043A\u043E\u043C\u0438\u0441\u0441\u0438\u044F \u043F\u043E\u043A\u0443\u043F\u043A\u0430 ${Math.round(GREY_BANK.tradeBuyFee * 100)}% / \u043F\u0440\u043E\u0434\u0430\u0436\u0430 ${Math.round(GREY_BANK.tradeSellFee * 100)}%, \u0431\u0435\u0437 \u043D\u0430\u043B\u043E\u0433\u043E\u0432\u043E\u0439 \u043E\u0442\u0447\u0451\u0442\u043D\u043E\u0441\u0442\u0438.` : tradeAccountResolved === "ip" ? "\u0414\u0435\u043D\u044C\u0433\u0438 \u0438 \u0430\u043A\u0442\u0438\u0432\u044B \u2014 \u043D\u0430 \u0441\u0447\u0451\u0442\u0435 \u0418\u041F. \u041F\u0440\u0438\u0431\u044B\u043B\u044C \u0431\u0435\u0437 \u043E\u0442\u0434\u0435\u043B\u044C\u043D\u043E\u0433\u043E \u043D\u0430\u043B\u043E\u0433\u0430, \u043D\u043E \u0438\u0434\u0451\u0442 \u0432 \u043E\u0431\u043E\u0440\u043E\u0442 \u0438 \u043E\u0431\u043B\u0430\u0433\u0430\u0435\u0442\u0441\u044F \u043A\u0432\u0430\u0440\u0442\u0430\u043B\u044C\u043D\u043E\u0439 \u0434\u0435\u043A\u043B\u0430\u0440\u0430\u0446\u0438\u0435\u0439." : tradeIsBankCard ? "\u041E\u043F\u043B\u0430\u0442\u0430 \u043A\u0430\u0440\u0442\u043E\u0439 \u044D\u0442\u043E\u0433\u043E \u0431\u0430\u043D\u043A\u0430 \u2014 \u0430\u043A\u0442\u0438\u0432\u044B \u043F\u043E\u043F\u0430\u0434\u0443\u0442 \u0432 \u0442\u0432\u043E\u0439 \u043E\u0431\u044B\u0447\u043D\u044B\u0439 \u043B\u0438\u0447\u043D\u044B\u0439 \u043F\u043E\u0440\u0442\u0444\u0435\u043B\u044C." : tradeIsMule ? "\u041E\u043F\u043B\u0430\u0442\u0430 \u0447\u0443\u0436\u043E\u0439 \u043A\u0430\u0440\u0442\u043E\u0439 \u2014 \u043F\u043E\u043A\u0443\u043F\u043A\u0430 \u043D\u0435 \u043F\u0440\u0438\u0432\u044F\u0437\u0430\u043D\u0430 \u043A \u0442\u0432\u043E\u0435\u0439 \u043B\u0438\u0447\u043D\u043E\u0441\u0442\u0438, \u0440\u0438\u0441\u043A\u0430 \u0434\u043B\u044F \u0440\u0435\u043F\u0443\u0442\u0430\u0446\u0438\u0438 \u043D\u0435\u0442." : "\u0414\u0435\u043D\u044C\u0433\u0438 \u0438 \u0430\u043A\u0442\u0438\u0432\u044B \u2014 \u043B\u0438\u0447\u043D\u044B\u0435. \u041F\u0440\u0438\u0431\u044B\u043B\u044C \u043E\u0431\u043B\u0430\u0433\u0430\u0435\u0442\u0441\u044F \u043D\u0430\u043B\u043E\u0433\u043E\u043C 13% \u043F\u0440\u0438 \u043F\u0440\u043E\u0434\u0430\u0436\u0435." })
           ] });
         })(),
-        tradeSide === "buy" && !tradeIsIp && !tradeIsGrey && !tradeIsMule && /* @__PURE__ */ jsx("div", { style: { display: "flex", gap: 6, marginBottom: 10 }, children: [1, 5, 10, 20].map((lev) => /* @__PURE__ */ jsx("button", { onClick: () => setTradeLeverage(lev), style: { flex: 1, padding: "8px 0", borderRadius: 9, border: `1px solid ${tradeLeverage === lev ? C.gold : C.border}`, background: tradeLeverage === lev ? `${C.gold}22` : C.surface2, color: tradeLeverage === lev ? C.gold : C.inkDim, fontWeight: 700, fontSize: 12.5 }, children: lev === 1 ? "\u0411\u0435\u0437 \u043F\u043B\u0435\u0447\u0430" : `\xD7${lev}` }, lev)) }),
+        tradeSide === "buy" && !tradeIsIp && !tradeIsGrey && /* @__PURE__ */ jsx("div", { style: { display: "flex", gap: 6, marginBottom: 10 }, children: [1, 5, 10, 20].map((lev) => /* @__PURE__ */ jsx("button", { onClick: () => setTradeLeverage(lev), style: { flex: 1, padding: "8px 0", borderRadius: 9, border: `1px solid ${tradeLeverage === lev ? C.gold : C.border}`, background: tradeLeverage === lev ? `${C.gold}22` : C.surface2, color: tradeLeverage === lev ? C.gold : C.inkDim, fontWeight: 700, fontSize: 12.5 }, children: lev === 1 ? "\u0411\u0435\u0437 \u043F\u043B\u0435\u0447\u0430" : `\xD7${lev}` }, lev)) }),
         /* @__PURE__ */ jsx("div", { style: { display: "flex", justifyContent: "flex-end", marginBottom: 6 }, children: /* @__PURE__ */ jsx("button", { onClick: () => {
           setTradeQtyMode((m) => m === "qty" ? "amount" : "qty");
           setTradeAmountInput("");
@@ -9031,7 +9332,7 @@ function MarketSandbox() {
           pct,
           "%"
         ] }, pct)) }),
-        tradeSide === "buy" && tradeLeverage > 1 && !tradeIsIp && !tradeIsGrey && !tradeIsMule ? /* @__PURE__ */ jsxs(Fragment, { children: [
+        tradeSide === "buy" && tradeLeverage > 1 && !tradeIsIp && !tradeIsGrey ? /* @__PURE__ */ jsxs(Fragment, { children: [
           /* @__PURE__ */ jsxs("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 6, display: "flex", justifyContent: "space-between" }, children: [
             /* @__PURE__ */ jsxs("span", { children: [
               "\u041C\u0430\u0440\u0436\u0430 (\xD7",
@@ -9061,14 +9362,14 @@ function MarketSandbox() {
           "button",
           {
             onClick: () => {
-              if (tradeSide === "buy" && tradeLeverage > 1 && !tradeIsIp && !tradeIsGrey && !tradeIsMule) openLeveragedPosition(selectedCompany.id, tradeQty, tradeLeverage, tradeAccountResolved);
+              if (tradeSide === "buy" && tradeLeverage > 1 && !tradeIsIp && !tradeIsGrey) openLeveragedPosition(selectedCompany.id, tradeQty, tradeLeverage, tradeAccountResolved);
               else executeTrade(selectedCompany.id, tradeSide, tradeQty, tradeAccountResolved);
               setTradeQty(1);
             },
-            disabled: tradeQty < 1 || tradeSide === "sell" && assetsFrozen || (tradeSide === "buy" ? tradeLeverage > 1 && !tradeIsIp && !tradeIsGrey && !tradeIsMule ? selectedCompany.price * tradeQty / tradeLeverage > tradeAvailableCash : tradeAvailableCash < selectedCompany.price * tradeQty * (tradeIsGrey ? 1 + GREY_BANK.tradeBuyFee : 1) : selectedHeld < tradeQty),
+            disabled: tradeQty < 1 || tradeSide === "sell" && assetsFrozen || (tradeSide === "buy" ? tradeLeverage > 1 && !tradeIsIp && !tradeIsGrey ? selectedCompany.price * tradeQty / tradeLeverage > tradeAvailableCash : tradeAvailableCash < selectedCompany.price * tradeQty * (tradeIsGrey ? 1 + GREY_BANK.tradeBuyFee : 1) : selectedHeld < tradeQty),
             style: { width: "100%", padding: 14, borderRadius: 12, border: "none", fontWeight: 700, background: tradeSide === "buy" ? C.green : C.red, color: "#0B0E14" },
             children: [
-              tradeSide === "buy" ? tradeLeverage > 1 && !tradeIsIp && !tradeIsGrey && !tradeIsMule ? `\u041E\u0442\u043A\u0440\u044B\u0442\u044C \u043F\u043E\u0437\u0438\u0446\u0438\u044E \xD7${tradeLeverage}` : "\u041A\u0443\u043F\u0438\u0442\u044C" : "\u041F\u0440\u043E\u0434\u0430\u0442\u044C",
+              tradeSide === "buy" ? tradeLeverage > 1 && !tradeIsIp && !tradeIsGrey ? `\u041E\u0442\u043A\u0440\u044B\u0442\u044C \u043F\u043E\u0437\u0438\u0446\u0438\u044E \xD7${tradeLeverage}` : "\u041A\u0443\u043F\u0438\u0442\u044C" : "\u041F\u0440\u043E\u0434\u0430\u0442\u044C",
               " ",
               selectedCompany.ticker
             ]
