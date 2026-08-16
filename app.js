@@ -1,4 +1,4 @@
-// Market Sandbox — V0.2 (соцсеть, фаза 1: SocialInfluenceEngine)
+// Market Sandbox — V0.8 (маркетплейс фаза 4b: IPO + соцсеть компании)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -37,7 +37,9 @@ var NPC_SEED = [
   { name: "\u0410\u0437\u0438\u044F \u0418\u043C\u043F\u044D\u043A\u0441", ticker: "ASIM", sector: "\u041F\u043E\u0442\u0440\u0435\u0431\u0442\u043E\u0432\u0430\u0440\u044B", price: 18, vol: 1, supply: 4e6 },
   // Вест Логистика — объединяет бывших Дойче Варенхандель (премиум) и Локальный Склад (без границы): быстрый и премиальный сегмент
   { name: "\u0412\u0435\u0441\u0442 \u041B\u043E\u0433\u0438\u0441\u0442\u0438\u043A\u0430", ticker: "VSLG", sector: "\u041F\u043E\u0442\u0440\u0435\u0431\u0442\u043E\u0432\u0430\u0440\u044B", price: 55, vol: 0.5, supply: 12e5 },
-  // ZZONE — маркетплейс, на котором продаются магазины перепродажи игрока; его состояние на бирже двигает спрос и ставку партнёрских складов
+  // ZZONE — прямой конкурент будущего маркетплейса игрока: торгуется на бирже как обычная
+  // компания, при этом его партнёрские склады открываются, а магазины перепродажи торгуют
+  // именно на нём. В будущих фазах получит собственный пакет NPC-бизнеса (GMV/продавцы/склады).
   { name: "ZZONE", ticker: "ZZONE", sector: "\u0422\u0435\u0445\u043D\u043E\u043B\u043E\u0433\u0438\u0438", price: 24, vol: 0.6, supply: 5e7 }
 ];
 var MACRO_ACCOUNT = { handle: "@FinVestnik", name: "Финансовый Вестник", color: "#E8B14C", verified: true };
@@ -633,6 +635,147 @@ function estimateWarehouseCycle(w, warehouseList, companies, reputation) {
   const subsidy = Math.max(0, floor - marketRevenue);
   const grossRevenue = marketRevenue + subsidy;
   return { processedTurnover, grossRevenue, marketRevenue, subsidy, floor, rate, effectiveCapacity };
+}
+
+// ===================== СОБСТВЕННЫЙ МАРКЕТПЛЕЙС (фаза 1) =====================
+// Фундамент: условия создания на реальных сущностях, объединение существующего
+// бизнеса без потери истории, строгое разделение GMV и выручки, одна комиссия.
+var MARKETPLACE_IPO_PREP_COST = 1e5;
+var MARKETPLACE_PLATFORM_COST = 15e4;
+var MARKETPLACE_SELLER_TURNOVER_REQ = 5e5;
+var MARKETPLACE_CYCLE_MS = WAREHOUSE_CYCLE_MS;
+var MARKETPLACE_BASE_COMMISSION = 0.045;
+var MARKETPLACE_SELLER_GROWTH_CAP = 5e3;
+function marketplaceGmvPerSeller(trustScore, marketIndexVal, techLevel, devStaff) {
+  const techMult = 1 + Math.min(0.6, (techLevel || 0) * 0.05 + (devStaff || 0) * 0.015);
+  return 5e3 * (0.7 + clamp01(trustScore, 0, 100) / 100 * 0.6) * (marketIndexVal || 1) * techMult;
+}
+function marketplaceCycleEstimate(marketplace, marketIndexVal, bigSellers) {
+  if (!marketplace) return { gmv: 0, revenue: 0, opex: 0, net: 0 };
+  const staff = marketplace.staff || {};
+  const crisisMult = (marketplace.crisisPenaltyCyclesLeft || 0) > 0 ? 0.8 : 1;
+  const baseGmv = Math.round(marketplace.sellerCount * marketplaceGmvPerSeller(marketplace.trustScore, marketIndexVal, marketplace.techLevel, staff.dev) * crisisMult);
+  const wonSellers = (bigSellers || []).filter((s) => s.platform === "player");
+  let bigGmv = 0;
+  let bigRevenue = 0;
+  wonSellers.forEach((s) => {
+    const g = Math.round(bigSellerCycleGmv(s, marketIndexVal) * crisisMult);
+    bigGmv += g;
+    bigRevenue += Math.round(g * Math.max(0.01, marketplace.commissionRate - (s.commissionDiscount || 0)));
+  });
+  const gmv = baseGmv + bigGmv;
+  const revenue = Math.round(baseGmv * marketplace.commissionRate) + bigRevenue;
+  const logisticsDiscount = clamp01(1 - (marketplace.logisticsLevel || 0) * 0.04 - (staff.logistics || 0) * 0.015, 0.4, 1);
+  const opex = Math.round((1200 + marketplace.sellerCount * 40) * logisticsDiscount) + marketplaceStaffWageTotal(staff);
+  return { gmv, revenue, opex, net: revenue - opex };
+}
+// ---- Развитие маркетплейса: 5 веток, каждая двигает конкретный коэффициент ----
+var MARKETPLACE_GROWTH_TRACKS = {
+  tech: { label: "\u0422\u0435\u0445\u043D\u043E\u043B\u043E\u0433\u0438\u0438", baseCost: 5e3, costGrowth: 1.35, desc: "+5% \u043A GMV \u043D\u0430 \u043F\u0440\u043E\u0434\u0430\u0432\u0446\u0430 \u0437\u0430 \u0443\u0440\u043E\u0432\u0435\u043D\u044C" },
+  logistics: { label: "\u041B\u043E\u0433\u0438\u0441\u0442\u0438\u043A\u0430", baseCost: 4e3, costGrowth: 1.3, desc: "-4% \u043A \u0440\u0430\u0441\u0445\u043E\u0434\u0430\u043C \u043D\u0430 \u043E\u0431\u0441\u043B\u0443\u0436\u0438\u0432\u0430\u043D\u0438\u0435 \u0437\u0430 \u0443\u0440\u043E\u0432\u0435\u043D\u044C" },
+  sellers: { label: "\u041F\u0440\u043E\u0434\u0430\u0432\u0446\u044B", baseCost: 3e3, costGrowth: 1.3, desc: "+1% \u0448\u0430\u043D\u0441 \u043D\u043E\u0432\u043E\u0433\u043E \u043F\u0440\u043E\u0434\u0430\u0432\u0446\u0430 \u0437\u0430 \u0446\u0438\u043A\u043B" },
+  buyers: { label: "\u041F\u043E\u043A\u0443\u043F\u0430\u0442\u0435\u043B\u0438", baseCost: 2e3, costGrowth: 1.25, desc: "\u0411\u044B\u0441\u0442\u0440\u0435\u0435 \u0440\u0430\u0441\u0442\u0451\u0442 \u0431\u0430\u0437\u0430 \u043F\u043E\u043A\u0443\u043F\u0430\u0442\u0435\u043B\u0435\u0439" },
+  brand: { label: "\u0411\u0440\u0435\u043D\u0434", baseCost: 6e3, costGrowth: 1.3, desc: "+\u043F\u043E\u0442\u043E\u043B\u043E\u043A \u0434\u043E\u0432\u0435\u0440\u0438\u044F \u0438 \u0432\u0435\u0441 \u0432 \u043A\u043E\u043D\u043A\u0443\u0440\u0435\u043D\u0446\u0438\u0438 \u0441 ZZONE" }
+};
+function marketplaceTrackCost(trackId, marketplace) {
+  const track = MARKETPLACE_GROWTH_TRACKS[trackId];
+  const level = marketplace[trackId + "Level"] || 0;
+  return Math.round(track.baseCost * Math.pow(track.costGrowth, level));
+}
+// ---- ZZONE как NPC-бизнес: тот же пакет показателей, что и у игрока, при этом ----
+// ---- продолжает торговаться на бирже — цена реагирует на реальные действия. ----
+var MARKET_TOTAL_GMV_CYCLE = 5e7;
+var ZZONE_MARKET_SHARE_START = 0.75;
+var ZZONE_REACTION_THRESHOLDS = [0.05, 0.12, 0.2, 0.3];
+function marketplaceQualityScore(commissionRate, trustScore, brandLevel) {
+  return 50 + (trustScore - 50) * 0.4 + (0.05 - commissionRate) * 400 + (brandLevel || 0) * 3;
+}
+function zzoneQualityScore(commissionRate, aggressionLevel) {
+  return 56 + (aggressionLevel || 0) * 3 + (0.05 - commissionRate) * 400;
+}
+// ---- Переговоры с крупными NPC-продавцами ----
+var BIG_SELLER_NAMES = ["\u0422\u0435\u0445\u043D\u043E\u0421\u0442\u043E\u043A", "\u0413\u0430\u0434\u0436\u0435\u0442\u0425\u0430\u0431", "\u041C\u043E\u0434\u0430\u041B\u0430\u0439\u043D", "\u0421\u043F\u043E\u0440\u0442\u0413\u0438\u0440\u0430\u043D\u0442", "\u0414\u043E\u043C\u0422\u043E\u0432\u0430\u0440\u044B", "\u042D\u043B\u0435\u043A\u0442\u0440\u043E\u041C\u0438\u0440"];
+var BIG_SELLER_OFFERS = [
+  { id: "lowCommission", label: "\u041C\u0435\u043D\u044C\u0448\u0430\u044F \u043A\u043E\u043C\u0438\u0441\u0441\u0438\u044F", successBonus: 25, costType: "commission", costValue: 0.01, desc: "-1% \u043A\u043E\u043C\u0438\u0441\u0441\u0438\u0438 \u043B\u0438\u0447\u043D\u043E \u0434\u043B\u044F \u044D\u0442\u043E\u0433\u043E \u043F\u0440\u043E\u0434\u0430\u0432\u0446\u0430" },
+  { id: "freeLogistics", label: "\u0411\u0435\u0441\u043F\u043B\u0430\u0442\u043D\u0430\u044F \u043B\u043E\u0433\u0438\u0441\u0442\u0438\u043A\u0430", successBonus: 18, costType: "cash", costValue: 5e3, desc: "\u0420\u0430\u0437\u043E\u0432\u0430\u044F \u0432\u044B\u043F\u043B\u0430\u0442\u0430 \u0437\u0430 \u043F\u0435\u0440\u0432\u0443\u044E \u043F\u0430\u0440\u0442\u0438\u044E" },
+  { id: "promotion", label: "\u041F\u0440\u043E\u0434\u0432\u0438\u0436\u0435\u043D\u0438\u0435", successBonus: 15, costType: "cash", costValue: 3e3, desc: "\u041E\u0434\u043D\u043E\u0440\u0430\u0437\u043E\u0432\u044B\u0439 \u0431\u044E\u0434\u0436\u0435\u0442 \u043D\u0430 \u0440\u0435\u043A\u043B\u0430\u043C\u0443 \u0432\u043D\u0443\u0442\u0440\u0438 \u043F\u043B\u043E\u0449\u0430\u0434\u043A\u0438" },
+  { id: "bonus", label: "\u0411\u043E\u043D\u0443\u0441 \u0437\u0430 \u043E\u0431\u043E\u0440\u043E\u0442", successBonus: 20, costType: "cash", costValue: 8e3, desc: "\u0420\u0430\u0437\u043E\u0432\u0430\u044F \u0432\u044B\u043F\u043B\u0430\u0442\u0430 \u0437\u0430 \u043F\u0435\u0440\u0435\u0445\u043E\u0434" }
+];
+function bigSellerCycleGmv(seller, marketIndexVal) {
+  return Math.round(seller.turnover / 12 * (marketIndexVal || 1));
+}
+function bigSellerSuccessChance(offer, seller, trustScore) {
+  return clamp01((offer.successBonus + (100 - seller.loyalty) * 0.5 + trustScore * 0.2) / 100, 0.05, 0.9);
+}
+// ---- Инвесторы маркетплейса ----
+var MARKETPLACE_INVESTORS = [
+  { id: "growthFund", name: "GrowthCap Partners", icon: "\u{1F4C8}", checkAmount: 5e5, equityPct: 10, conditionCycles: 6, minTotalGmv: 1e6, desc: "\u0420\u0430\u043D\u043D\u0438\u0439 \u0440\u0430\u0443\u043D\u0434 \u2014 \u0442\u0440\u0435\u0431\u0443\u044E\u0442 \u0443\u0441\u0442\u043E\u0439\u0447\u0438\u0432\u044B\u0439 \u0440\u043E\u0441\u0442 GMV" },
+  { id: "atlasCapital", name: "Atlas Capital", icon: "\u{1F3E6}", checkAmount: 2e6, equityPct: 20, conditionCycles: 8, minMarketShare: 0.1, desc: "\u041A\u0440\u0443\u043F\u043D\u044B\u0439 \u0447\u0435\u043A \u2014 \u0442\u0440\u0435\u0431\u0443\u044E\u0442 \u0440\u043E\u0441\u0442 \u0434\u043E\u043B\u0438 \u0440\u044B\u043D\u043A\u0430" }
+];
+// ---- Департаменты сотрудников: у каждого своя функция, недобор деградирует конкретный параметр ----
+var MARKETPLACE_DEPARTMENTS = {
+  dev: { label: "\u0420\u0430\u0437\u0440\u0430\u0431\u043E\u0442\u0447\u0438\u043A\u0438", hireCost: 4e3, wagePerUnit: 350, desc: "\u0423\u0441\u043A\u043E\u0440\u044F\u0435\u0442 \u0440\u043E\u0441\u0442 \u0442\u0435\u0445\u043D\u043E\u043B\u043E\u0433\u0438\u0439 \u043F\u043B\u0430\u0442\u0444\u043E\u0440\u043C\u044B" },
+  logistics: { label: "\u041B\u043E\u0433\u0438\u0441\u0442\u0438\u043A\u0430", hireCost: 3e3, wagePerUnit: 300, desc: "\u0421\u043D\u0438\u0436\u0430\u0435\u0442 \u0440\u0430\u0441\u0445\u043E\u0434\u044B \u043D\u0430 \u043E\u0431\u0441\u043B\u0443\u0436\u0438\u0432\u0430\u043D\u0438\u0435" },
+  support: { label: "\u041F\u043E\u0434\u0434\u0435\u0440\u0436\u043A\u0430", hireCost: 2500, wagePerUnit: 250, desc: "\u0414\u0435\u0440\u0436\u0438\u0442 \u0434\u043E\u0432\u0435\u0440\u0438\u0435 \u043F\u0440\u0438 \u0440\u043E\u0441\u0442\u0435 \u043F\u043B\u043E\u0449\u0430\u0434\u043A\u0438" },
+  legal: { label: "\u042E\u0440\u0438\u0441\u0442\u044B", hireCost: 5e3, wagePerUnit: 400, desc: "\u0421\u043D\u0438\u0436\u0430\u0435\u0442 \u0440\u0438\u0441\u043A \u0438 \u0442\u044F\u0436\u0435\u0441\u0442\u044C \u043A\u0440\u0438\u0437\u0438\u0441\u043E\u0432" },
+  marketing: { label: "\u041C\u0430\u0440\u043A\u0435\u0442\u0438\u043D\u0433", hireCost: 3e3, wagePerUnit: 300, desc: "\u0423\u0441\u043A\u043E\u0440\u044F\u0435\u0442 \u043F\u0440\u0438\u0442\u043E\u043A \u043F\u043E\u043A\u0443\u043F\u0430\u0442\u0435\u043B\u0435\u0439" }
+};
+function marketplaceDeptHireCost(deptId, marketplace) {
+  const dept = MARKETPLACE_DEPARTMENTS[deptId];
+  const level = (marketplace.staff && marketplace.staff[deptId]) || 0;
+  return Math.round(dept.hireCost * Math.pow(1.22, level));
+}
+function marketplaceStaffWageTotal(staff) {
+  if (!staff) return 0;
+  return Object.keys(MARKETPLACE_DEPARTMENTS).reduce((s, id) => s + (staff[id] || 0) * MARKETPLACE_DEPARTMENTS[id].wagePerUnit, 0);
+}
+// ---- Кризисы: маркетплейс не должен быть постоянно положительным бизнесом ----
+var MARKETPLACE_CRISES = [
+  {
+    id: "warehouseFire",
+    text: "\u041D\u0430 \u043E\u0434\u043D\u043E\u043C \u0438\u0437 \u0441\u043A\u043B\u0430\u0434\u043E\u0432 \u043C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441\u0430 \u043F\u0440\u043E\u0438\u0437\u043E\u0448\u0451\u043B \u043F\u043E\u0436\u0430\u0440.",
+    options: [
+      { id: "fast", label: "\u0411\u044B\u0441\u0442\u0440\u043E \u0432\u043E\u0441\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C", desc: "\u0414\u043E\u0440\u043E\u0433\u043E, \u043D\u043E \u043C\u0438\u043D\u0438\u043C\u0430\u043B\u044C\u043D\u044B\u0435 \u043F\u043E\u0442\u0435\u0440\u0438", cost: 15e3, trustDelta: -2, penaltyCycles: 1 },
+      { id: "reroute", label: "\u041F\u0435\u0440\u0435\u043D\u0430\u043F\u0440\u0430\u0432\u0438\u0442\u044C \u043D\u0430 \u0434\u0440\u0443\u0433\u0438\u0435 \u0441\u043A\u043B\u0430\u0434\u044B", desc: "\u0414\u0435\u0448\u0435\u0432\u043B\u0435, \u043D\u043E \u0434\u043E\u0441\u0442\u0430\u0432\u043A\u0430 \u0437\u0430\u043C\u0435\u0434\u043B\u0438\u0442\u0441\u044F", cost: 4e3, trustDelta: -6, penaltyCycles: 3 },
+      { id: "hide", label: "\u0421\u043A\u0440\u044B\u0442\u044C \u043C\u0430\u0441\u0448\u0442\u0430\u0431", desc: "\u0414\u0451\u0448\u0435\u0432\u043E \u0441\u0435\u0439\u0447\u0430\u0441, \u043D\u043E \u0440\u0438\u0441\u043A \u0441\u043A\u0430\u043D\u0434\u0430\u043B\u0430 \u043F\u043E\u0437\u0436\u0435", cost: 1e3, trustDelta: -1, hiddenRisk: true },
+      { id: "honest", label: "\u041F\u0440\u0438\u0437\u043D\u0430\u0442\u044C \u0438 \u043A\u043E\u043C\u043F\u0435\u043D\u0441\u0438\u0440\u043E\u0432\u0430\u0442\u044C", desc: "\u0414\u043E\u0440\u043E\u0433\u043E, \u043D\u043E \u0434\u043E\u0432\u0435\u0440\u0438\u0435 \u0440\u0430\u0441\u0442\u0451\u0442", cost: 25e3, trustDelta: 6, penaltyCycles: 1 }
+    ]
+  },
+  {
+    id: "dataLeak",
+    text: "\u0423\u0442\u0435\u0447\u043A\u0430 \u0434\u0430\u043D\u043D\u044B\u0445 \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u0435\u0439 \u043C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441\u0430.",
+    options: [
+      { id: "fast", label: "\u042D\u043A\u0441\u0442\u0440\u0435\u043D\u043D\u044B\u0439 \u0430\u0443\u0434\u0438\u0442 \u0431\u0435\u0437\u043E\u043F\u0430\u0441\u043D\u043E\u0441\u0442\u0438", desc: "\u0414\u043E\u0440\u043E\u0433\u043E, \u043D\u043E \u043C\u0438\u043D\u0438\u043C\u0430\u043B\u044C\u043D\u044B\u0435 \u043F\u043E\u0442\u0435\u0440\u0438", cost: 2e4, trustDelta: -3, penaltyCycles: 1 },
+      { id: "reroute", label: "\u0422\u0438\u0445\u043E \u043F\u043E\u0447\u0438\u043D\u0438\u0442\u044C \u0434\u044B\u0440\u0443", desc: "\u0414\u0435\u0448\u0435\u0432\u043B\u0435, \u043D\u043E \u0440\u0438\u0441\u043A \u043F\u043E\u0432\u0442\u043E\u0440\u0435\u043D\u0438\u044F", cost: 5e3, trustDelta: -5, penaltyCycles: 2 },
+      { id: "hide", label: "\u0421\u043A\u0440\u044B\u0442\u044C \u0438\u043D\u0446\u0438\u0434\u0435\u043D\u0442", desc: "\u0414\u0451\u0448\u0435\u0432\u043E \u0441\u0435\u0439\u0447\u0430\u0441, \u0440\u0438\u0441\u043A \u0441\u043A\u0430\u043D\u0434\u0430\u043B\u0430 \u043F\u043E\u0437\u0436\u0435", cost: 1500, trustDelta: -1, hiddenRisk: true },
+      { id: "honest", label: "\u0421\u043E\u043E\u0431\u0449\u0438\u0442\u044C \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044F\u043C \u0438 \u043A\u043E\u043C\u043F\u0435\u043D\u0441\u0438\u0440\u043E\u0432\u0430\u0442\u044C", desc: "\u0414\u043E\u0440\u043E\u0433\u043E, \u043D\u043E \u0434\u043E\u0432\u0435\u0440\u0438\u0435 \u0440\u0430\u0441\u0442\u0451\u0442", cost: 3e4, trustDelta: 5, penaltyCycles: 1 }
+    ]
+  },
+  {
+    id: "sellerFraud",
+    text: "\u041E\u0434\u0438\u043D \u0438\u0437 \u043F\u0440\u043E\u0434\u0430\u0432\u0446\u043E\u0432 \u0443\u043B\u0438\u0447\u0451\u043D \u0432 \u043F\u0440\u043E\u0434\u0430\u0436\u0435 \u043F\u043E\u0434\u0434\u0435\u043B\u044C\u043D\u044B\u0445 \u0442\u043E\u0432\u0430\u0440\u043E\u0432.",
+    options: [
+      { id: "fast", label: "\u041D\u0435\u043C\u0435\u0434\u043B\u0435\u043D\u043D\u043E \u0437\u0430\u0431\u043B\u043E\u043A\u0438\u0440\u043E\u0432\u0430\u0442\u044C \u0438 \u0432\u043E\u0437\u043C\u0435\u0441\u0442\u0438\u0442\u044C", desc: "\u0414\u043E\u0440\u043E\u0433\u043E, \u043D\u043E \u043C\u0438\u043D\u0438\u043C\u0430\u043B\u044C\u043D\u044B\u0435 \u043F\u043E\u0442\u0435\u0440\u0438", cost: 12e3, trustDelta: -2, penaltyCycles: 1 },
+      { id: "reroute", label: "\u041F\u0440\u043E\u0441\u0442\u043E \u0443\u0431\u0440\u0430\u0442\u044C \u0442\u043E\u0432\u0430\u0440", desc: "\u0414\u0435\u0448\u0435\u0432\u043B\u0435, \u043D\u043E \u043F\u043E\u043A\u0443\u043F\u0430\u0442\u0435\u043B\u0438 \u0443\u0436\u0435 \u043F\u043E\u0436\u0430\u043B\u043E\u0432\u0430\u043B\u0438\u0441\u044C", cost: 3e3, trustDelta: -6, penaltyCycles: 2 },
+      { id: "hide", label: "\u0417\u0430\u043C\u044F\u0442\u044C \u0438\u043D\u0446\u0438\u0434\u0435\u043D\u0442", desc: "\u0414\u0451\u0448\u0435\u0432\u043E \u0441\u0435\u0439\u0447\u0430\u0441, \u0440\u0438\u0441\u043A \u0441\u0443\u0434\u0430 \u043F\u043E\u0437\u0436\u0435", cost: 500, trustDelta: -1, hiddenRisk: true },
+      { id: "honest", label: "\u041F\u0443\u0431\u043B\u0438\u0447\u043D\u043E \u0438\u0437\u0432\u0438\u043D\u0438\u0442\u044C\u0441\u044F \u0438 \u0432\u043E\u0437\u043C\u0435\u0441\u0442\u0438\u0442\u044C \u0432\u0441\u0435\u043C", desc: "\u0414\u043E\u0440\u043E\u0433\u043E, \u043D\u043E \u0434\u043E\u0432\u0435\u0440\u0438\u0435 \u0440\u0430\u0441\u0442\u0451\u0442", cost: 2e4, trustDelta: 5, penaltyCycles: 1 }
+    ]
+  }
+];
+function marketplaceCrisisChance(marketplace) {
+  const legalMitigation = clamp01(((marketplace.staff && marketplace.staff.legal) || 0) * 0.025 + (marketplace.techLevel || 0) * 0.008, 0, 0.6);
+  return clamp01(0.05 - legalMitigation, 0.008, 0.05);
+}
+// ---- IPO маркетплейса: собственная акция на бирже, привязанная к реальным показателям ----
+var MARKETPLACE_IPO_MIN_CYCLES = 20;
+var MARKETPLACE_IPO_MIN_GMV = 3e6;
+var MARKETPLACE_IPO_SUPPLY = 2e7;
+function marketplaceIpoEligible(mp) {
+  if (!mp || mp.ipoStatus) return false;
+  return mp.cyclesRun >= MARKETPLACE_IPO_MIN_CYCLES && mp.totalGmv >= MARKETPLACE_IPO_MIN_GMV;
+}
+function marketplaceValuation(mp) {
+  return Math.max(5e5, mp.totalRevenue * 4 + mp.totalGmv * 0.04);
 }
 var MANAGER_SALARY = 5e3;
 var MANAGER_SALARY_CYCLE_MS = 30 * 60 * 1e3;
@@ -1417,6 +1560,13 @@ function MarketSandbox() {
   const [bankRatings, setBankRatings] = useState({ mfo: 50, priv: 50, fed: 50 });
   const [ipBankRating, setIpBankRating] = useState(50);
   const [playerSocialProfile, setPlayerSocialProfile] = useState({ trust: 50, postLog: [], lastPostAt: 0 });
+  const [marketplace, setMarketplace] = useState(null);
+  const [zzoneBiz, setZzoneBiz] = useState({ marketShare: ZZONE_MARKET_SHARE_START, commissionRate: MARKETPLACE_FEE, aggressionLevel: 0, reactionsTriggered: [] });
+  const [bigSellers, setBigSellers] = useState([]);
+  const [marketplaceInvestorOffer, setMarketplaceInvestorOffer] = useState(null);
+  const [marketplaceComposerText, setMarketplaceComposerText] = useState("");
+  const [marketplaceComposerError, setMarketplaceComposerError] = useState(null);
+  const [marketplaceLastPostFeedback, setMarketplaceLastPostFeedback] = useState(null);
   const [composerText, setComposerText] = useState("");
   const [composerAdBoost, setComposerAdBoost] = useState(false);
   const [lastPostFeedback, setLastPostFeedback] = useState(null);
@@ -1525,6 +1675,9 @@ function MarketSandbox() {
   const suspicionRef = useRef(0);
   const reputationRef = useRef(100);
   const playerSocialProfileRef = useRef({ trust: 50, postLog: [], lastPostAt: 0 });
+  const marketplaceRef = useRef(null);
+  const zzoneBizRef = useRef({ marketShare: ZZONE_MARKET_SHARE_START, commissionRate: MARKETPLACE_FEE, aggressionLevel: 0, reactionsTriggered: [] });
+  const bigSellersRef = useRef([]);
   const onboardedRef = useRef(onboarded);
   const holdingsRef = useRef(holdings);
   const ipHoldingsRef = useRef(ipHoldings);
@@ -1748,6 +1901,15 @@ function MarketSandbox() {
   useEffect(() => {
     playerSocialProfileRef.current = playerSocialProfile;
   }, [playerSocialProfile]);
+  useEffect(() => {
+    marketplaceRef.current = marketplace;
+  }, [marketplace]);
+  useEffect(() => {
+    zzoneBizRef.current = zzoneBiz;
+  }, [zzoneBiz]);
+  useEffect(() => {
+    bigSellersRef.current = bigSellers;
+  }, [bigSellers]);
   useEffect(() => {
     if (!loaded) return;
     const id = setInterval(() => {
@@ -2042,6 +2204,9 @@ function MarketSandbox() {
     setIpBankRating(typeof data.ipBankRating === "number" ? data.ipBankRating : 50);
     setReputation(typeof data.reputation === "number" ? data.reputation : 100);
     setPlayerSocialProfile(data.playerSocialProfile && typeof data.playerSocialProfile === "object" ? { trust: typeof data.playerSocialProfile.trust === "number" ? data.playerSocialProfile.trust : 50, postLog: Array.isArray(data.playerSocialProfile.postLog) ? data.playerSocialProfile.postLog : [], lastPostAt: data.playerSocialProfile.lastPostAt || 0 } : { trust: 50, postLog: [], lastPostAt: 0 });
+    setMarketplace(data.marketplace && typeof data.marketplace === "object" ? data.marketplace : null);
+    setZzoneBiz(data.zzoneBiz && typeof data.zzoneBiz === "object" ? { marketShare: typeof data.zzoneBiz.marketShare === "number" ? data.zzoneBiz.marketShare : ZZONE_MARKET_SHARE_START, commissionRate: typeof data.zzoneBiz.commissionRate === "number" ? data.zzoneBiz.commissionRate : MARKETPLACE_FEE, aggressionLevel: data.zzoneBiz.aggressionLevel || 0, reactionsTriggered: Array.isArray(data.zzoneBiz.reactionsTriggered) ? data.zzoneBiz.reactionsTriggered : [] } : { marketShare: ZZONE_MARKET_SHARE_START, commissionRate: MARKETPLACE_FEE, aggressionLevel: 0, reactionsTriggered: [] });
+    setBigSellers(Array.isArray(data.bigSellers) ? data.bigSellers : []);
     setBankAccounts(rawBankAccounts);
     setBankTransferDest((() => {
       const raw = data.bankTransferDest && typeof data.bankTransferDest === "object" ? data.bankTransferDest : {};
@@ -2151,6 +2316,9 @@ function MarketSandbox() {
     ipBankRating: ipBankRatingRef.current,
     reputation: reputationRef.current,
     playerSocialProfile: playerSocialProfileRef.current,
+    marketplace: marketplaceRef.current,
+    zzoneBiz: zzoneBizRef.current,
+    bigSellers: bigSellersRef.current,
     bankAccounts: bankAccountsRef.current,
     bankTransferDest: bankTransferDestRef.current,
     transferSuspicion: transferSuspicionRef.current,
@@ -2414,6 +2582,53 @@ function MarketSandbox() {
       applyImpact(c.id, ev.correctionPct);
       updateStory(ev.storyId, { status: "denied", reliability: "low" });
       pushPost({ role: "insider", kind: "development", text: `\u0420\u044B\u043D\u043E\u043A \u043F\u0435\u0440\u0435\u043E\u0446\u0435\u043D\u0438\u043B \u043F\u043E\u0441\u0442 \u043F\u0440\u043E ${ev.ticker} \u2014 \u0447\u0430\u0441\u0442\u044C \u043F\u043E\u043A\u0443\u043F\u0430\u0442\u0435\u043B\u0435\u0439 \u0437\u0430\u043A\u0440\u044B\u0432\u0430\u0435\u0442 \u043F\u043E\u0437\u0438\u0446\u0438\u0438`, positive: false, isMacro: false, ticker: ev.ticker, importance: 2, storyId: ev.storyId });
+    } else if (ev.kind === "marketplace_crisis_reveal") {
+      const mp = marketplaceRef.current;
+      if (!mp) return;
+      setMarketplace((prev) => prev ? { ...prev, trustScore: Math.max(0, prev.trustScore - 12), crisisPenaltyCyclesLeft: Math.max(prev.crisisPenaltyCyclesLeft || 0, 3) } : prev);
+      createCourtCase({
+        source: "marketplace_scandal",
+        plaintiffName: "\u0413\u0440\u0443\u043F\u043F\u0430 \u043F\u043E\u043A\u0443\u043F\u0430\u0442\u0435\u043B\u0435\u0439",
+        amountClaimed: Math.round(2e4 + Math.random() * 3e4),
+        basis: `\u0412\u044B\u044F\u0441\u043D\u0438\u043B\u043E\u0441\u044C, \u0447\u0442\u043E \u043F\u0440\u043E\u0431\u043B\u0435\u043C\u0430 \u0431\u044B\u043B\u0430 \u0441\u043A\u0440\u044B\u0442\u0430: ${ev.crisisText}`,
+        evidence: [{ id: makeId("ev"), positive: false, text: "\u0421\u043A\u0440\u044B\u0442\u0438\u0435 \u0438\u043D\u0446\u0438\u0434\u0435\u043D\u0442\u0430 \u0432\u0441\u043A\u0440\u044B\u043B\u043E\u0441\u044C \u0432 \u0441\u043E\u0446\u0441\u0435\u0442\u044F\u0445" }],
+        fundingSide: "ip",
+        importance: 3
+      });
+      pushPost({ text: `\xAB${mp.name}\xBB: \u0432\u0441\u043A\u0440\u044B\u043B\u043E\u0441\u044C \u0441\u043A\u0440\u044B\u0442\u0430\u044F \u0440\u0430\u043D\u0435\u0435 \u043F\u0440\u043E\u0431\u043B\u0435\u043C\u0430 \u2014 \u0434\u043E\u0432\u0435\u0440\u0438\u0435 \u043F\u0440\u043E\u0434\u0430\u0432\u0446\u043E\u0432 \u0438 \u043F\u043E\u043A\u0443\u043F\u0430\u0442\u0435\u043B\u0435\u0439 \u043F\u043E\u0448\u0430\u0442\u043D\u0443\u043B\u043E\u0441\u044C`, positive: false, isMacro: false, importance: 3 });
+    } else if (ev.kind === "marketplace_ipo_audit") {
+      const mp = marketplaceRef.current;
+      if (!mp || mp.ipoStatus !== "audit") return;
+      setMarketplace((prev) => prev ? { ...prev, ipoStatus: "listing" } : prev);
+      pushPost({ text: `\xAB${mp.name}\xBB: \u0430\u0443\u0434\u0438\u0442 \u0437\u0430\u0432\u0435\u0440\u0448\u0451\u043D \u2014 \u0433\u043E\u0442\u043E\u0432\u0438\u0442\u0441\u044F \u0440\u0430\u0437\u043C\u0435\u0449\u0435\u043D\u0438\u0435 \u0430\u043A\u0446\u0438\u0439`, positive: true, isMacro: false, importance: 3 });
+      scheduleEvent({ id: makeId("sched"), kind: "marketplace_ipo_list", dueAt: Date.now() + (45e3 + Math.random() * 40e3) });
+    } else if (ev.kind === "marketplace_ipo_list") {
+      const mp = marketplaceRef.current;
+      if (!mp || mp.ipoStatus !== "listing") return;
+      const valuation = marketplaceValuation(mp);
+      const supply = MARKETPLACE_IPO_SUPPLY;
+      const price = Math.max(0.05, Number((valuation / supply).toFixed(4)));
+      const ticker = (mp.name.replace(/[^A-Za-z\u0410-\u042f\u0430-\u044f0-9]/g, "").slice(0, 4) || "MRKT").toUpperCase();
+      const id = makeId("co");
+      const newCo = {
+        id,
+        name: mp.name,
+        ticker,
+        sector: "\u0422\u0435\u0445\u043D\u043E\u043B\u043E\u0433\u0438\u0438",
+        price,
+        vol: 0.5,
+        supply,
+        isPlayer: false,
+        marketingLevel: 0,
+        rdLevel: 0,
+        hypeLevel: 0,
+        scamHeat: 0,
+        rugged: false,
+        candles: Array.from({ length: 24 }, (_, i) => ({ o: price, h: price, l: price, c: price, t: Date.now() - (24 - i) * CANDLE_MS }))
+      };
+      setCompanies((prev) => [...prev, newCo]);
+      setMarketplace((prev) => prev ? { ...prev, ipoStatus: "public", stockCompanyId: id, stockTicker: ticker } : prev);
+      pushPost({ text: `\xAB${mp.name}\xBB \u0432\u044B\u0448\u0435\u043B \u043D\u0430 IPO \u043F\u043E\u0434 \u0442\u0438\u043A\u0435\u0440\u043E\u043C ${ticker} \u043F\u043E \u0446\u0435\u043D\u0435 ${fmt(price)}`, positive: true, isMacro: false, importance: 4, ticker });
     }
   };
   useEffect(() => {
@@ -2648,11 +2863,16 @@ function MarketSandbox() {
     }
   }, [companies, playerVentureId, investorPersona]);
   useEffect(() => {
-    const validIds = [...playerVentureId ? ["venture"] : [], ...resellShops.map((s) => s.id), ...factories.map((f) => f.id), ...warehouses.map((w) => w.id)];
+    if (!marketplace || marketplaceInvestorOffer) return;
+    const candidate = MARKETPLACE_INVESTORS.find((inv) => marketplaceInvestorEligible(inv, marketplace));
+    if (candidate && Math.random() < 0.08) setMarketplaceInvestorOffer(candidate);
+  }, [marketplace, marketplaceInvestorOffer]);
+  useEffect(() => {
+    const validIds = [...playerVentureId ? ["venture"] : [], ...marketplace ? ["marketplace"] : [], ...resellShops.filter((s) => !s.mergedIntoMarketplace).map((s) => s.id), ...factories.map((f) => f.id), ...warehouses.filter((w) => !w.assignedToMarketplace).map((w) => w.id)];
     if (selectedBizId !== null && !validIds.includes(selectedBizId)) {
       setSelectedBizId(validIds[0] || null);
     }
-  }, [playerVentureId, resellShops, factories, warehouses, selectedBizId]);
+  }, [playerVentureId, marketplace, resellShops, factories, warehouses, selectedBizId]);
   useEffect(() => {
     if (!loaded) return;
     const id = setInterval(() => {
@@ -2686,6 +2906,7 @@ function MarketSandbox() {
       const shops = resellShopsRef.current;
       if (!shops.length) return;
       shops.forEach((shop) => {
+        if (shop.mergedIntoMarketplace) return;
         const cats = shop.categories || {};
         PRODUCT_CATEGORIES.forEach((cat) => {
           const c = cats[cat.id];
@@ -2694,9 +2915,10 @@ function MarketSandbox() {
           const attractiveness = fairPrice / c.listedPrice;
           const ratingMult = Math.max(0.15, (shop.rating - 1) / 4);
           const repMult = Math.max(0.4, reputationRef.current / 100);
+          const zzoneMult = clamp01(1 + companyPerfPct(companiesRef.current, "ZZONE") / 200, 0.75, 1.2);
           const activeAds = (shop.ads || []).filter((a) => Date.now() < a.adUntil);
           const adMult = activeAds.length ? computeAdBoost(activeAds) : 1;
-          const saleChance = Math.min(0.7, Math.max(0.02, 0.16 * attractiveness * ratingMult * adMult * repMult));
+          const saleChance = Math.min(0.7, Math.max(0.02, 0.16 * attractiveness * ratingMult * adMult * repMult * zzoneMult));
           if (Math.random() < saleChance) {
             const qtySold = Math.min(c.stock, 1 + Math.floor(Math.random() * 3));
             const grossRevenue = c.listedPrice * qtySold;
@@ -3338,6 +3560,99 @@ function MarketSandbox() {
       });
       if (ipCashDelta !== 0) setIpCash((c) => Math.max(0, c + ipCashDelta));
       setWarehouses((prev) => prev.map((w) => updates[w.id] ? { ...w, ...updates[w.id] } : w));
+      setTimeout(saveGame, 50);
+    }, 3e4);
+    return () => clearInterval(id);
+  }, [loaded]);
+  useEffect(() => {
+    if (!loaded) return;
+    const id = setInterval(() => {
+      const mp = marketplaceRef.current;
+      if (!mp || Date.now() < mp.nextCycleAt) return;
+      const est = marketplaceCycleEstimate(mp, marketIndexRef.current, bigSellersRef.current);
+      const growthRoll = Math.random();
+      const growthChance = clamp01(0.05 + mp.trustScore / 500 + (mp.sellersLevel || 0) * 0.01, 0, 0.5);
+      const sellerCount = mp.sellerCount < MARKETPLACE_SELLER_GROWTH_CAP && growthRoll < growthChance ? mp.sellerCount + 1 : mp.sellerCount;
+      const buyerBase = mp.sellerCount * (0.5 + Math.random()) + (mp.buyersLevel || 0) * 2;
+      const buyerCount = Math.round(mp.buyerCount + Math.max(0, sellerCount - mp.sellerCount) * 40 + buyerBase);
+      const trustCeiling = Math.min(100, 60 + (mp.brandLevel || 0) * 3);
+      const trustDrift = Math.max(-1, Math.min(1, est.net > 0 ? 0.3 : -0.2));
+      const trustScore = Math.max(0, Math.min(trustCeiling, mp.trustScore + trustDrift));
+      const newCyclesRun = mp.cyclesRun + 1;
+      const newTotalGmv = mp.totalGmv + est.gmv;
+      let investorTrustPenalty = 0;
+      let investorCashPenalty = 0;
+      const roundPosts = [];
+      const investorRounds = (mp.investorRounds || []).map((r) => {
+        if (r.met || r.failed) return r;
+        if (newCyclesRun - r.acceptedAtCycle < r.conditionCycles) return r;
+        const grew = newTotalGmv - r.gmvAtStart > 0;
+        if (grew) {
+          roundPosts.push(`${r.name} доволен ростом «${mp.name}» — условия раунда выполнены`);
+          return { ...r, met: true };
+        }
+        investorTrustPenalty += 6;
+        investorCashPenalty += Math.round(r.equityPct * 1000);
+        roundPosts.push(`${r.name} недоволен темпами роста «${mp.name}» — давление на руководство`);
+        return { ...r, failed: true };
+      });
+      const trustScoreAfterInvestors = Math.max(0, trustScore - investorTrustPenalty);
+      const crisisPenaltyCyclesLeft = Math.max(0, (mp.crisisPenaltyCyclesLeft || 0) - 1);
+      let pendingCrisis = mp.pendingCrisis || null;
+      if (!pendingCrisis && Math.random() < marketplaceCrisisChance(mp)) {
+        const crisis = MARKETPLACE_CRISES[Math.floor(Math.random() * MARKETPLACE_CRISES.length)];
+        pendingCrisis = { crisisId: crisis.id, spawnedAtCycle: newCyclesRun };
+        pushPost({ text: `\xAB${mp.name}\xBB: \u0427\u041F \u2014 ${crisis.text}`, positive: false, isMacro: false, importance: 3 });
+      }
+      // ---- конкуренция с ZZONE: доля рынка сдвигается от разницы качества площадок ----
+      const zb = zzoneBizRef.current;
+      const qualityPlayer = marketplaceQualityScore(mp.commissionRate, trustScoreAfterInvestors, mp.brandLevel || 0);
+      const qualityZzone = zzoneQualityScore(zb.commissionRate, zb.aggressionLevel);
+      const shift = clamp01((qualityPlayer - qualityZzone) / 100 * 0.004, -0.003, 0.003);
+      const newPlayerShare = clamp01(mp.marketShare + shift, 0.005, 0.9);
+      const newZzoneShare = clamp01(zb.marketShare - shift, 0.05, 0.9);
+      const triggered = [...zb.reactionsTriggered];
+      let newCommission = zb.commissionRate;
+      let newAggression = zb.aggressionLevel;
+      let reactionPost = null;
+      ZZONE_REACTION_THRESHOLDS.forEach((t) => {
+        if (newPlayerShare >= t && !triggered.includes(t)) {
+          triggered.push(t);
+          newCommission = Math.max(0.02, newCommission - 0.005);
+          newAggression += 1;
+          reactionPost = `ZZONE снижает комиссию до ${Math.round(newCommission * 100)}% — доля нового маркетплейса на рынке достигла ${Math.round(t * 100)}%`;
+        }
+      });
+      setZzoneBiz({ marketShare: newZzoneShare, commissionRate: newCommission, aggressionLevel: newAggression, reactionsTriggered: triggered });
+      if (reactionPost) {
+        const zzoneCompany = companiesRef.current.find((c) => c.ticker === "ZZONE");
+        if (zzoneCompany) applyImpact(zzoneCompany.id, -1.5 - Math.random() * 1.5);
+        pushPost({ text: reactionPost, positive: false, isMacro: false, ticker: "ZZONE", importance: 3 });
+      }
+      setMarketplace((prev) => prev ? {
+        ...prev,
+        cash: Math.round((prev.cash + est.net - investorCashPenalty) * 100) / 100,
+        sellerCount,
+        buyerCount,
+        trustScore: trustScoreAfterInvestors,
+        marketShare: newPlayerShare,
+        cyclesRun: newCyclesRun,
+        totalGmv: newTotalGmv,
+        totalRevenue: prev.totalRevenue + est.revenue,
+        investorRounds,
+        crisisPenaltyCyclesLeft,
+        pendingCrisis,
+        lastCycleStats: est,
+        nextCycleAt: Date.now() + MARKETPLACE_CYCLE_MS
+      } : prev);
+      roundPosts.forEach((text) => pushPost({ text, positive: !text.includes("\u043D\u0435\u0434\u043E\u0432\u043E\u043B\u0435\u043D"), isMacro: false, importance: 2 }));
+      if (mp.ipoStatus === "public" && mp.stockCompanyId) {
+        const drift = est.net > 0 ? 0.3 + Math.random() * 0.9 : -(0.3 + Math.random() * 0.9);
+        applyImpact(mp.stockCompanyId, drift);
+      }
+      if (est.revenue > 0) setQuarterRevenue((r) => r + est.revenue);
+      logTx(`\u041C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441 \xB7 \u0432\u044B\u0440\u0443\u0447\u043A\u0430 \u0437\u0430 \u0446\u0438\u043A\u043B`, est.revenue, "in");
+      if (est.opex > 0) logTx(`\u041C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441 \xB7 \u0440\u0430\u0441\u0445\u043E\u0434\u044B \u043D\u0430 \u043E\u0431\u0441\u043B\u0443\u0436\u0438\u0432\u0430\u043D\u0438\u0435`, est.opex, "out");
       setTimeout(saveGame, 50);
     }, 3e4);
     return () => clearInterval(id);
@@ -4918,6 +5233,232 @@ function MarketSandbox() {
     setTimeout(saveGame, 50);
     return { ok: true };
   };
+  const marketplaceEligibility = () => {
+    const largeWarehouses = warehouses.filter((w) => w.tierId === "large" && !w.assignedToMarketplace);
+    const qualifyingShop = resellShops.filter((s) => !s.mergedIntoMarketplace).sort((a, b) => b.totalRevenue - a.totalRevenue)[0] || null;
+    const totalCost = MARKETPLACE_IPO_PREP_COST + MARKETPLACE_PLATFORM_COST;
+    const checks = [
+      { id: "warehouses", label: "2 \u0431\u043E\u043B\u044C\u0448\u0438\u0445 \u0441\u043A\u043B\u0430\u0434\u0430 ZZONE", met: largeWarehouses.length >= 2 },
+      { id: "entity", label: "\u042E\u0440\u0438\u0434\u0438\u0447\u0435\u0441\u043A\u0430\u044F \u0444\u043E\u0440\u043C\u0430 \u041E\u041E\u041E", met: entityType === "ooo" },
+      { id: "office", label: "\u041E\u0444\u0438\u0441 \u0432 \u0441\u043E\u0431\u0441\u0442\u0432\u0435\u043D\u043D\u043E\u0441\u0442\u0438", met: (ownedItems.commercial1 || 0) > 0 },
+      { id: "shop", label: `\u041C\u0430\u0433\u0430\u0437\u0438\u043D \u043D\u0430 ZZONE \u0441 \u043E\u0431\u043E\u0440\u043E\u0442\u043E\u043C \u043E\u0442 ${fmt(MARKETPLACE_SELLER_TURNOVER_REQ)}`, met: !!qualifyingShop && qualifyingShop.totalRevenue >= MARKETPLACE_SELLER_TURNOVER_REQ },
+      { id: "cash", label: `${fmt(totalCost)} \u043D\u0430 \u0441\u0447\u0451\u0442\u0435 \u0418\u041F`, met: ipCash >= totalCost }
+    ];
+    return { checks, eligible: checks.every((c) => c.met), largeWarehouses, qualifyingShop, totalCost };
+  };
+  const createMarketplace = () => {
+    if (marketplaceRef.current) return;
+    const { eligible, largeWarehouses, qualifyingShop, totalCost } = marketplaceEligibility();
+    if (!eligible || !qualifyingShop) return;
+    const chosenWarehouseIds = largeWarehouses.slice(0, 2).map((w) => w.id);
+    setIpCash((c) => c - totalCost);
+    logTx("\u041C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441 \xB7 \u043F\u043E\u0434\u0433\u043E\u0442\u043E\u0432\u043A\u0430 \u043A IPO", MARKETPLACE_IPO_PREP_COST, "out");
+    logTx("\u041C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441 \xB7 \u0440\u0430\u0437\u0440\u0430\u0431\u043E\u0442\u043A\u0430 \u043F\u043B\u0430\u0442\u0444\u043E\u0440\u043C\u044B", MARKETPLACE_PLATFORM_COST, "out");
+    setWarehouses((prev) => prev.map((w) => chosenWarehouseIds.includes(w.id) ? { ...w, assignedToMarketplace: true } : w));
+    setResellShops((prev) => prev.map((s) => s.id === qualifyingShop.id ? { ...s, mergedIntoMarketplace: true } : s));
+    const trustSeed = Math.round(clamp01((playerSocialProfileRef.current.trust + qualifyingShop.rating * 15) / 2, 20, 80));
+    const sellerSeed = 4 + Math.min(6, Math.floor(qualifyingShop.totalRevenue / 150000));
+    const mp = {
+      id: makeId("marketplace"),
+      name: qualifyingShop.name + " Market",
+      createdAt: Date.now(),
+      cash: 0,
+      sellerCount: sellerSeed,
+      buyerCount: sellerSeed * 40,
+      commissionRate: MARKETPLACE_BASE_COMMISSION,
+      trustScore: trustSeed,
+      marketShare: 0.02,
+      techLevel: 0,
+      logisticsLevel: 0,
+      sellersLevel: 0,
+      buyersLevel: 0,
+      brandLevel: 0,
+      equityGiven: 0,
+      investorRounds: [],
+      staff: { dev: 0, logistics: 0, support: 0, legal: 0, marketing: 0 },
+      pendingCrisis: null,
+      crisisPenaltyCyclesLeft: 0,
+      ipoStatus: null,
+      stockCompanyId: null,
+      stockTicker: null,
+      socialProfile: { trust: 50, postLog: [], lastPostAt: 0 },
+      warehouseIds: chosenWarehouseIds,
+      originShopId: qualifyingShop.id,
+      cyclesRun: 0,
+      totalGmv: 0,
+      totalRevenue: 0,
+      lastCycleStats: null,
+      nextCycleAt: Date.now() + MARKETPLACE_CYCLE_MS
+    };
+    setMarketplace(mp);
+    setSelectedBizId("marketplace");
+    spawnBigSellerCandidates();
+    pushPost({ role: "official", kind: "fact", text: `\u0417\u0430\u043F\u0443\u0449\u0435\u043D \u0441\u043E\u0431\u0441\u0442\u0432\u0435\u043D\u043D\u044B\u0439 \u043C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441 \xAB${mp.name}\xBB \u2014 \u043F\u0435\u0440\u0432\u044B\u0435 \u043F\u0440\u043E\u0434\u0430\u0432\u0446\u044B \u0443\u0436\u0435 \u043D\u0430 \u043F\u043B\u043E\u0449\u0430\u0434\u043A\u0435`, positive: true, isMacro: false, importance: 3 });
+    setTimeout(saveGame, 50);
+  };
+  const withdrawMarketplacePayout = () => {
+    const mp = marketplaceRef.current;
+    if (!mp || mp.cash <= 0) return;
+    const amount = mp.cash;
+    setMarketplace((prev) => prev ? { ...prev, cash: 0 } : prev);
+    setIpCash((c) => c + amount);
+    logTx(`\u041C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441 \xAB${mp.name}\xBB \u2192 \u0418\u041F`, amount, "in");
+    setTimeout(saveGame, 50);
+  };
+  const investMarketplaceTrack = (trackId) => {
+    const mp = marketplaceRef.current;
+    const track = MARKETPLACE_GROWTH_TRACKS[trackId];
+    if (!mp || !track) return;
+    const cost = marketplaceTrackCost(trackId, mp);
+    if (ipCashRef.current < cost) return;
+    setIpCash((c) => c - cost);
+    logTx(`\u041C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441 \xB7 ${track.label}`, cost, "out");
+    setMarketplace((prev) => prev ? { ...prev, [trackId + "Level"]: (prev[trackId + "Level"] || 0) + 1 } : prev);
+    setTimeout(saveGame, 50);
+  };
+  const spawnBigSellerCandidates = () => {
+    const count = 2 + Math.floor(Math.random() * 2);
+    const pool = [...BIG_SELLER_NAMES].sort(() => Math.random() - 0.5).slice(0, count);
+    const candidates = pool.map((name) => ({
+      id: makeId("bigseller"),
+      name,
+      turnover: Math.round((1e6 + Math.random() * 4e6) / 1e4) * 1e4,
+      platform: "zzone",
+      loyalty: Math.round(40 + Math.random() * 50),
+      commissionDiscount: 0
+    }));
+    setBigSellers((prev) => [...prev.filter((s) => s.platform === "player"), ...candidates]);
+    setTimeout(saveGame, 50);
+  };
+  const negotiateBigSeller = (sellerId, offerId) => {
+    const seller = bigSellersRef.current.find((s) => s.id === sellerId);
+    const offer = BIG_SELLER_OFFERS.find((o) => o.id === offerId);
+    const mp = marketplaceRef.current;
+    if (!seller || !offer || !mp || seller.platform === "player") return;
+    if (offer.costType === "cash" && ipCashRef.current < offer.costValue) return;
+    if (offer.costType === "cash") {
+      setIpCash((c) => c - offer.costValue);
+      logTx(`\u041F\u0435\u0440\u0435\u0433\u043E\u0432\u043E\u0440\u044B \xB7 ${seller.name}`, offer.costValue, "out");
+    }
+    const chance = bigSellerSuccessChance(offer, seller, mp.trustScore);
+    const success = Math.random() < chance;
+    if (success) {
+      setBigSellers((prev) => prev.map((s) => s.id === sellerId ? { ...s, platform: "player", commissionDiscount: offer.costType === "commission" ? offer.costValue : s.commissionDiscount || 0 } : s));
+      setMarketplace((prev) => prev ? { ...prev, sellerCount: prev.sellerCount + 1 } : prev);
+      pushPost({ text: `${seller.name} \u043F\u0435\u0440\u0435\u0448\u0451\u043B \u043D\u0430 \xAB${mp.name}\xBB \u2014 \u043A\u0440\u0443\u043F\u043D\u044B\u0439 \u043F\u0440\u043E\u0434\u0430\u0432\u0435\u0446 \u0441\u043C\u0435\u043D\u0438\u043B \u043F\u043B\u043E\u0449\u0430\u0434\u043A\u0443`, positive: true, isMacro: false, importance: 2 });
+    } else {
+      setBigSellers((prev) => prev.map((s) => s.id === sellerId ? { ...s, loyalty: Math.min(100, s.loyalty + 10) } : s));
+    }
+    setTimeout(saveGame, 50);
+  };
+  const marketplaceInvestorEligible = (investor, mp) => {
+    if (!mp) return false;
+    if (investor.minTotalGmv && mp.totalGmv < investor.minTotalGmv) return false;
+    if (investor.minMarketShare && mp.marketShare < investor.minMarketShare) return false;
+    if ((mp.investorRounds || []).some((r) => r.investorId === investor.id)) return false;
+    return true;
+  };
+  const acceptMarketplaceInvestor = () => {
+    const investor = marketplaceInvestorOffer;
+    const mp = marketplaceRef.current;
+    if (!investor || !mp) return;
+    setMarketplace((prev) => prev ? {
+      ...prev,
+      cash: Math.round((prev.cash + investor.checkAmount) * 100) / 100,
+      equityGiven: (prev.equityGiven || 0) + investor.equityPct,
+      investorRounds: [...(prev.investorRounds || []), { investorId: investor.id, name: investor.name, equityPct: investor.equityPct, acceptedAtCycle: prev.cyclesRun, conditionCycles: investor.conditionCycles, gmvAtStart: prev.totalGmv, met: false, failed: false }]
+    } : prev);
+    logTx(`\u0418\u043D\u0432\u0435\u0441\u0442\u0438\u0446\u0438\u044F \xB7 ${investor.name}`, investor.checkAmount, "in");
+    pushPost({ text: `\xAB${mp.name}\xBB \u043F\u0440\u0438\u0432\u043B\u0451\u043A ${fmt(investor.checkAmount)} \u043E\u0442 ${investor.name} \u0437\u0430 ${investor.equityPct}% \u043A\u043E\u043C\u043F\u0430\u043D\u0438\u0438`, positive: true, isMacro: false, importance: 3 });
+    setMarketplaceInvestorOffer(null);
+    setTimeout(saveGame, 50);
+  };
+  const declineMarketplaceInvestor = () => setMarketplaceInvestorOffer(null);
+  const hireMarketplaceStaff = (deptId) => {
+    const mp = marketplaceRef.current;
+    const dept = MARKETPLACE_DEPARTMENTS[deptId];
+    if (!mp || !dept) return;
+    const cost = marketplaceDeptHireCost(deptId, mp);
+    if (ipCashRef.current < cost) return;
+    setIpCash((c) => c - cost);
+    logTx(`\u041C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441 \xB7 \u043D\u0430\u0451\u043C ${dept.label.toLowerCase()}`, cost, "out");
+    setMarketplace((prev) => prev ? { ...prev, staff: { ...prev.staff, [deptId]: (prev.staff[deptId] || 0) + 1 } } : prev);
+    setTimeout(saveGame, 50);
+  };
+  const resolveMarketplaceCrisis = (optionId) => {
+    const mp = marketplaceRef.current;
+    if (!mp || !mp.pendingCrisis) return;
+    const crisis = MARKETPLACE_CRISES.find((c) => c.id === mp.pendingCrisis.crisisId);
+    const option = crisis && crisis.options.find((o) => o.id === optionId);
+    if (!option) return;
+    if (ipCashRef.current < option.cost) return;
+    setIpCash((c) => c - option.cost);
+    logTx(`\u041A\u0440\u0438\u0437\u0438\u0441 \xB7 ${crisis.text.slice(0, 30)}\u2026`, option.cost, "out");
+    setMarketplace((prev) => {
+      if (!prev) return prev;
+      const trustScore = Math.max(0, Math.min(100, prev.trustScore + option.trustDelta));
+      return { ...prev, trustScore, crisisPenaltyCyclesLeft: Math.max(prev.crisisPenaltyCyclesLeft || 0, option.penaltyCycles || 0), pendingCrisis: null };
+    });
+    pushPost({ text: `\xAB${mp.name}\xBB: ${crisis.text} \u2014 \u0440\u0435\u0448\u0435\u043D\u0438\u0435: ${option.label.toLowerCase()}`, positive: option.trustDelta >= 0, isMacro: false, importance: 2 });
+    if (option.hiddenRisk) {
+      const revealChance = 0.55;
+      if (Math.random() < revealChance) {
+        const dueAt = Date.now() + (60e3 + Math.random() * 90e3);
+        scheduleEvent({ id: makeId("sched"), kind: "marketplace_crisis_reveal", crisisText: crisis.text, dueAt });
+      }
+    }
+    setTimeout(saveGame, 50);
+  };
+  const startMarketplaceIpo = () => {
+    const mp = marketplaceRef.current;
+    if (!marketplaceIpoEligible(mp)) return;
+    setMarketplace((prev) => prev ? { ...prev, ipoStatus: "audit" } : prev);
+    pushPost({ text: `\xAB${mp.name}\xBB \u043E\u0431\u044A\u044F\u0432\u0438\u043B \u043E \u043F\u043E\u0434\u0433\u043E\u0442\u043E\u0432\u043A\u0435 \u043A IPO \u2014 \u043D\u0430\u0447\u0430\u043B\u0441\u044F \u0430\u0443\u0434\u0438\u0442`, positive: true, isMacro: false, importance: 3 });
+    scheduleEvent({ id: makeId("sched"), kind: "marketplace_ipo_audit", dueAt: Date.now() + (45e3 + Math.random() * 40e3) });
+    setTimeout(saveGame, 50);
+  };
+  const publishMarketplacePost = () => {
+    const mp = marketplaceRef.current;
+    const text = marketplaceComposerText.trim();
+    if (!mp) return { ok: false, reason: "no-marketplace" };
+    if (text.length < SOCIAL_POST_MIN_CHARS || text.length > SOCIAL_POST_MAX_CHARS) {
+      setMarketplaceComposerError("\u041F\u043E\u0441\u0442 \u0434\u043E\u043B\u0436\u0435\u043D \u0431\u044B\u0442\u044C \u043E\u0442 12 \u0434\u043E 240 \u0441\u0438\u043C\u0432\u043E\u043B\u043E\u0432");
+      return { ok: false, reason: "length" };
+    }
+    const profile = mp.socialProfile || { trust: 50, postLog: [], lastPostAt: 0 };
+    const now = Date.now();
+    if (now - (profile.lastPostAt || 0) < SOCIAL_POST_COOLDOWN_MS) {
+      setMarketplaceComposerError("\u0410\u0443\u0434\u0438\u0442\u043E\u0440\u0438\u044F \u0435\u0449\u0451 \u043D\u0435 \u043E\u0441\u0442\u044B\u043B\u0430 \u043E\u0442 \u043F\u0440\u0435\u0434\u044B\u0434\u0443\u0449\u0435\u0433\u043E \u043F\u043E\u0441\u0442\u0430 \u2014 \u043F\u043E\u0434\u043E\u0436\u0434\u0438\u0442\u0435 \u043D\u0435\u043C\u043D\u043E\u0433\u043E");
+      return { ok: false, reason: "cooldown" };
+    }
+    setMarketplaceComposerError(null);
+    const recentPostCount = (profile.postLog || []).filter((p) => now - (p.ts || 0) < 15 * 60e3).length;
+    const score = scoreSocialPost(text, { authorTrust: profile.trust, postLog: profile.postLog, recentPostCount });
+    const reach = Math.round((mp.buyerCount + mp.sellerCount) * clamp01(0.3 + score.engagement / 150, 0.3, 1));
+    const band = socialReactionBand(score.audienceReaction);
+    const storyId = makeId("story");
+    const comments = pickSocialComments(score, mp.id + now);
+    const mainPost = { role: "official", kind: "hype", text, positive: score.audienceReaction >= 0, isMacro: false, ticker: mp.stockTicker || null, importance: score.engagement >= 55 ? 3 : score.engagement >= 25 ? 2 : 1, storyId };
+    const commentPosts = comments.map((c) => ({ role: score.scamRisk >= 55 ? "insider" : score.credibility >= 60 ? "trader" : "user", kind: "reaction", text: c, positive: score.credibility >= 55, isMacro: false, ticker: mp.stockTicker || null, importance: 1, storyId }));
+    registerStory({ id: storyId, headline: text, category: "companies", personal: true, importance: mainPost.importance, status: "confirmed", reliability: score.scamRisk >= 55 ? "low" : "official", ticker: mp.stockTicker || null, marketImpactPct: 0, createdAt: now, postCount: 1 + commentPosts.length });
+    pushPosts([mainPost, ...commentPosts].map((p) => ({ ...p, id: makeId("post"), storyId })));
+    const trustDelta = score.scamRisk >= 55 ? -3 - score.scamRisk / 40 : score.credibility >= 60 ? 1.2 : score.credibility <= 30 ? -1.5 : 0.2;
+    const newTrust = Math.max(0, Math.min(100, profile.trust + trustDelta));
+    const newLog = [{ ts: now, text, score: { credibility: score.credibility, hype: score.hype, scamRisk: score.scamRisk } }, ...(profile.postLog || [])].slice(0, 30);
+    const trustBusinessDelta = Math.max(-2, Math.min(2, score.audienceReaction / 40));
+    setMarketplace((prev) => prev ? {
+      ...prev,
+      socialProfile: { trust: newTrust, postLog: newLog, lastPostAt: now },
+      trustScore: Math.max(0, Math.min(100, prev.trustScore + trustBusinessDelta))
+    } : prev);
+    if (mp.ipoStatus === "public" && mp.stockCompanyId && Math.abs(score.audienceReaction) > 15) {
+      applyImpact(mp.stockCompanyId, score.audienceReaction / 12);
+    }
+    setMarketplaceComposerText("");
+    setMarketplaceLastPostFeedback({ reach, band, scamRisk: Math.round(score.scamRisk) });
+    setTimeout(saveGame, 50);
+    return { ok: true };
+  };
   const takeJob = (companyId, positionId) => {
     const position = POSITIONS.find((p) => p.id === positionId);
     const shiftsAtCompany = jobHistory[companyId] || 0;
@@ -5421,6 +5962,13 @@ function MarketSandbox() {
     setFines([]);
     setTransactions([]);
     setPlayerSocialProfile({ trust: 50, postLog: [], lastPostAt: 0 });
+    setMarketplace(null);
+    setZzoneBiz({ marketShare: ZZONE_MARKET_SHARE_START, commissionRate: MARKETPLACE_FEE, aggressionLevel: 0, reactionsTriggered: [] });
+    setBigSellers([]);
+    setMarketplaceInvestorOffer(null);
+    setMarketplaceComposerText("");
+    setMarketplaceComposerError(null);
+    setMarketplaceLastPostFeedback(null);
     setComposerText("");
     setLastPostFeedback(null);
     setConfirmCloseVenture(false);
@@ -6749,7 +7297,7 @@ function MarketSandbox() {
             const activeAdsCount = resellShops.reduce((s, x) => s + (x.ads || []).filter((a) => Date.now() < a.adUntil).length, 0);
             const best = [...resellShops].sort((a, b) => b.totalRevenue - a.totalRevenue)[0];
             return /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.gold}55`, borderRadius: 16, padding: 16, marginBottom: 22 }, children: [
-              /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.gold, textTransform: "uppercase", letterSpacing: 1, marginBottom: 10 }, children: "\u041A\u0430\u0431\u0438\u043D\u0435\u0442 \u043F\u0440\u043E\u0434\u0430\u0432\u0446\u0430 \xB7 \u043C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441" }),
+              /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.gold, textTransform: "uppercase", letterSpacing: 1, marginBottom: 10 }, children: "Кабинет продавца · ZZONE" }),
               /* @__PURE__ */ jsxs("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }, children: [
                 /* @__PURE__ */ jsxs("div", { children: [
                   /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkDim }, children: "\u041C\u0430\u0433\u0430\u0437\u0438\u043D\u043E\u0432" }),
@@ -6799,13 +7347,17 @@ function MarketSandbox() {
               ] })
             ] });
           })(),
-          (playerVenture || resellShops.length > 0 || factories.length > 0 || warehouses.length > 0) && /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8, overflowX: "auto", paddingBottom: 4, marginBottom: 18 }, children: [
+          (playerVenture || marketplace || resellShops.length > 0 || factories.length > 0 || warehouses.length > 0) && /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8, overflowX: "auto", paddingBottom: 4, marginBottom: 18 }, children: [
             playerVenture && /* @__PURE__ */ jsxs("button", { onClick: () => setSelectedBizId("venture"), style: { flexShrink: 0, display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", borderRadius: 20, border: `1px solid ${selectedBizId === "venture" ? C.gold : C.border}`, background: selectedBizId === "venture" ? `${C.gold}22` : C.surface, color: selectedBizId === "venture" ? C.gold : C.inkDim, fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap" }, children: [
               playerVenture.kind === "crypto" ? "\u{1FA99}" : "\u{1F3E2}",
               " ",
               playerVenture.ticker
             ] }),
-            resellShops.map((s) => /* @__PURE__ */ jsxs("button", { onClick: () => setSelectedBizId(s.id), style: { flexShrink: 0, display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", borderRadius: 20, border: `1px solid ${selectedBizId === s.id ? C.gold : C.border}`, background: selectedBizId === s.id ? `${C.gold}22` : C.surface, color: selectedBizId === s.id ? C.gold : C.inkDim, fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap" }, children: [
+            marketplace && /* @__PURE__ */ jsxs("button", { onClick: () => setSelectedBizId("marketplace"), style: { flexShrink: 0, display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", borderRadius: 20, border: `1px solid ${selectedBizId === "marketplace" ? C.gold : C.border}`, background: selectedBizId === "marketplace" ? `${C.gold}22` : C.surface, color: selectedBizId === "marketplace" ? C.gold : C.inkDim, fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap" }, children: [
+              "\u{1F3EC} ",
+              marketplace.name
+            ] }),
+            resellShops.filter((s) => !s.mergedIntoMarketplace).map((s) => /* @__PURE__ */ jsxs("button", { onClick: () => setSelectedBizId(s.id), style: { flexShrink: 0, display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", borderRadius: 20, border: `1px solid ${selectedBizId === s.id ? C.gold : C.border}`, background: selectedBizId === s.id ? `${C.gold}22` : C.surface, color: selectedBizId === s.id ? C.gold : C.inkDim, fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap" }, children: [
               "\u{1F6CD}\uFE0F ",
               s.name
             ] }, s.id)),
@@ -6814,7 +7366,7 @@ function MarketSandbox() {
               f.name,
               f.pendingOrders.length > 0 ? ` (${f.pendingOrders.length})` : ""
             ] }, f.id)),
-            warehouses.map((w) => /* @__PURE__ */ jsxs("button", { onClick: () => setSelectedBizId(w.id), style: { flexShrink: 0, display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", borderRadius: 20, border: `1px solid ${selectedBizId === w.id ? C.gold : w.wageDue > 0 ? C.red + "55" : C.border}`, background: selectedBizId === w.id ? `${C.gold}22` : C.surface, color: selectedBizId === w.id ? C.gold : C.inkDim, fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap" }, children: [
+            warehouses.filter((w) => !w.assignedToMarketplace).map((w) => /* @__PURE__ */ jsxs("button", { onClick: () => setSelectedBizId(w.id), style: { flexShrink: 0, display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", borderRadius: 20, border: `1px solid ${selectedBizId === w.id ? C.gold : w.wageDue > 0 ? C.red + "55" : C.border}`, background: selectedBizId === w.id ? `${C.gold}22` : C.surface, color: selectedBizId === w.id ? C.gold : C.inkDim, fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap" }, children: [
               "\u{1F4E6} ",
               w.name,
               w.wageDue > 0 ? " \u26A0" : ""
@@ -6824,7 +7376,204 @@ function MarketSandbox() {
               " \u0415\u0449\u0451 \u0431\u0438\u0437\u043D\u0435\u0441"
             ] })
           ] }),
+          marketplace && selectedBizId === "marketplace" && (() => {
+            const est = marketplaceCycleEstimate(marketplace, marketIndex, bigSellers);
+            const stats = marketplace.lastCycleStats;
+            const secLeft = Math.max(0, Math.ceil((marketplace.nextCycleAt - Date.now()) / 1e3));
+            const linkedWarehouses = warehouses.filter((w) => (marketplace.warehouseIds || []).includes(w.id));
+            const capacity = linkedWarehouses.reduce((s, w) => s + (WAREHOUSE_TIERS[w.tierId]?.throughputCapacity || 0), 0);
+            const originShop = resellShops.find((s) => s.id === marketplace.originShopId);
+            return /* @__PURE__ */ jsxs("div", { style: { marginBottom: 22 }, children: [
+              /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.gold}55`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
+                /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }, children: [
+                  /* @__PURE__ */ jsxs("div", { children: [
+                    /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.gold, textTransform: "uppercase", letterSpacing: 1 }, children: "СОБСТВЕННЫЙ МАРКЕТПЛЕЙС" }),
+                    /* @__PURE__ */ jsx("div", { style: { fontSize: 18, fontWeight: 700, marginTop: 4 }, children: marketplace.name }),
+                    /* @__PURE__ */ jsxs("div", { style: { fontSize: 11.5, color: C.inkDim, marginTop: 2 }, children: [
+                      "Цикл через ", secLeft, " с"
+                    ] })
+                  ] }),
+                  /* @__PURE__ */ jsxs("div", { style: { textAlign: "right" }, children: [
+                    /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkDim }, children: "Доверие" }),
+                    /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 16, fontWeight: 700, color: marketplace.trustScore >= 60 ? C.green : marketplace.trustScore >= 35 ? C.gold : C.red }, children: Math.round(marketplace.trustScore) })
+                  ] })
+                ] }),
+                /* @__PURE__ */ jsxs("div", { style: { background: `${C.gold}0F`, border: `1px solid ${C.gold}33`, borderRadius: 10, padding: "10px 12px", marginBottom: 12 }, children: [
+                  /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }, children: [
+                    /* @__PURE__ */ jsx("span", { style: { color: C.inkDim }, children: "GMV этого цикла (оборот продавцов)" }),
+                    /* @__PURE__ */ jsx("span", { style: { fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: C.gold }, children: fmt(stats ? stats.gmv : est.gmv) })
+                  ] }),
+                  /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12 }, children: [
+                    /* @__PURE__ */ jsx("span", { style: { color: C.inkDim }, children: "Выручка (комиссия)" }),
+                    /* @__PURE__ */ jsx("span", { style: { fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: C.green }, children: fmt(stats ? stats.revenue : est.revenue) })
+                  ] })
+                ] }),
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginBottom: 12, lineHeight: 1.5 }, children: "GMV — это деньги продавцов, а не маркетплейса. На счёт компании попадает только комиссия." }),
+                /* @__PURE__ */ jsxs("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }, children: [
+                  /* @__PURE__ */ jsxs("div", { children: [
+                    /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkDim }, children: "Продавцов" }),
+                    /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 15, fontWeight: 700 }, children: marketplace.sellerCount })
+                  ] }),
+                  /* @__PURE__ */ jsxs("div", { children: [
+                    /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkDim }, children: "Покупателей" }),
+                    /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 15, fontWeight: 700 }, children: marketplace.buyerCount.toLocaleString() })
+                  ] }),
+                  /* @__PURE__ */ jsxs("div", { children: [
+                    /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkDim }, children: "Комиссия" }),
+                    /* @__PURE__ */ jsxs("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 15, fontWeight: 700 }, children: [(marketplace.commissionRate * 100).toFixed(1), "%"] })
+                  ] })
+                ] })
+              ] }),
+              /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }, children: "Счёт маркетплейса" }),
+                /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 22, fontWeight: 700, marginBottom: 4, color: marketplace.cash >= 0 ? C.ink : C.red }, children: fmt(marketplace.cash) }),
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginBottom: 12 }, children: "Сюда падает выручка каждый цикл — выведи на ИП, когда удобно" }),
+                /* @__PURE__ */ jsx("button", { onClick: withdrawMarketplacePayout, disabled: marketplace.cash <= 0, style: { width: "100%", padding: "10px 12px", borderRadius: 9, border: "none", fontWeight: 700, fontSize: 12, background: marketplace.cash > 0 ? C.gold : C.surface2, color: marketplace.cash > 0 ? "#161207" : C.inkFaint }, children: "Вывести на ИП" })
+              ] }),
+              /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }, children: "Инфраструктура" }),
+                /* @__PURE__ */ jsxs("div", { style: { fontSize: 12.5, color: C.inkDim, marginBottom: 6 }, children: [
+                  "Склады: ", /* @__PURE__ */ jsx("b", { style: { color: C.ink }, children: linkedWarehouses.map((w) => w.name).join(", ") || "—" })
+                ] }),
+                /* @__PURE__ */ jsxs("div", { style: { fontSize: 12.5, color: C.inkDim, marginBottom: 6 }, children: [
+                  "Суммарная пропускная способность: ", /* @__PURE__ */ jsx("b", { style: { color: C.ink }, children: fmt(capacity) })
+                ] }),
+                /* @__PURE__ */ jsxs("div", { style: { fontSize: 12.5, color: C.inkDim }, children: [
+                  "Стартовая торговая база: ", /* @__PURE__ */ jsx("b", { style: { color: C.ink }, children: originShop ? originShop.name : "—" })
+                ] })
+              ] }),
+              (() => {
+                const othersShare = Math.max(0, 1 - marketplace.marketShare - zzoneBiz.marketShare);
+                const rows = [
+                  { label: "ZZONE", pct: zzoneBiz.marketShare, color: C.red },
+                  { label: marketplace.name, pct: marketplace.marketShare, color: C.gold },
+                  { label: "Остальные", pct: othersShare, color: C.inkFaint }
+                ];
+                return /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
+                  /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }, children: "Доля рынка" }),
+                  rows.map((r) => /* @__PURE__ */ jsxs("div", { style: { marginBottom: 10 }, children: [
+                    /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }, children: [
+                      /* @__PURE__ */ jsx("span", { style: { color: C.inkDim }, children: r.label }),
+                      /* @__PURE__ */ jsxs("span", { style: { fontWeight: 700, color: r.color }, children: [(r.pct * 100).toFixed(1), "%"] })
+                    ] }),
+                    /* @__PURE__ */ jsx("div", { style: { height: 5, borderRadius: 3, background: C.surface2, overflow: "hidden" }, children: /* @__PURE__ */ jsx("div", { style: { height: "100%", width: `${Math.min(100, r.pct * 100)}%`, background: r.color } }) })
+                  ] }, r.label)),
+                  /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint, marginTop: 4 }, children: [
+                    "Комиссия ZZONE сейчас: ", (zzoneBiz.commissionRate * 100).toFixed(1), "% \xB7 чем ближе твоя доля к их порогам, тем агрессивнее их реакция"
+                  ] })
+                ] });
+              })(),
+              /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }, children: "Развитие" }),
+                Object.keys(MARKETPLACE_GROWTH_TRACKS).map((trackId) => {
+                  const track = MARKETPLACE_GROWTH_TRACKS[trackId];
+                  const level = marketplace[trackId + "Level"] || 0;
+                  const cost = marketplaceTrackCost(trackId, marketplace);
+                  const canAfford = ipCash >= cost;
+                  return /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderBottom: `1px solid ${C.border}` }, children: [
+                    /* @__PURE__ */ jsxs("div", { children: [
+                      /* @__PURE__ */ jsxs("div", { style: { fontSize: 12.5, fontWeight: 600 }, children: [track.label, " \xB7 \u0443\u0440. ", level] }),
+                      /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint }, children: track.desc })
+                    ] }),
+                    /* @__PURE__ */ jsx("button", { onClick: () => investMarketplaceTrack(trackId), disabled: !canAfford, style: { padding: "7px 12px", borderRadius: 8, border: "none", fontWeight: 700, fontSize: 11.5, background: canAfford ? C.gold : C.surface2, color: canAfford ? "#161207" : C.inkFaint, flexShrink: 0 }, children: fmt(cost) })
+                  ] }, trackId);
+                })
+              ] }),
+              (() => {
+                const zzoneSellers = bigSellers.filter((s) => s.platform === "zzone");
+                const wonSellers = bigSellers.filter((s) => s.platform === "player");
+                return /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
+                  /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }, children: [
+                    /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, textTransform: "uppercase", letterSpacing: 1 }, children: "Крупные продавцы" }),
+                    /* @__PURE__ */ jsx("button", { onClick: spawnBigSellerCandidates, style: { fontSize: 11, color: C.inkDim, background: "none", border: `1px solid ${C.border}`, borderRadius: 8, padding: "4px 8px" }, children: "Обновить" })
+                  ] }),
+                  wonSellers.length > 0 && /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.green, marginBottom: 8 }, children: `Уже на площадке: ${wonSellers.map((s) => s.name).join(", ")}` }),
+                  zzoneSellers.length === 0 && /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkFaint, textAlign: "center", padding: "10px 0" }, children: "Нет кандидатов — нажми «Обновить»" }),
+                  zzoneSellers.map((seller) => /* @__PURE__ */ jsxs("div", { style: { padding: "10px 0", borderBottom: `1px solid ${C.border}` }, children: [
+                    /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 6 }, children: [
+                      /* @__PURE__ */ jsxs("span", { style: { fontWeight: 600 }, children: [seller.name, " \xB7 \u043D\u0430 ZZONE"] }),
+                      /* @__PURE__ */ jsx("span", { style: { color: C.inkDim }, children: fmt(seller.turnover) })
+                    ] }),
+                    /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint, marginBottom: 8 }, children: ["\u041B\u043E\u044F\u043B\u044C\u043D\u043E\u0441\u0442\u044C \u043A ZZONE: ", seller.loyalty, "%"] }),
+                    /* @__PURE__ */ jsx("div", { style: { display: "flex", flexWrap: "wrap", gap: 6 }, children: BIG_SELLER_OFFERS.map((offer) => /* @__PURE__ */ jsx("button", { onClick: () => negotiateBigSeller(seller.id, offer.id), style: { padding: "6px 10px", borderRadius: 8, border: `1px solid ${C.border}`, background: "transparent", color: C.ink, fontSize: 11 }, children: offer.label }, offer.id)) })
+                  ] }, seller.id))
+                ] });
+              })(),
+              /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
+                /* @__PURE__ */ jsxs("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }, children: ["Сотрудники · зарплата ", fmt(marketplaceStaffWageTotal(marketplace.staff)), "/цикл"] }),
+                Object.keys(MARKETPLACE_DEPARTMENTS).map((deptId) => {
+                  const dept = MARKETPLACE_DEPARTMENTS[deptId];
+                  const level = (marketplace.staff && marketplace.staff[deptId]) || 0;
+                  const cost = marketplaceDeptHireCost(deptId, marketplace);
+                  const canAfford = ipCash >= cost;
+                  return /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderBottom: `1px solid ${C.border}` }, children: [
+                    /* @__PURE__ */ jsxs("div", { children: [
+                      /* @__PURE__ */ jsxs("div", { style: { fontSize: 12.5, fontWeight: 600 }, children: [dept.label, " · ", level, " чел"] }),
+                      /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint }, children: dept.desc })
+                    ] }),
+                    /* @__PURE__ */ jsx("button", { onClick: () => hireMarketplaceStaff(deptId), disabled: !canAfford, style: { padding: "7px 12px", borderRadius: 8, border: "none", fontWeight: 700, fontSize: 11.5, background: canAfford ? C.gold : C.surface2, color: canAfford ? "#161207" : C.inkFaint, flexShrink: 0 }, children: fmt(cost) })
+                  ] }, deptId);
+                })
+              ] }),
+              (marketplace.investorRounds || []).length > 0 && /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
+                /* @__PURE__ */ jsxs("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }, children: ["Инвесторы \xB7 \u043E\u0442\u0434\u0430\u043D\u043E ", marketplace.equityGiven || 0, "%"] }),
+                marketplace.investorRounds.map((r, i) => /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "6px 0" }, children: [
+                  /* @__PURE__ */ jsxs("span", { children: [r.name, " \xB7 ", r.equityPct, "%"] }),
+                  /* @__PURE__ */ jsx("span", { style: { color: r.met ? C.green : r.failed ? C.red : C.inkDim }, children: r.met ? "\u0443\u0441\u043B\u043E\u0432\u0438\u044F \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D\u044B" : r.failed ? "\u043D\u0435\u0434\u043E\u0432\u043E\u043B\u0435\u043D" : "\u043E\u0436\u0438\u0434\u0430\u0435\u0442 \u0440\u043E\u0441\u0442\u0430" })
+                ] }, i))
+              ] }),
+              (() => {
+                const eligible = marketplaceIpoEligible(marketplace);
+                const stockCo = marketplace.stockCompanyId ? companies.find((c) => c.id === marketplace.stockCompanyId) : null;
+                return /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.gold}55`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
+                  /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }, children: "IPO" }),
+                  !marketplace.ipoStatus && /* @__PURE__ */ jsxs(Fragment, { children: [
+                    /* @__PURE__ */ jsxs("div", { style: { fontSize: 12, color: C.inkFaint, marginBottom: 10, lineHeight: 1.5 }, children: [
+                      "\u041D\u0443\u0436\u043D\u043E: ", MARKETPLACE_IPO_MIN_CYCLES, " \u0446\u0438\u043A\u043B\u043E\u0432 \u0440\u0430\u0431\u043E\u0442\u044B (\u0441\u0435\u0439\u0447\u0430\u0441 ", marketplace.cyclesRun, ") \u0438 GMV \u043E\u0442 ", fmt(MARKETPLACE_IPO_MIN_GMV), " \u0437\u0430 \u0432\u0441\u0451 \u0432\u0440\u0435\u043C\u044F (\u0441\u0435\u0439\u0447\u0430\u0441 ", fmt(marketplace.totalGmv), ")"
+                    ] }),
+                    /* @__PURE__ */ jsx("button", { onClick: startMarketplaceIpo, disabled: !eligible, style: actionBtnStyle(eligible), children: eligible ? "\u041D\u0430\u0447\u0430\u0442\u044C IPO" : "\u0423\u0441\u043B\u043E\u0432\u0438\u044F \u0435\u0449\u0451 \u043D\u0435 \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D\u044B" })
+                  ] }),
+                  marketplace.ipoStatus === "audit" && /* @__PURE__ */ jsx("div", { style: { fontSize: 13, color: C.inkDim, textAlign: "center", padding: "10px 0" }, children: "\u0418\u0434\u0451\u0442 \u0430\u0443\u0434\u0438\u0442\u2026" }),
+                  marketplace.ipoStatus === "listing" && /* @__PURE__ */ jsx("div", { style: { fontSize: 13, color: C.inkDim, textAlign: "center", padding: "10px 0" }, children: "\u0413\u043E\u0442\u043E\u0432\u0438\u0442\u0441\u044F \u0440\u0430\u0437\u043C\u0435\u0449\u0435\u043D\u0438\u0435 \u0430\u043A\u0446\u0438\u0439\u2026" }),
+                  marketplace.ipoStatus === "public" && stockCo && /* @__PURE__ */ jsxs("button", { onClick: () => setViewingCompanyId(stockCo.id), style: { width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", background: "none", border: "none", padding: 0 }, children: [
+                    /* @__PURE__ */ jsxs("span", { style: { fontSize: 13, color: C.ink }, children: ["\u0410\u043A\u0446\u0438\u0438 \xB7 ", marketplace.stockTicker] }),
+                    /* @__PURE__ */ jsx("span", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 15, fontWeight: 700, color: C.gold }, children: fmt(stockCo.price) })
+                  ] })
+                ] });
+              })(),
+              (() => {
+                const charsLeft = SOCIAL_POST_MAX_CHARS - marketplaceComposerText.length;
+                const canPublish = marketplaceComposerText.trim().length >= SOCIAL_POST_MIN_CHARS && charsLeft >= 0;
+                const bandColor = marketplaceLastPostFeedback ? (marketplaceLastPostFeedback.band.color === "green" ? C.green : marketplaceLastPostFeedback.band.color === "red" ? C.red : C.gold) : C.gold;
+                return /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
+                  /* @__PURE__ */ jsx("div", { style: { fontSize: 13, fontWeight: 700, marginBottom: 8 }, children: "\u0417\u0430\u044F\u0432\u043B\u0435\u043D\u0438\u0435 \u043E\u0442 \u0438\u043C\u0435\u043D\u0438 \u043A\u043E\u043C\u043F\u0430\u043D\u0438\u0438" }),
+                  /* @__PURE__ */ jsx("textarea", { value: marketplaceComposerText, onChange: (e) => {
+                    setMarketplaceComposerText(e.target.value.slice(0, SOCIAL_POST_MAX_CHARS));
+                    setMarketplaceComposerError(null);
+                  }, placeholder: "\u041D\u0430\u043F\u0440\u0438\u043C\u0435\u0440: \u041C\u044B \u043E\u0442\u043A\u0440\u044B\u0432\u0430\u0435\u043C \u043D\u043E\u0432\u044B\u0439 \u043B\u043E\u0433\u0438\u0441\u0442\u0438\u0447\u0435\u0441\u043A\u0438\u0439 \u0446\u0435\u043D\u0442\u0440.", rows: 3, style: { width: "100%", background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, padding: 10, color: C.ink, fontSize: 13, resize: "none", fontFamily: "inherit" } }),
+                  /* @__PURE__ */ jsx("div", { style: { textAlign: "right", fontSize: 10.5, color: charsLeft < 20 ? C.gold : C.inkFaint, marginTop: 4, marginBottom: 10 }, children: `${charsLeft}` }),
+                  marketplaceComposerError && /* @__PURE__ */ jsx("div", { style: { fontSize: 11.5, color: C.red, marginBottom: 8 }, children: marketplaceComposerError }),
+                  /* @__PURE__ */ jsx("button", { onClick: publishMarketplacePost, disabled: !canPublish, style: actionBtnStyle(canPublish), children: "\u041E\u043F\u0443\u0431\u043B\u0438\u043A\u043E\u0432\u0430\u0442\u044C" }),
+                  marketplaceLastPostFeedback && /* @__PURE__ */ jsxs("div", { style: { marginTop: 12, background: C.surface2, borderRadius: 10, padding: 12 }, children: [
+                    /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 6 }, children: [
+                      /* @__PURE__ */ jsx("span", { style: { color: C.inkDim }, children: "\u041E\u0445\u0432\u0430\u0442" }),
+                      /* @__PURE__ */ jsx("span", { style: { fontWeight: 700 }, children: marketplaceLastPostFeedback.reach.toLocaleString() })
+                    ] }),
+                    /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12 }, children: [
+                      /* @__PURE__ */ jsx("span", { style: { color: C.inkDim }, children: "\u0420\u0435\u0430\u043A\u0446\u0438\u044F \u0430\u0443\u0434\u0438\u0442\u043E\u0440\u0438\u0438" }),
+                      /* @__PURE__ */ jsx("span", { style: { fontWeight: 700, color: bandColor }, children: marketplaceLastPostFeedback.band.label })
+                    ] })
+                  ] })
+                ] });
+              })(),
+              /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 11.5, color: C.inkDim, padding: "0 2px" }, children: [
+                /* @__PURE__ */ jsxs("span", { children: ["GMV за всё время: ", /* @__PURE__ */ jsx("b", { style: { color: C.ink }, children: fmt(marketplace.totalGmv) })] }),
+                /* @__PURE__ */ jsxs("span", { children: ["Выручка за всё время: ", /* @__PURE__ */ jsx("b", { style: { color: C.ink }, children: fmt(marketplace.totalRevenue) })] })
+              ] })
+            ] });
+          })(),
           resellShops.map((shop) => {
+            if (shop.mergedIntoMarketplace) return null;
             if (shop.id !== selectedBizId) return null;
             return /* @__PURE__ */ jsxs("div", { style: { marginBottom: 22, paddingTop: 14, borderTop: `1px solid ${C.border}` }, children: [
               /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.gold}55`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
@@ -6928,7 +7677,7 @@ function MarketSandbox() {
                       fmt(fairLow),
                       "\u2013",
                       fmt(fairHigh),
-                      " \xB7 \u043A\u043E\u043C\u0438\u0441\u0441\u0438\u044F \u043F\u043B\u043E\u0449\u0430\u0434\u043A\u0438 ",
+                      " \xB7 \u043A\u043E\u043C\u0438\u0441\u0441\u0438\u044F ZZONE ",
                       Math.round(MARKETPLACE_FEE * 100),
                       "%"
                     ] }),
@@ -7609,6 +8358,7 @@ function MarketSandbox() {
             ] }, f.id);
           }),
           warehouses.map((w) => {
+            if (w.assignedToMarketplace) return null;
             if (w.id !== selectedBizId) return null;
             const tier = WAREHOUSE_TIERS[w.tierId];
             const stats = w.lastCycleStats;
@@ -7788,6 +8538,13 @@ function MarketSandbox() {
               /* @__PURE__ */ jsx("div", { style: { fontWeight: 700, fontSize: 15 }, children: "\u041F\u0430\u0440\u0442\u043D\u0451\u0440\u0441\u043A\u0438\u0439 \u0441\u043A\u043B\u0430\u0434 ZZONE" }),
               /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginTop: 4 }, children: "\u041E\u0431\u0440\u0430\u0431\u043E\u0442\u043A\u0430 \u0442\u043E\u0432\u0430\u0440\u043E\u0432 \u043C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441\u0430 \u2014 \u043F\u0440\u043E\u0446\u0435\u043D\u0442 \u043E\u0442 \u043E\u0431\u043E\u0440\u043E\u0442\u0430, \u0448\u0442\u0430\u0442, \u0442\u0440\u0430\u043D\u0441\u043F\u043E\u0440\u0442" })
             ] }),
+            !marketplace && /* @__PURE__ */ jsxs("button", { onClick: () => setBizPath("marketplace-setup"), style: { ...choiceCardStyle(false), width: "100%", marginBottom: 10, display: "block", borderColor: C.gold + "66" }, children: [
+              /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "center", gap: 8 }, children: [
+                /* @__PURE__ */ jsx("div", { style: { fontWeight: 700, fontSize: 15 }, children: "Собственный маркетплейс" }),
+                /* @__PURE__ */ jsx("span", { style: { fontSize: 10, color: C.gold, border: `1px solid ${C.gold}55`, borderRadius: 6, padding: "2px 6px", fontWeight: 700 }, children: "ЦЕЛЬ ИГРЫ" })
+              ] }),
+              /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginTop: 4 }, children: "Объедини склады, магазин и ООО в собственную площадку — конкурента ZZONE" })
+            ] }),
             [
               { name: "\u041F\u0435\u0440\u0435\u043A\u0443\u043F \u0430\u0432\u0442\u043E", desc: "\u0421\u043A\u0443\u043F\u043A\u0430 \u0438 \u043F\u0435\u0440\u0435\u043F\u0440\u043E\u0434\u0430\u0436\u0430 \u043C\u0430\u0448\u0438\u043D" },
               { name: "\u041F\u0440\u0438\u0432\u043E\u0437 \u0430\u0432\u0442\u043E \u0438\u0437-\u0437\u0430 \u0433\u0440\u0430\u043D\u0438\u0446\u044B", desc: "\u0418\u043C\u043F\u043E\u0440\u0442 \u0438 \u0440\u0430\u0441\u0442\u0430\u043C\u043E\u0436\u043A\u0430 \u043C\u0430\u0448\u0438\u043D" }
@@ -7798,11 +8555,31 @@ function MarketSandbox() {
               ] }),
               /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, border: `1px solid ${C.border}`, borderRadius: 6, padding: "3px 6px" }, children: "\u0441\u043A\u043E\u0440\u043E" })
             ] }) }, x.name))
-          ] }) : bizPath === "resell-setup" ? /* @__PURE__ */ jsxs("div", { children: [
+          ] }) : bizPath === "marketplace-setup" ? (() => {
+            const { checks, eligible, totalCost } = marketplaceEligibility();
+            return /* @__PURE__ */ jsxs("div", { children: [
+              /* @__PURE__ */ jsx("button", { onClick: () => setBizPath("real"), style: { background: "none", border: "none", color: C.inkDim, fontSize: 12.5, marginBottom: 12, padding: 0 }, children: "\u2190 Назад" }),
+              /* @__PURE__ */ jsxs("div", { style: { textAlign: "center", padding: "8px 0 16px" }, children: [
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 18, fontWeight: 700 }, children: "Собственный маркетплейс" }),
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 13, color: C.inkDim, marginTop: 4 }, children: "Переход на новый уровень экономики — дорого и сложно" })
+              ] }),
+              /* @__PURE__ */ jsx("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: checks.map((c) => /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: `1px solid ${C.border}` }, children: [
+                /* @__PURE__ */ jsx("div", { style: { width: 20, height: 20, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", background: c.met ? `${C.green}22` : C.surface2, color: c.met ? C.green : C.inkFaint, fontSize: 12, flexShrink: 0 }, children: c.met ? "\u2713" : "\u25CB" }),
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 13, color: c.met ? C.ink : C.inkDim }, children: c.label })
+              ] }, c.id)) }),
+              /* @__PURE__ */ jsxs("div", { style: { fontSize: 12, color: C.inkFaint, lineHeight: 1.5, marginBottom: 14, textAlign: "center" }, children: [
+                "Разовые расходы: ", fmt(totalCost), " (подготовка к IPO + разработка платформы). Склады и магазин станут инфраструктурой маркетплейса, их история сохранится."
+              ] }),
+              /* @__PURE__ */ jsx("button", { onClick: () => {
+                createMarketplace();
+                setBizPath(null);
+              }, disabled: !eligible, style: actionBtnStyle(eligible), children: eligible ? "Создать маркетплейс" : "Условия ещё не выполнены" })
+            ] });
+          })() : bizPath === "resell-setup" ? /* @__PURE__ */ jsxs("div", { children: [
             /* @__PURE__ */ jsx("button", { onClick: () => setBizPath("real"), style: { background: "none", border: "none", color: C.inkDim, fontSize: 12.5, marginBottom: 12, padding: 0 }, children: "\u2190 \u041D\u0430\u0437\u0430\u0434" }),
             /* @__PURE__ */ jsxs("div", { style: { textAlign: "center", padding: "8px 0 16px" }, children: [
-              /* @__PURE__ */ jsx("div", { style: { fontSize: 18, fontWeight: 700 }, children: "\u041D\u043E\u0432\u044B\u0439 \u043C\u0430\u0433\u0430\u0437\u0438\u043D" }),
-              /* @__PURE__ */ jsx("div", { style: { fontSize: 13, color: C.inkDim, marginTop: 4 }, children: "\u0420\u0430\u0437\u043E\u0432\u044B\u0435 \u0440\u0430\u0441\u0445\u043E\u0434\u044B \u043D\u0430 \u0437\u0430\u043F\u0443\u0441\u043A" })
+              /* @__PURE__ */ jsx("div", { style: { fontSize: 18, fontWeight: 700 }, children: "Магазин на ZZONE" }),
+              /* @__PURE__ */ jsx("div", { style: { fontSize: 13, color: C.inkDim, marginTop: 4 }, children: "Витрина продавца на партнёрском маркетплейсе · разовые расходы на запуск" })
             ] }),
             /* @__PURE__ */ jsx("label", { style: { fontSize: 11, color: C.inkDim, textTransform: "uppercase", letterSpacing: 1 }, children: "\u041D\u0430\u0437\u0432\u0430\u043D\u0438\u0435 \u043C\u0430\u0433\u0430\u0437\u0438\u043D\u0430" }),
             /* @__PURE__ */ jsx("input", { value: form.name, onChange: (e) => setForm((f) => ({ ...f, name: e.target.value })), placeholder: "\u041D\u0430\u043F\u0440. \u0413\u0430\u0434\u0436\u0435\u0442\u041C\u0430\u0440\u043A\u0435\u0442", style: inputStyle }),
@@ -9383,6 +10160,39 @@ function MarketSandbox() {
           tradeSide === "sell" ? ` \xB7 \u0412 \u043F\u043E\u0440\u0442\u0444\u0435\u043B\u0435: ${selectedHeld.toLocaleString()} \u0448\u0442` : ""
         ] })
       ] }) }),
+      marketplaceInvestorOffer && marketplace && /* @__PURE__ */ jsx("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 60 }, children: /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 16, padding: 20, width: "85%", maxWidth: 320 }, children: [
+        /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }, children: [
+          /* @__PURE__ */ jsx("div", { style: { fontSize: 26 }, children: marketplaceInvestorOffer.icon }),
+          /* @__PURE__ */ jsx("div", { style: { fontWeight: 700, fontSize: 16 }, children: marketplaceInvestorOffer.name })
+        ] }),
+        /* @__PURE__ */ jsx("div", { style: { fontSize: 13, color: C.inkDim, marginBottom: 6 }, children: marketplaceInvestorOffer.desc }),
+        /* @__PURE__ */ jsxs("div", { style: { fontSize: 14, marginBottom: 16 }, children: [
+          /* @__PURE__ */ jsx("b", { children: fmt(marketplaceInvestorOffer.checkAmount) }),
+          ` за ${marketplaceInvestorOffer.equityPct}% компании \xB7 условие проверится через ${marketplaceInvestorOffer.conditionCycles} циклов`
+        ] }),
+        /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8 }, children: [
+          /* @__PURE__ */ jsx("button", { onClick: declineMarketplaceInvestor, style: { flex: 1, padding: 12, borderRadius: 10, border: `1px solid ${C.border}`, background: "transparent", color: C.ink }, children: "Отказаться" }),
+          /* @__PURE__ */ jsx("button", { onClick: acceptMarketplaceInvestor, style: { flex: 1, padding: 12, borderRadius: 10, border: "none", background: C.gold, color: "#161207", fontWeight: 700 }, children: "Принять" })
+        ] })
+      ] }) }),
+      marketplace && marketplace.pendingCrisis && (() => {
+        const crisis = MARKETPLACE_CRISES.find((c) => c.id === marketplace.pendingCrisis.crisisId);
+        if (!crisis) return null;
+        return /* @__PURE__ */ jsx("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 60 }, children: /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.red}55`, borderRadius: 16, padding: 20, width: "85%", maxWidth: 340 }, children: [
+          /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.red, textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }, children: "ЧП на маркетплейсе" }),
+          /* @__PURE__ */ jsx("div", { style: { fontSize: 14, marginBottom: 14, lineHeight: 1.4 }, children: crisis.text }),
+          /* @__PURE__ */ jsx("div", { style: { display: "flex", flexDirection: "column", gap: 8 }, children: crisis.options.map((option) => {
+            const canAfford = ipCash >= option.cost;
+            return /* @__PURE__ */ jsxs("button", { onClick: () => resolveMarketplaceCrisis(option.id), disabled: !canAfford, style: { textAlign: "left", padding: "10px 12px", borderRadius: 10, border: `1px solid ${C.border}`, background: canAfford ? C.surface2 : "transparent", opacity: canAfford ? 1 : 0.5 }, children: [
+              /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12.5, fontWeight: 600, marginBottom: 3 }, children: [
+                /* @__PURE__ */ jsx("span", { children: option.label }),
+                /* @__PURE__ */ jsx("span", { style: { color: C.gold }, children: fmt(option.cost) })
+              ] }),
+              /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkFaint }, children: option.desc })
+            ] }, option.id);
+          }) })
+        ] }) });
+      })(),
       confirmCloseVenture && playerVenture && /* @__PURE__ */ jsx("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 60 }, children: /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 16, padding: 20, width: "85%", maxWidth: 320 }, children: [
         /* @__PURE__ */ jsxs("div", { style: { fontWeight: 700, fontSize: 16, marginBottom: 8 }, children: [
           "\u0417\u0430\u043A\u0440\u044B\u0442\u044C ",
