@@ -1,4 +1,4 @@
-// Market Sandbox — V2.7.1 (проверка целостности: rugged-гейт для резолва рекламной кампании — если монету зарагпуллили посреди активной кампании, резолв больше не оживляет Hype/Trust мёртвой монеты)
+// Market Sandbox — V2.9 (реклама маркетплейса переделана по образцу крипто-кампаний: вместо фиксированных тарифов ×1.5/×2.2/×3.2 — свободный бюджет + выбор длительности, коэффициент к спросу растёт линейно от бюджета без потолка (×100 и выше реально достижим), общий множитель от нескольких кампаний тоже больше не капается на ×6)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -646,12 +646,12 @@ function poolLiquidityFactor(poolUsd, marketCap) {
   return clamp01(Math.sqrt(refLiquidity / Math.max(1, poolUsd || 1)), 0.5, 3);
 }
 var COIN_STAGES = [
-  { id: "created", label: "Created" },
-  { id: "launched", label: "Launched" },
-  { id: "early", label: "Early" },
-  { id: "growing", label: "Growing" },
-  { id: "established", label: "Established" },
-  { id: "major", label: "Major" }
+  { id: "created", label: "\u0421\u043E\u0437\u0434\u0430\u043D\u0430" },
+  { id: "launched", label: "\u0417\u0430\u043F\u0443\u0449\u0435\u043D\u0430" },
+  { id: "early", label: "\u0420\u0430\u043D\u043D\u044F\u044F \u0441\u0442\u0430\u0434\u0438\u044F" },
+  { id: "growing", label: "\u0420\u0430\u0441\u0442\u0451\u0442" },
+  { id: "established", label: "\u0423\u0441\u0442\u043E\u044F\u0432\u0448\u0430\u044F\u0441\u044F" },
+  { id: "major", label: "\u041A\u0440\u0443\u043F\u043D\u044B\u0439 \u0430\u043A\u0442\u0438\u0432" }
 ];
 function getCoinStage(v) {
   if (!v || v.kind !== "crypto") return COIN_STAGES[0];
@@ -1213,7 +1213,11 @@ function computeAdBoost(activeAds) {
   sorted.forEach((a, i) => {
     boost += (a.boostMult - 1) * Math.pow(0.6, i);
   });
-  return Math.min(6, boost);
+  return boost;
+}
+var AD_BUDGET_SCALE = 300;
+function computeAdBudgetMult(budget) {
+  return 1 + Math.max(0, budget) / AD_BUDGET_SCALE;
 }
 var INVESTOR_PERSONAS = [
   { id: "retail", name: "\u0420\u043E\u0437\u043D\u0438\u0447\u043D\u044B\u0439 \u0438\u043D\u0432\u0435\u0441\u0442\u043E\u0440", icon: "\u{1F9CD}", likes: "growth", wants: "\u043F\u0440\u043E\u0441\u0442\u0443\u044E \u0438\u0441\u0442\u043E\u0440\u0438\u044E \u0438 \u0440\u043E\u0441\u0442 \u0430\u0443\u0434\u0438\u0442\u043E\u0440\u0438\u0438", metric: "reputation", dilutionRange: [0.02, 0.05], hypeGain: 4, trustGain: 1, color: "#8FD19E" },
@@ -5187,22 +5191,15 @@ function MarketSandbox() {
     setListedPriceInputs((f) => ({ ...f, [key]: "" }));
     setTimeout(saveGame, 50);
   };
-  const runAd = (shopId, tierId) => {
-    const tier = AD_TIERS.find((t) => t.id === tierId);
-    if (!tier || ipCash < tier.cost) return;
-    setIpCash((c) => c - tier.cost);
-    setResellShops((prev) => prev.map((s) => s.id === shopId ? { ...s, ads: [...s.ads || [], { id: makeId("ad"), tierId, boostMult: tier.boostMult, adUntil: Date.now() + tier.durationMin * 6e4 }] } : s));
-    setTimeout(saveGame, 50);
-  };
-  const runAdMultiple = (shopId, tierId, count) => {
-    const tier = AD_TIERS.find((t) => t.id === tierId);
-    if (!tier || count <= 0) return;
-    const totalCost = tier.cost * count;
-    if (totalCost > ipCash) return;
-    setIpCash((c) => c - totalCost);
-    const now = Date.now();
-    const newAds = Array.from({ length: count }, () => ({ id: makeId("ad"), tierId, boostMult: tier.boostMult, adUntil: now + tier.durationMin * 6e4 }));
-    setResellShops((prev) => prev.map((s) => s.id === shopId ? { ...s, ads: [...s.ads || [], ...newAds] } : s));
+  const [shopAdBudget, setShopAdBudget] = useState("300");
+  const [shopAdDuration, setShopAdDuration] = useState("mid");
+  const runAdCampaign = (shopId, budgetRaw, durationId) => {
+    const budget = Math.max(100, Math.round(Number(budgetRaw) || 0));
+    if (ipCash < budget) return;
+    const duration = AD_DURATIONS.find((d) => d.id === durationId) || AD_DURATIONS[1];
+    setIpCash((c) => c - budget);
+    const boostMult = computeAdBudgetMult(budget);
+    setResellShops((prev) => prev.map((s) => s.id === shopId ? { ...s, ads: [...s.ads || [], { id: makeId("ad"), budget, boostMult, adUntil: Date.now() + duration.ms }] } : s));
     setTimeout(saveGame, 50);
   };
   const liquidateShopStock = (shopId) => {
@@ -8332,7 +8329,7 @@ function MarketSandbox() {
                 const circulating = Math.round((founderHolding?.qty || 0) + absorbed);
                 const holdersEst = Math.max(1, Math.round(1 + (playerVenture.investorRounds || 0) * 1.5 + absorbed / Math.max(1, playerVenture.supply * 5e-4)));
                 return /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkFaint, marginTop: 4 }, children: [
-                  "Circulating ",
+                  "\u0412 \u043E\u0431\u0440\u0430\u0449\u0435\u043D\u0438\u0438 ",
                   circulating.toLocaleString(),
                   " / ",
                   playerVenture.supply.toLocaleString(),
@@ -8341,19 +8338,19 @@ function MarketSandbox() {
                 ] });
               })(),
               typeof playerVenture.publicAllocation === "number" && /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkFaint, marginTop: 4 }, children: [
-                "Public ",
+                "\u041E\u0442\u043A\u0440\u044B\u0442\u044B\u0439 (\u043D\u0435\u0440\u0430\u0441\u043F\u0440\u0435\u0434\u0435\u043B\u0451\u043D\u043D\u043E) ",
                 Math.round(playerVenture.publicAllocation).toLocaleString(),
-                " \xB7 Marketing ",
+                " \xB7 \u0420\u0435\u043A\u043B\u0430\u043C\u0430 (\u0440\u0435\u0437\u0435\u0440\u0432) ",
                 Math.round(playerVenture.marketingAllocation || 0).toLocaleString(),
-                " \xB7 Reserve ",
+                " \xB7 \u0420\u0435\u0437\u0435\u0440\u0432 ",
                 Math.round(playerVenture.reserveAllocation || 0).toLocaleString()
               ] }),
               playerVenture.reserveAllocation > 0 && /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 6, marginTop: 6 }, children: [
                 /* @__PURE__ */ jsx("input", { type: "number", value: liquidityTopUp, onChange: (e) => setLiquidityTopUp(e.target.value), style: { ...inputStyle, flex: 1, padding: "6px 8px", fontSize: 12 } }),
-                /* @__PURE__ */ jsx("button", { onClick: addLiquidityFromReserve, disabled: resolvedBal < (Number(liquidityTopUp) || 0), style: { padding: "6px 10px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.surface2, color: C.ink, fontSize: 11.5, fontWeight: 600, whiteSpace: "nowrap" }, children: "\u041F\u043E\u043F\u043E\u043B\u043D\u0438\u0442\u044C \u043F\u0443\u043B \u0438\u0437 Reserve" })
+                /* @__PURE__ */ jsx("button", { onClick: addLiquidityFromReserve, disabled: resolvedBal < (Number(liquidityTopUp) || 0), style: { padding: "6px 10px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.surface2, color: C.ink, fontSize: 11.5, fontWeight: 600, whiteSpace: "nowrap" }, children: "\u041F\u043E\u043F\u043E\u043B\u043D\u0438\u0442\u044C \u043F\u0443\u043B \u0438\u0437 \u0440\u0435\u0437\u0435\u0440\u0432\u0430" })
               ] }),
               (playerVenture.vestingLockedTotal || 0) > (playerVenture.vestingReleased || 0) && /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.gold, marginTop: 4 }, children: [
-                "Vesting: \u0437\u0430\u0431\u043B\u043E\u043A\u0438\u0440\u043E\u0432\u0430\u043D\u043E ",
+                "\u0412\u0435\u0441\u0442\u0438\u043D\u0433: \u0437\u0430\u0431\u043B\u043E\u043A\u0438\u0440\u043E\u0432\u0430\u043D\u043E ",
                 Math.round(playerVenture.vestingLockedTotal - (playerVenture.vestingReleased || 0)).toLocaleString(),
                 " ",
                 playerVenture.ticker,
@@ -8362,14 +8359,14 @@ function MarketSandbox() {
               typeof playerVenture.coinHype === "number" && /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 10, marginTop: 8 }, children: [
                 /* @__PURE__ */ jsxs("div", { style: { flex: 1 }, children: [
                   /* @__PURE__ */ jsxs("div", { style: { fontSize: 10, color: C.inkFaint, display: "flex", justifyContent: "space-between" }, children: [
-                    /* @__PURE__ */ jsx("span", { children: "Hype" }),
+                    /* @__PURE__ */ jsx("span", { children: "\u0425\u0430\u0439\u043F" }),
                     /* @__PURE__ */ jsx("span", { children: Math.round(playerVenture.coinHype) })
                   ] }),
                   /* @__PURE__ */ jsx("div", { style: { height: 5, borderRadius: 3, background: C.surface2, marginTop: 2 }, children: /* @__PURE__ */ jsx("div", { style: { height: "100%", borderRadius: 3, width: `${Math.round(playerVenture.coinHype)}%`, background: C.red } }) })
                 ] }),
                 /* @__PURE__ */ jsxs("div", { style: { flex: 1 }, children: [
                   /* @__PURE__ */ jsxs("div", { style: { fontSize: 10, color: C.inkFaint, display: "flex", justifyContent: "space-between" }, children: [
-                    /* @__PURE__ */ jsx("span", { children: "Trust" }),
+                    /* @__PURE__ */ jsx("span", { children: "\u0414\u043E\u0432\u0435\u0440\u0438\u0435" }),
                     /* @__PURE__ */ jsx("span", { children: Math.round(playerVenture.coinTrust) })
                   ] }),
                   /* @__PURE__ */ jsx("div", { style: { height: 5, borderRadius: 3, background: C.surface2, marginTop: 2 }, children: /* @__PURE__ */ jsx("div", { style: { height: "100%", borderRadius: 3, width: `${Math.round(playerVenture.coinTrust)}%`, background: "#5AA9E6" } }) })
@@ -8876,12 +8873,15 @@ function MarketSandbox() {
                       " \xB7 \u043E\u0431\u0449\u0438\u0439 \u043C\u043D\u043E\u0436\u0438\u0442\u0435\u043B\u044C \xD7",
                       combinedMult.toFixed(1)
                     ] }),
-                    /* @__PURE__ */ jsx("div", { style: { height: 5, borderRadius: 3, background: C.surface2, overflow: "hidden", marginBottom: 10 }, children: /* @__PURE__ */ jsx("div", { style: { height: "100%", width: `${Math.min(100, combinedMult / 6 * 100)}%`, background: C.green } }) }),
+                    /* @__PURE__ */ jsx("div", { style: { height: 5, borderRadius: 3, background: C.surface2, overflow: "hidden", marginBottom: 10 }, children: /* @__PURE__ */ jsx("div", { style: { height: "100%", width: `${Math.min(100, combinedMult / Math.max(combinedMult, 6) * 100)}%`, background: C.green } }) }),
                     activeAds.map((a) => {
-                      const tier = AD_TIERS.find((t) => t.id === a.tierId);
                       const minLeft = Math.ceil((a.adUntil - Date.now()) / 6e4);
                       return /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 11.5, color: C.inkDim, padding: "4px 0" }, children: [
-                        /* @__PURE__ */ jsx("span", { children: tier?.name }),
+                        /* @__PURE__ */ jsxs("span", { children: [
+                          "\u041A\u0430\u043C\u043F\u0430\u043D\u0438\u044F \xD7",
+                          a.boostMult.toFixed(1),
+                          typeof a.budget === "number" ? ` \xB7 ${fmt(a.budget)}` : ""
+                        ] }),
                         /* @__PURE__ */ jsxs("span", { children: [
                           "\u0435\u0449\u0451 ",
                           minLeft,
@@ -8891,24 +8891,23 @@ function MarketSandbox() {
                     })
                   ] }) : null;
                 })(),
-                /* @__PURE__ */ jsx("div", { style: { display: "flex", flexDirection: "column", gap: 8 }, children: AD_TIERS.map((t) => /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "center", gap: 6 }, children: [
-                  /* @__PURE__ */ jsxs("button", { onClick: () => runAd(shop.id, t.id), disabled: ipCash < t.cost, style: { flex: 1, display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", borderRadius: 10, border: `1px solid ${C.border}`, background: C.surface2, color: C.ink, textAlign: "left" }, children: [
-                    /* @__PURE__ */ jsxs("span", { style: { fontSize: 12.5, fontWeight: 600 }, children: [
-                      t.name,
-                      /* @__PURE__ */ jsx("br", {}),
-                      /* @__PURE__ */ jsxs("span", { style: { fontSize: 11, color: C.inkDim, fontWeight: 400 }, children: [
-                        "\xD7",
-                        t.boostMult,
-                        " \u043A \u0441\u043F\u0440\u043E\u0441\u0443 \u043D\u0430 ",
-                        t.durationMin,
-                        " \u043C\u0438\u043D"
-                      ] })
+                (() => {
+                  const budgetNum = Math.max(0, Number(shopAdBudget) || 0);
+                  const previewMult = computeAdBudgetMult(budgetNum);
+                  return /* @__PURE__ */ jsxs("div", { children: [
+                    /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 6, marginBottom: 8 }, children: [
+                      /* @__PURE__ */ jsx("input", { type: "number", value: shopAdBudget, onChange: (e) => setShopAdBudget(e.target.value), style: { ...inputStyle, flex: 1 } }),
+                      /* @__PURE__ */ jsx("select", { value: shopAdDuration, onChange: (e) => setShopAdDuration(e.target.value), style: { background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, color: C.ink, fontSize: 13, padding: "0 10px" }, children: AD_DURATIONS.map((d) => /* @__PURE__ */ jsx("option", { value: d.id, children: d.label }, d.id)) })
                     ] }),
-                    /* @__PURE__ */ jsx("span", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 12.5, flexShrink: 0 }, children: fmt(t.cost) })
-                  ] }),
-                  /* @__PURE__ */ jsx("button", { onClick: () => runAdMultiple(shop.id, t.id, 3), disabled: ipCash < t.cost * 3, style: { padding: "10px 10px", borderRadius: 10, border: `1px solid ${C.border}`, background: C.surface2, color: C.gold, fontWeight: 700, fontSize: 12 }, children: "\xD73" })
-                ] }, t.id)) }),
-                /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginTop: 8 }, children: "\u041A\u0430\u043C\u043F\u0430\u043D\u0438\u0438 \u0441\u043A\u043B\u0430\u0434\u044B\u0432\u0430\u044E\u0442\u0441\u044F \u2014 \u043C\u043E\u0436\u043D\u043E \u0437\u0430\u043F\u0443\u0441\u043A\u0430\u0442\u044C \u043D\u0435\u0441\u043A\u043E\u043B\u044C\u043A\u043E \u0441\u0440\u0430\u0437\u0443, \u044D\u0444\u0444\u0435\u043A\u0442 \u043F\u0435\u0440\u0435\u043C\u043D\u043E\u0436\u0430\u0435\u0442\u0441\u044F (\u043C\u0430\u043A\u0441\u0438\u043C\u0443\u043C \xD76)." })
+                    /* @__PURE__ */ jsxs("div", { style: { fontSize: 11.5, color: C.inkDim, marginBottom: 8 }, children: [
+                      "\u041A\u043E\u044D\u0444\u0444\u0438\u0446\u0438\u0435\u043D\u0442 \u043A \u0441\u043F\u0440\u043E\u0441\u0443: \xD7",
+                      previewMult.toFixed(1),
+                      " \u2014 \u0447\u0435\u043C \u0431\u043E\u043B\u044C\u0448\u0435 \u0431\u044E\u0434\u0436\u0435\u0442, \u0442\u0435\u043C \u0432\u044B\u0448\u0435 \u043C\u043D\u043E\u0436\u0438\u0442\u0435\u043B\u044C, \u0431\u0435\u0437 \u043F\u043E\u0442\u043E\u043B\u043A\u0430"
+                    ] }),
+                    /* @__PURE__ */ jsxs("button", { onClick: () => runAdCampaign(shop.id, shopAdBudget, shopAdDuration), disabled: ipCash < budgetNum || budgetNum < 100, style: { width: "100%", padding: 10, borderRadius: 10, border: "none", fontWeight: 700, fontSize: 13, background: ipCash >= budgetNum && budgetNum >= 100 ? C.gold : C.surface2, color: ipCash >= budgetNum && budgetNum >= 100 ? "#161207" : C.inkDim }, children: "\u0417\u0430\u043F\u0443\u0441\u0442\u0438\u0442\u044C \u043A\u0430\u043C\u043F\u0430\u043D\u0438\u044E" })
+                  ] });
+                })(),
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginTop: 8 }, children: "\u041A\u0430\u043C\u043F\u0430\u043D\u0438\u0438 \u0441\u043A\u043B\u0430\u0434\u044B\u0432\u0430\u044E\u0442\u0441\u044F \u2014 \u043C\u043E\u0436\u043D\u043E \u0437\u0430\u043F\u0443\u0441\u043A\u0430\u0442\u044C \u043D\u0435\u0441\u043A\u043E\u043B\u044C\u043A\u043E \u0441\u0440\u0430\u0437\u0443, \u044D\u0444\u0444\u0435\u043A\u0442 \u043F\u0435\u0440\u0435\u043C\u043D\u043E\u0436\u0430\u0435\u0442\u0441\u044F \u0431\u0435\u0437 \u043F\u043E\u0442\u043E\u043B\u043A\u0430 \u2014 \u0431\u043E\u043B\u044C\u0448\u043E\u0439 \u0431\u044E\u0434\u0436\u0435\u0442 \u043C\u043E\u0436\u0435\u0442 \u0434\u0430\u0442\u044C \u0438 \xD710, \u0438 \xD7100." })
               ] }),
               /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }, children: "\u041E\u0444\u043B\u0430\u0439\u043D-\u043C\u0430\u0433\u0430\u0437\u0438\u043D" }),
               !shop.offlineStore ? /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
@@ -9963,10 +9962,10 @@ function MarketSandbox() {
               ] });
             })(),
             form.kind === "crypto" && /* @__PURE__ */ jsxs("div", { style: { marginBottom: 14, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 12 }, children: [
-              /* @__PURE__ */ jsx("div", { style: { fontSize: 12, fontWeight: 700, marginBottom: 8 }, children: "TOKENOMICS" }),
+              /* @__PURE__ */ jsx("div", { style: { fontSize: 12, fontWeight: 700, marginBottom: 8 }, children: "\u0422\u041E\u041A\u0415\u041D\u041E\u041C\u0418\u041A\u0410" }),
               /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8, marginBottom: 10 }, children: [
                 /* @__PURE__ */ jsxs("div", { style: { flex: 1 }, children: [
-                  /* @__PURE__ */ jsx("label", { style: { fontSize: 10.5, color: C.inkDim }, children: "Total Supply" }),
+                  /* @__PURE__ */ jsx("label", { style: { fontSize: 10.5, color: C.inkDim }, children: "\u041E\u0431\u0449\u0438\u0439 \u0432\u044B\u043F\u0443\u0441\u043A (Total Supply)" }),
                   /* @__PURE__ */ jsx("input", { type: "number", value: form.cryptoSupply, onChange: (e) => setForm((f) => ({ ...f, cryptoSupply: e.target.value })), inputMode: "numeric", style: inputStyle })
                 ] }),
                 /* @__PURE__ */ jsxs("div", { style: { flex: 1 }, children: [
@@ -9976,11 +9975,11 @@ function MarketSandbox() {
               ] }),
               /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkDim, marginBottom: 6 }, children: "\u0420\u0430\u0441\u043F\u0440\u0435\u0434\u0435\u043B\u0435\u043D\u0438\u0435, % (\u0441\u0443\u043C\u043C\u0430 = 100)" }),
               /* @__PURE__ */ jsx("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, marginBottom: 6 }, children: [
-                ["distFounder", "Founder"],
-                ["distLiquidity", "Liquidity"],
-                ["distPublic", "Public"],
-                ["distMarketing", "Marketing"],
-                ["distReserve", "Reserve"]
+                ["distFounder", "\u041E\u0441\u043D\u043E\u0432\u0430\u0442\u0435\u043B\u044C"],
+                ["distLiquidity", "\u041B\u0438\u043A\u0432\u0438\u0434\u043D\u043E\u0441\u0442\u044C"],
+                ["distPublic", "\u041E\u0442\u043A\u0440\u044B\u0442\u044B\u0439"],
+                ["distMarketing", "\u0420\u0435\u043A\u043B\u0430\u043C\u0430"],
+                ["distReserve", "\u0420\u0435\u0437\u0435\u0440\u0432"]
               ].map(([key, label]) => /* @__PURE__ */ jsxs("div", { children: [
                 /* @__PURE__ */ jsx("label", { style: { fontSize: 9.5, color: C.inkFaint }, children: label }),
                 /* @__PURE__ */ jsx("input", { type: "number", value: form[key], onChange: (e) => setForm((f) => ({ ...f, [key]: e.target.value })), inputMode: "numeric", style: { ...inputStyle, padding: "8px 8px", fontSize: 12.5 } })
@@ -9989,7 +9988,7 @@ function MarketSandbox() {
                 "\u0421\u0443\u043C\u043C\u0430: ",
                 cryptoDistSum,
                 "% ",
-                cryptoDistSum !== 100 ? "\u2014 \u0434\u043E\u043B\u0436\u043D\u043E \u0431\u044B\u0442\u044C \u0440\u043E\u0432\u043D\u043E 100%" : (Number(form.distLiquidity) || 0) < 5 ? "\u2014 Liquidity \u043C\u0438\u043D\u0438\u043C\u0443\u043C 5%, \u0438\u043D\u0430\u0447\u0435 \u043D\u0435\u0447\u0435\u043C \u0431\u0443\u0434\u0435\u0442 \u0442\u043E\u0440\u0433\u043E\u0432\u0430\u0442\u044C" : "\u2705"
+                cryptoDistSum !== 100 ? "\u2014 \u0434\u043E\u043B\u0436\u043D\u043E \u0431\u044B\u0442\u044C \u0440\u043E\u0432\u043D\u043E 100%" : (Number(form.distLiquidity) || 0) < 5 ? "\u2014 \u043B\u0438\u043A\u0432\u0438\u0434\u043D\u043E\u0441\u0442\u044C \u043C\u0438\u043D\u0438\u043C\u0443\u043C 5%, \u0438\u043D\u0430\u0447\u0435 \u043D\u0435\u0447\u0435\u043C \u0431\u0443\u0434\u0435\u0442 \u0442\u043E\u0440\u0433\u043E\u0432\u0430\u0442\u044C" : "\u2705"
               ] })
             ] }),
             (() => {
@@ -10002,7 +10001,7 @@ function MarketSandbox() {
                   fmt(ipCash),
                   seedNum > ipCash ? " \u2014 \u043D\u0435 \u0445\u0432\u0430\u0442\u0430\u0435\u0442 \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u043D\u0430 \u0418\u041F" : ""
                 ] }),
-                /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginTop: 4 }, children: "\u0423\u0432\u0435\u043B\u0438\u0447\u0438\u0432\u0430\u0435\u0442 \u043F\u0443\u043B \u043B\u0438\u043A\u0432\u0438\u0434\u043D\u043E\u0441\u0442\u0438 (USD-\u0441\u0442\u043E\u0440\u043E\u043D\u0430), \u041D\u041E\u0412\u042B\u0425 \u0422\u041E\u041A\u0415\u041D\u041E\u0412 \u041D\u0415 \u0421\u041E\u0417\u0414\u0410\u0451\u0422. Total Supply \u0432\u0441\u0435\u0433\u0434\u0430 \u0444\u0438\u043A\u0441\u0438\u0440\u043E\u0432\u0430\u043D \u0441 \u043C\u043E\u043C\u0435\u043D\u0442\u0430 \u0437\u0430\u043F\u0443\u0441\u043A\u0430." })
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginTop: 4 }, children: "\u0423\u0432\u0435\u043B\u0438\u0447\u0438\u0432\u0430\u0435\u0442 \u043F\u0443\u043B \u043B\u0438\u043A\u0432\u0438\u0434\u043D\u043E\u0441\u0442\u0438 (USD-\u0441\u0442\u043E\u0440\u043E\u043D\u0430), \u041D\u041E\u0412\u042B\u0425 \u0422\u041E\u041A\u0415\u041D\u041E\u0412 \u041D\u0415 \u0421\u041E\u0417\u0414\u0410\u0451\u0422. \u041E\u0431\u0449\u0438\u0439 \u0432\u044B\u043F\u0443\u0441\u043A \u0432\u0441\u0435\u0433\u0434\u0430 \u0444\u0438\u043A\u0441\u0438\u0440\u043E\u0432\u0430\u043D \u0441 \u043C\u043E\u043C\u0435\u043D\u0442\u0430 \u0437\u0430\u043F\u0443\u0441\u043A\u0430." })
               ] });
             })(),
             /* @__PURE__ */ jsxs("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 10 }, children: [
