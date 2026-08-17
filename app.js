@@ -1,4 +1,4 @@
-// Market Sandbox — V1.5 (чужое ИП + фикс отправки крипты в даркнете)
+// Market Sandbox — V1.7 (MacroEconomyEngine фазы 1-5: OIL, ЦБ/ключевая ставка, инфляция, гос-долг/дефолт, отраслевая чувствительность)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -40,11 +40,17 @@ var NPC_SEED = [
   // ZZONE — прямой конкурент будущего маркетплейса игрока: торгуется на бирже как обычная
   // компания, при этом его партнёрские склады открываются, а магазины перепродажи торгуют
   // именно на нём. В будущих фазах получит собственный пакет NPC-бизнеса (GMV/продавцы/склады).
-  { name: "ZZONE", ticker: "ZZONE", sector: "\u0422\u0435\u0445\u043D\u043E\u043B\u043E\u0433\u0438\u0438", price: 24, vol: 0.6, supply: 5e7 }
+  { name: "ZZONE", ticker: "ZZONE", sector: "\u0422\u0435\u0445\u043D\u043E\u043B\u043E\u0433\u0438\u0438", price: 24, vol: 0.6, supply: 5e7 },
+  // Нефть — сырьевой тикер, не двигается общим гаусс-шумом. Его цена — прямой выход
+  // MacroEconomyEngine (баланс спроса/предложения + инерционный тренд ожиданий), см. RAF
+  // price loop и macroTick. isCommodity исключает его из обычных случайных новостей.
+  { name: "\u041D\u0435\u0444\u0442\u044C", ticker: "OIL", sector: "\u042D\u043D\u0435\u0440\u0433\u0435\u0442\u0438\u043A\u0430", price: 70, vol: 0.5, supply: 1e9, isCommodity: true }
 ];
 var MACRO_ACCOUNT = { handle: "@FinVestnik", name: "Финансовый Вестник", color: "#E8B14C", verified: true };
+var GOVERNMENT_ACCOUNT = { handle: "@GovPress", name: "Пресс-служба правительства", color: "#5AA9E6", verified: true };
 var ROLE_AUTHORS = {
   official: [MACRO_ACCOUNT],
+  government: [GOVERNMENT_ACCOUNT],
   analyst: [{ handle: "@CryptoAnalytics", name: "КриптоАналитика", color: "#5AA9E6" }],
   trader: [
     { handle: "@MaxTrader", name: "Макс Трейдер", color: "#3FD68C" },
@@ -274,6 +280,58 @@ var MACRO_RALLY = {
   analysis: ["\u0410\u043D\u0430\u043B\u0438\u0442\u0438\u043A\u0438 \u043E\u0442\u043C\u0435\u0447\u0430\u044E\u0442: \u043F\u0440\u0438\u0442\u043E\u043A \u043A\u0430\u043F\u0438\u0442\u0430\u043B\u0430 \u043C\u043E\u0436\u0435\u0442 \u043E\u043A\u0430\u0437\u0430\u0442\u044C\u0441\u044F \u0443\u0441\u0442\u043E\u0439\u0447\u0438\u0432\u044B\u043C, \u0435\u0441\u043B\u0438 \u043D\u043E\u0432\u043E\u0441\u0442\u044C \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0441\u044F \u0434\u0430\u043B\u044C\u0448\u0435."],
   trader: ["\u0420\u044B\u043D\u043E\u043A \u0432 \u044D\u0439\u0444\u043E\u0440\u0438\u0438 \u2014 \u043E\u0431\u044A\u0451\u043C\u044B \u043F\u043E\u043A\u0443\u043F\u043E\u043A \u0440\u0435\u0437\u043A\u043E \u0432\u044B\u0440\u043E\u0441\u043B\u0438 \u043F\u043E \u0432\u0441\u0435\u043C \u0431\u0443\u043C\u0430\u0433\u0430\u043C."],
   dev: ["\u0420\u043E\u0441\u0442 \u0437\u0430\u043C\u0435\u0434\u043B\u044F\u0435\u0442\u0441\u044F, \u043D\u043E \u043E\u0442\u043A\u0430\u0442\u0430 \u043F\u043E\u043A\u0430 \u043D\u0435 \u0432\u0438\u0434\u043D\u043E.", "\u0427\u0430\u0441\u0442\u044C \u0438\u043D\u0432\u0435\u0441\u0442\u043E\u0440\u043E\u0432 \u043D\u0430\u0447\u0438\u043D\u0430\u0435\u0442 \u0444\u0438\u043A\u0430\u043D\u0441\u0438\u0440\u043E\u0432\u0430\u0442\u044C \u043F\u0440\u0438\u0431\u044B\u043B\u044C \u043F\u043E\u0441\u043B\u0435 \u0440\u043E\u0441\u0442\u0430."]
+};
+// Банки новостей для нефти: supplyDelta/demandDelta задают направление сдвига
+// oilSupply/oilDemand (не цены напрямую) — цепочку до цены достраивает macroTick.
+var OIL_EVENT_BANKS = {
+  supply_cut: {
+    fact: [
+      "Крупный экспортёр объявил о сокращении добычи нефти",
+      "ОПЕК+ сокращает квоты на добычу",
+      "Поставки нефти приостановлены из-за проблем с инфраструктурой"
+    ],
+    analysis: ["Аналитики: рынок закладывает дефицит предложения в ближайшие недели."],
+    trader: ["Трейдеры разгоняют длинные позиции по нефти на новостях о сокращении добычи."],
+    dev: ["Другие поставщики также сокращают экспорт — дефицит предложения усиливается.", "Запасы нефти снизились сильнее ожиданий."],
+    supplyDelta: -1,
+    demandDelta: 0
+  },
+  supply_up: {
+    fact: [
+      "Страны-производители договорились нарастить поставки нефти",
+      "Крупный экспортёр объявил об увеличении добычи",
+      "Ограничения на экспорт нефти смягчены"
+    ],
+    analysis: ["Аналитики ждут избытка предложения на рынке нефти в ближайшие недели."],
+    trader: ["Трейдеры фиксируют короткие позиции по нефти после новостей о росте поставок."],
+    dev: ["Дополнительные объёмы уже поступают на рынок — избыток предложения нарастает.", "Переговоры о наращивании поставок прошли успешнее ожиданий."],
+    supplyDelta: 1,
+    demandDelta: 0
+  },
+  demand_up: {
+    fact: [
+      "Промышленное производство ускоряется — спрос на нефть растёт",
+      "Сезонный фактор повысил спрос на топливо",
+      "Крупная экономика нарастила импорт нефти"
+    ],
+    analysis: ["Аналитики: рост спроса опережает текущие темпы добычи."],
+    trader: ["Трейдеры отыгрывают рост потребления топлива по всей цепочке."],
+    dev: ["Спрос продолжает расти быстрее прогнозов.", "Запасы нефти сокращаются на фоне повышенного потребления."],
+    supplyDelta: 0,
+    demandDelta: 1
+  },
+  demand_down: {
+    fact: [
+      "Промышленное производство замедляется — спрос на нефть падает",
+      "Сезонный фактор снизил спрос на топливо",
+      "Крупная экономика сократила импорт нефти"
+    ],
+    analysis: ["Аналитики: спрос на нефть слабее, чем закладывал рынок."],
+    trader: ["Трейдеры фиксируют прибыль на фоне признаков охлаждения спроса."],
+    dev: ["Спрос продолжает слабеть.", "Запасы нефти растут на фоне слабого потребления."],
+    supplyDelta: 0,
+    demandDelta: -1
+  }
 };
 var RUMOR_LINES_POS = [
   (x) => `\u0425\u043E\u0434\u044F\u0442 \u0441\u043B\u0443\u0445\u0438, \u0447\u0442\u043E ${x.company} \u0433\u043E\u0442\u043E\u0432\u0438\u0442 \u043A\u0440\u0443\u043F\u043D\u0443\u044E \u0441\u0434\u0435\u043B\u043A\u0443. \u0418\u0441\u0442\u043E\u0447\u043D\u0438\u043A \u0443\u0442\u0432\u0435\u0440\u0436\u0434\u0430\u0435\u0442, \u0447\u0442\u043E \u043F\u0435\u0440\u0435\u0433\u043E\u0432\u043E\u0440\u044B \u0443\u0436\u0435 \u043D\u0430 \u0444\u0438\u043D\u0430\u043B\u044C\u043D\u043E\u0439 \u0441\u0442\u0430\u0434\u0438\u0438, \u043D\u043E \u043E\u0444\u0438\u0446\u0438\u0430\u043B\u044C\u043D\u043E \u043D\u0438\u0447\u0435\u0433\u043E \u043D\u0435 \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043D\u043E.`
@@ -826,10 +884,117 @@ function computeOooTax(turnover) {
 var MARKETPLACE_FEE = 0.05;
 var IP_BANK = { name: "\u0411\u0438\u0437\u043D\u0435\u0441\u041A\u0440\u0435\u0434\u0438\u0442", ticker: "BZKR", ratePerTick: 6e-4, maxLTV: 0.85, baseMax: 2e3, cashMult: 0.4, turnoverMult: 0.9 };
 function newsImpactMult(c) {
+  if (c.ticker === "OIL") return 0;
   if (c.ticker === "TEHER") return 0.03;
   if (BANK_ACCOUNTS.some((b) => b.ticker === c.ticker) || c.ticker === IP_BANK.ticker) return 0.35;
   if (c.sector === "Крипто") return 1;
   return 0.55;
+}
+
+// ===================== MACRO ECONOMY ENGINE (фазы 1-3) =====================
+// Единый слой рыночного давления: НЕФТЬ → ТОПЛИВО → ЛОГИСТИКА → ПРОИЗВОДСТВО →
+// закупочные цены (marketIndex). Каждое звено цепочки лерпится к цели своего
+// "родителя" с собственной скоростью реакции — так последствия распространяются
+// постепенно, а не мгновенно. oilSupply/oilDemand двигают только новости
+// (spawnOilStory), сами по себе они тянутся обратно к базовому уровню 50, если
+// новость не подтверждается повторно — это и есть "рынок с памятью, но не бесконечной".
+// Фаза 2: FEDB как центробанк (ключевая ставка, влияет на все кредиты через
+// loanTotalRatePct) и базовая комиссия ZZONE, привязанная к logisticsCost с инерцией.
+// Фаза 3: инфляция (составной инерционный индекс, а не прокси по одной себестоимости)
+// и государственный долг/риск дефолта — накопительные показатели для фазы 4.
+var OIL_BASELINE_PRICE = 70;
+var MACRO_TICK_MS = 5e3;
+var OIL_MEANREVERT = 0.03;
+var OIL_TREND_LERP = 0.18;
+var OIL_IMBALANCE_TO_TREND = 0.05;
+var FUEL_LERP = 0.22;
+var LOGISTICS_LERP = 0.1;
+var PRODUCTION_LERP = 0.05;
+var RETAIL_LERP = 0.025;
+var INFLATION_LERP = 0.04;
+var INFLATION_TARGET = 0.04;
+var CENTRAL_BANK_BASE_RATE = 0.08;
+var CENTRAL_BANK_MIN_RATE = 0.02;
+var CENTRAL_BANK_MAX_RATE = 0.2;
+var CENTRAL_BANK_STEP = 25e-4;
+var CENTRAL_BANK_MIN_INTERVAL_MS = 90e3;
+var ZZONE_LOGISTICS_SENSITIVITY = 0.06;
+var ZZONE_MIN_COMMISSION = 0.02;
+var ZZONE_BASE_COMMISSION_LERP = 0.015;
+var GOV_DEBT_LERP = 0.01;
+var GOV_DEBT_BASELINE = 45;
+var GOV_DEBT_WARNING_TIERS = [
+  { threshold: 0.3, text: "\u0420\u0430\u0441\u0442\u0451\u0442 \u0441\u0442\u043E\u0438\u043C\u043E\u0441\u0442\u044C \u043E\u0431\u0441\u043B\u0443\u0436\u0438\u0432\u0430\u043D\u0438\u044F \u0433\u043E\u0441\u0443\u0434\u0430\u0440\u0441\u0442\u0432\u0435\u043D\u043D\u043E\u0433\u043E \u0434\u043E\u043B\u0433\u0430", importance: 2 },
+  { threshold: 0.5, text: "\u041F\u0440\u0430\u0432\u0438\u0442\u0435\u043B\u044C\u0441\u0442\u0432\u043E \u0438\u0441\u043F\u044B\u0442\u044B\u0432\u0430\u0435\u0442 \u0441\u043B\u043E\u0436\u043D\u043E\u0441\u0442\u0438 \u0441 \u043E\u0431\u0441\u043B\u0443\u0436\u0438\u0432\u0430\u043D\u0438\u0435\u043C \u0434\u043E\u043B\u0433\u0430", importance: 3 },
+  { threshold: 0.7, text: "\u0414\u043E\u0445\u043E\u0434\u043D\u043E\u0441\u0442\u044C \u0433\u043E\u0441\u0443\u0434\u0430\u0440\u0441\u0442\u0432\u0435\u043D\u043D\u044B\u0445 \u043E\u0431\u043B\u0438\u0433\u0430\u0446\u0438\u0439 \u0440\u0435\u0437\u043A\u043E \u0432\u044B\u0440\u043E\u0441\u043B\u0430", importance: 3 },
+  { threshold: 0.9, text: "\u041F\u0435\u0440\u0435\u0433\u043E\u0432\u043E\u0440\u044B \u043E \u0440\u0435\u0441\u0442\u0440\u0443\u043A\u0442\u0443\u0440\u0438\u0437\u0430\u0446\u0438\u0438 \u0433\u043E\u0441\u0443\u0434\u0430\u0440\u0441\u0442\u0432\u0435\u043D\u043D\u043E\u0433\u043E \u0434\u043E\u043B\u0433\u0430 \u043D\u0430\u0447\u0430\u043B\u0438\u0441\u044C", importance: 4 }
+];
+var DEFAULT_RISK_TRIGGER = 0.95;
+var DEFAULT_CHECK_CHANCE = 0.12;
+var DEFAULT_COOLDOWN_MS = 10 * 60 * 1e3;
+var MACRO_DEFAULT = { oilSupply: 50, oilDemand: 50, oilTrend: 0, fuelCost: 1, logisticsCost: 1, productionCost: 1, inflation: INFLATION_TARGET, interestRate: CENTRAL_BANK_BASE_RATE, lastRateDecisionAt: 0, govDebt: GOV_DEBT_BASELINE, govDefaultRisk: 0, govDebtWarningsTriggered: [], lastDefaultAt: 0 };
+function macroClamp(v, lo, hi) {
+  return Math.max(lo, Math.min(hi, v));
+}
+function macroTick(macro, oilPrice) {
+  const oilSupply = macroClamp(macro.oilSupply + (50 - macro.oilSupply) * OIL_MEANREVERT, 0, 100);
+  const oilDemand = macroClamp(macro.oilDemand + (50 - macro.oilDemand) * OIL_MEANREVERT, 0, 100);
+  const imbalance = oilDemand - oilSupply;
+  const trendTarget = imbalance * OIL_IMBALANCE_TO_TREND;
+  const oilTrend = macro.oilTrend + (trendTarget - macro.oilTrend) * OIL_TREND_LERP;
+  const fuelTarget = macroClamp(oilPrice / OIL_BASELINE_PRICE, 0.4, 3);
+  const fuelCost = macro.fuelCost + (fuelTarget - macro.fuelCost) * FUEL_LERP;
+  const logisticsCost = macro.logisticsCost + (fuelCost - macro.logisticsCost) * LOGISTICS_LERP;
+  const productionCost = macro.productionCost + (logisticsCost - macro.productionCost) * PRODUCTION_LERP;
+  // Инфляция — составной инерционный индекс (себестоимость производства + топливо +
+  // денежная политика), а не прямое отражение одной себестоимости: даже если нефть
+  // подешевела сегодня, инфляция не обязана упасть сразу же (см. §11 ТЗ).
+  const inflationPressure = (productionCost - 1) * 0.35 + (fuelCost - 1) * 0.12 - ((macro.interestRate || CENTRAL_BANK_BASE_RATE) - CENTRAL_BANK_BASE_RATE) * 0.6;
+  const inflationTarget = macroClamp(INFLATION_TARGET + inflationPressure, -0.05, 0.4);
+  const inflation = (typeof macro.inflation === "number" ? macro.inflation : INFLATION_TARGET) + (inflationTarget - (typeof macro.inflation === "number" ? macro.inflation : INFLATION_TARGET)) * INFLATION_LERP;
+  // Госдолг медленно дрейфует к базовому уровню; дорогое обслуживание долга (высокая
+  // ставка) и слабая экономика (низкий productionCost) толкают его вверх — задел под
+  // фазу 4 (дефолт), сам дефолт здесь ещё не триггерится.
+  const debtPressure = ((macro.interestRate || CENTRAL_BANK_BASE_RATE) - CENTRAL_BANK_BASE_RATE) * 40 + (1 - productionCost) * 15;
+  const govDebtTarget = macroClamp(GOV_DEBT_BASELINE + debtPressure, 10, 150);
+  const govDebt = (typeof macro.govDebt === "number" ? macro.govDebt : GOV_DEBT_BASELINE) + (govDebtTarget - (typeof macro.govDebt === "number" ? macro.govDebt : GOV_DEBT_BASELINE)) * GOV_DEBT_LERP;
+  const govDefaultRisk = macroClamp((govDebt - GOV_DEBT_BASELINE) / 100, 0, 1);
+  return { ...macro, oilSupply, oilDemand, oilTrend, fuelCost, logisticsCost, productionCost, inflation, govDebt, govDefaultRisk };
+}
+function macroRetailIndexTarget(macro) {
+  return macroClamp(1 + (macro.productionCost - 1) * 0.8, 0.7, 1.5);
+}
+function oilFrameStep(macro, gaussFn, dtFactor) {
+  const drift = macro.oilTrend * 0.015 * dtFactor;
+  const noise = gaussFn() * 0.012 * dtFactor;
+  return drift + noise;
+}
+// Перегрев экономики двигает решения центробанка: отклонение реальной инфляции от
+// таргета (INFLATION_TARGET) + опережающий сигнал по тренду нефти (ожидания).
+function macroOverheat(macro) {
+  const inflation = typeof macro.inflation === "number" ? macro.inflation : INFLATION_TARGET;
+  return (inflation - INFLATION_TARGET) * 8 + macro.oilTrend * 0.3;
+}
+function keyRateLoanMult(macro) {
+  return macroClamp((macro.interestRate || CENTRAL_BANK_BASE_RATE) / CENTRAL_BANK_BASE_RATE, 0.4, 2.5);
+}
+function zzoneBaseCommissionTarget(macro, baseFee) {
+  return macroClamp(baseFee - (macro.logisticsCost - 1) * ZZONE_LOGISTICS_SENSITIVITY, ZZONE_MIN_COMMISSION, baseFee);
+}
+// Фаза 5: у каждой отрасли — своя чувствительность к макро-состоянию, а не один общий
+// множитель на всех (см. §17 ТЗ). Небольшой направленный дрейф поверх старого шума:
+// банки — ключевая ставка (выше ставка → выше маржа), Потребтовары (транспорт/снабжение)
+// и ZZONE — логистика (дороже логистика → ниже маржа), крипта и остальное — не затронуты.
+var BANK_RATE_DRIFT = 0.6;
+var SUPPLIER_LOGISTICS_DRIFT = 0.2;
+var ZZONE_LOGISTICS_DRIFT = 0.12;
+var ZZONE_RATE_DRIFT = 0.4;
+function macroSectorDrift(c, macro) {
+  const isBank = BANK_ACCOUNTS.some((b) => b.ticker === c.ticker) || c.ticker === IP_BANK.ticker;
+  if (isBank) return (macro.interestRate - CENTRAL_BANK_BASE_RATE) * BANK_RATE_DRIFT;
+  if (c.ticker === "ZZONE") return -(macro.logisticsCost - 1) * ZZONE_LOGISTICS_DRIFT - (macro.interestRate - CENTRAL_BANK_BASE_RATE) * ZZONE_RATE_DRIFT;
+  if (c.sector === "\u041F\u043E\u0442\u0440\u0435\u0431\u0442\u043E\u0432\u0430\u0440\u044B") return -(macro.logisticsCost - 1) * SUPPLIER_LOGISTICS_DRIFT;
+  return 0;
 }
 
 // ===================== SOCIAL INFLUENCE ENGINE =====================
@@ -1032,7 +1197,7 @@ var PITCH_ANGLES = [
   { id: "cap", label: "\u041A\u0430\u043F\u0438\u0442\u0430\u043B\u0438\u0437\u0430\u0446\u0438\u044E", icon: "\u{1F4CA}" }
 ];
 var STORAGE_KEY = "market-sandbox-v6";
-var SAVE_VERSION = 4;
+var SAVE_VERSION = 7;
 var LocalStorageSaveAdapter = {
   async save(key, payload) {
     await window.storage.set(key, JSON.stringify(payload));
@@ -1085,6 +1250,35 @@ var SAVE_MIGRATIONS = {
   4: (data) => ({
     ...data,
     entityType: data.entityType === "ooo" ? "ooo" : "ip"
+  }),
+  // v4 -> v5: MacroEconomyEngine (нефть → топливо → логистика → производство →
+  // закупочные цены). Старые сохранения не содержат macro-состояния — стартуем с
+  // нейтральных базовых значений. Сам тикер OIL добавляется автоматически через
+  // missingSeeds (seedCompanies() сверяется с уже известными тикерами при загрузке).
+  5: (data) => ({
+    ...data,
+    macro: data.macro && typeof data.macro === "object" ? { ...MACRO_DEFAULT, ...data.macro } : MACRO_DEFAULT
+  }),
+  // v5 -> v6: FEDB как центробанк (interestRate/lastRateDecisionAt в macro) и базовая
+  // комиссия ZZONE (baseCommission), которая теперь дрейфует от logisticsCost, а не
+  // прыгает только по порогам захвата рынка.
+  6: (data) => ({
+    ...data,
+    macro: { ...MACRO_DEFAULT, ...(data.macro || {}), interestRate: typeof (data.macro || {}).interestRate === "number" ? data.macro.interestRate : CENTRAL_BANK_BASE_RATE, lastRateDecisionAt: typeof (data.macro || {}).lastRateDecisionAt === "number" ? data.macro.lastRateDecisionAt : 0 },
+    zzoneBiz: data.zzoneBiz && typeof data.zzoneBiz === "object" ? { ...data.zzoneBiz, baseCommission: typeof data.zzoneBiz.baseCommission === "number" ? data.zzoneBiz.baseCommission : MARKETPLACE_FEE } : data.zzoneBiz
+  }),
+  // v6 -> v7: инфляция и государственный долг/риск дефолта в macro-состоянии (задел под
+  // фазу 4). Старые сохранения стартуют с нейтральных базовых значений.
+  7: (data) => ({
+    ...data,
+    macro: {
+      ...MACRO_DEFAULT,
+      ...(data.macro || {}),
+      inflation: typeof (data.macro || {}).inflation === "number" ? data.macro.inflation : INFLATION_TARGET,
+      govDebt: typeof (data.macro || {}).govDebt === "number" ? data.macro.govDebt : GOV_DEBT_BASELINE,
+      govDefaultRisk: typeof (data.macro || {}).govDefaultRisk === "number" ? data.macro.govDefaultRisk : 0,
+      govDebtWarningsTriggered: Array.isArray((data.macro || {}).govDebtWarningsTriggered) ? data.macro.govDebtWarningsTriggered : []
+    }
   })
 };
 function migrateSaveData(data) {
@@ -1137,12 +1331,12 @@ async function clearGameState() {
 var INSTALLMENT_MS = 15 * 60 * 1e3;
 var LOAN_TERM_RANGE = { bank: [4, 6], ip: [4, 8] };
 var LOAN_MISS_LIMIT = 2;
-function loanTotalRatePct(baseRatePerTick, term, minTerm, maxTerm, collateralFrac, ratingMult, healthMult, repMult) {
+function loanTotalRatePct(baseRatePerTick, term, minTerm, maxTerm, collateralFrac, ratingMult, healthMult, repMult, keyRateMult = 1) {
   const base = baseRatePerTick * 6e3;
   const termFrac = maxTerm > minTerm ? (term - minTerm) / (maxTerm - minTerm) : 1;
   const termMult = 0.55 + termFrac * 0.45;
   const collateralMult = 1 - Math.min(0.35, collateralFrac * 0.35);
-  return Math.max(3, base * termMult * collateralMult * ratingMult * healthMult * repMult);
+  return Math.max(3, base * termMult * collateralMult * ratingMult * healthMult * repMult * keyRateMult);
 }
 var CANDLE_MS = 6e4;
 function gauss() {
@@ -1565,7 +1759,7 @@ function MarketSandbox() {
   const [ipBankRating, setIpBankRating] = useState(50);
   const [playerSocialProfile, setPlayerSocialProfile] = useState({ trust: 50, postLog: [], lastPostAt: 0 });
   const [marketplace, setMarketplace] = useState(null);
-  const [zzoneBiz, setZzoneBiz] = useState({ marketShare: ZZONE_MARKET_SHARE_START, commissionRate: MARKETPLACE_FEE, aggressionLevel: 0, reactionsTriggered: [] });
+  const [zzoneBiz, setZzoneBiz] = useState({ marketShare: ZZONE_MARKET_SHARE_START, commissionRate: MARKETPLACE_FEE, baseCommission: MARKETPLACE_FEE, aggressionLevel: 0, reactionsTriggered: [] });
   const [bigSellers, setBigSellers] = useState([]);
   const [marketplaceInvestorOffer, setMarketplaceInvestorOffer] = useState(null);
   const [marketplaceComposerText, setMarketplaceComposerText] = useState("");
@@ -1635,6 +1829,7 @@ function MarketSandbox() {
   const [ipTransferInput, setIpTransferInput] = useState("");
   const [ipTransferError, setIpTransferError] = useState(null);
   const [marketIndex, setMarketIndex] = useState(1);
+  const [macro, setMacro] = useState(MACRO_DEFAULT);
   const [ipTab, setIpTab] = useState("account");
   const [bankAccounts, setBankAccounts] = useState({});
   const [transferSuspicion, setTransferSuspicion] = useState(0);
@@ -1683,7 +1878,7 @@ function MarketSandbox() {
   const reputationRef = useRef(100);
   const playerSocialProfileRef = useRef({ trust: 50, postLog: [], lastPostAt: 0 });
   const marketplaceRef = useRef(null);
-  const zzoneBizRef = useRef({ marketShare: ZZONE_MARKET_SHARE_START, commissionRate: MARKETPLACE_FEE, aggressionLevel: 0, reactionsTriggered: [] });
+  const zzoneBizRef = useRef({ marketShare: ZZONE_MARKET_SHARE_START, commissionRate: MARKETPLACE_FEE, baseCommission: MARKETPLACE_FEE, aggressionLevel: 0, reactionsTriggered: [] });
   const bigSellersRef = useRef([]);
   const onboardedRef = useRef(onboarded);
   const holdingsRef = useRef(holdings);
@@ -1742,6 +1937,7 @@ function MarketSandbox() {
   const declarationsRef = useRef(declarations);
   const ipLoansRef = useRef(ipLoans);
   const marketIndexRef = useRef(marketIndex);
+  const macroRef = useRef(macro);
   useEffect(() => {
     onboardedRef.current = onboarded;
   }, [onboarded]);
@@ -1907,6 +2103,9 @@ function MarketSandbox() {
   useEffect(() => {
     marketIndexRef.current = marketIndex;
   }, [marketIndex]);
+  useEffect(() => {
+    macroRef.current = macro;
+  }, [macro]);
   useEffect(() => {
     suspicionRef.current = suspicion;
   }, [suspicion]);
@@ -2203,6 +2402,7 @@ function MarketSandbox() {
     setDeclarations(Array.isArray(data.declarations) ? data.declarations : []);
     setIpLoans(Array.isArray(data.ipLoans) ? data.ipLoans : []);
     setMarketIndex(typeof data.marketIndex === "number" ? data.marketIndex : 1);
+    setMacro(data.macro && typeof data.macro === "object" ? { ...MACRO_DEFAULT, ...data.macro } : MACRO_DEFAULT);
     setOwnedItems(data.ownedItems || {});
     setLoans(Array.isArray(data.loans) ? data.loans : []);
     const oldJobCompany = data.job ? oldCompaniesById[data.job.companyId] : null;
@@ -2250,7 +2450,7 @@ function MarketSandbox() {
         investorRounds: Array.isArray(saved.investorRounds) ? saved.investorRounds : []
       };
     })() : null);
-    setZzoneBiz(data.zzoneBiz && typeof data.zzoneBiz === "object" ? { marketShare: typeof data.zzoneBiz.marketShare === "number" ? data.zzoneBiz.marketShare : ZZONE_MARKET_SHARE_START, commissionRate: typeof data.zzoneBiz.commissionRate === "number" ? data.zzoneBiz.commissionRate : MARKETPLACE_FEE, aggressionLevel: data.zzoneBiz.aggressionLevel || 0, reactionsTriggered: Array.isArray(data.zzoneBiz.reactionsTriggered) ? data.zzoneBiz.reactionsTriggered : [] } : { marketShare: ZZONE_MARKET_SHARE_START, commissionRate: MARKETPLACE_FEE, aggressionLevel: 0, reactionsTriggered: [] });
+    setZzoneBiz(data.zzoneBiz && typeof data.zzoneBiz === "object" ? { marketShare: typeof data.zzoneBiz.marketShare === "number" ? data.zzoneBiz.marketShare : ZZONE_MARKET_SHARE_START, commissionRate: typeof data.zzoneBiz.commissionRate === "number" ? data.zzoneBiz.commissionRate : MARKETPLACE_FEE, baseCommission: typeof data.zzoneBiz.baseCommission === "number" ? data.zzoneBiz.baseCommission : MARKETPLACE_FEE, aggressionLevel: data.zzoneBiz.aggressionLevel || 0, reactionsTriggered: Array.isArray(data.zzoneBiz.reactionsTriggered) ? data.zzoneBiz.reactionsTriggered : [] } : { marketShare: ZZONE_MARKET_SHARE_START, commissionRate: MARKETPLACE_FEE, baseCommission: MARKETPLACE_FEE, aggressionLevel: 0, reactionsTriggered: [] });
     setBigSellers(Array.isArray(data.bigSellers) ? data.bigSellers : []);
     setBankAccounts(rawBankAccounts);
     setBankTransferDest((() => {
@@ -2349,6 +2549,7 @@ function MarketSandbox() {
     declarations: declarationsRef.current,
     ipLoans: ipLoansRef.current,
     marketIndex: marketIndexRef.current,
+    macro: macroRef.current,
     ownedItems: ownedItemsRef.current,
     loans: loansRef.current,
     job: jobRef.current,
@@ -2467,10 +2668,16 @@ function MarketSandbox() {
       companiesRef.current.forEach((c) => {
         let e = engine[c.id];
         if (!e) e = engine[c.id] = { price: c.price, cOpen: c.price, cHigh: c.price, cLow: c.price, candleStart: ts };
-        let step = gauss() * (c.vol || 1) * 0.035 * Math.sqrt(dt / 16.67);
-        if (c.ticker === "TEHER") {
-          const pegDeviationPct = (1 - e.price) / e.price * 100;
-          step += pegDeviationPct * 0.05;
+        let step;
+        if (c.ticker === "OIL") {
+          step = oilFrameStep(macroRef.current, gauss, Math.sqrt(dt / 16.67));
+        } else {
+          const dtFactor = Math.sqrt(dt / 16.67);
+          step = gauss() * (c.vol || 1) * 0.035 * dtFactor + macroSectorDrift(c, macroRef.current) * dtFactor;
+          if (c.ticker === "TEHER") {
+            const pegDeviationPct = (1 - e.price) / e.price * 100;
+            step += pegDeviationPct * 0.05;
+          }
         }
         e.price = Math.max(0.01, e.price * (1 + step / 100));
         e.cHigh = Math.max(e.cHigh, e.price);
@@ -2580,6 +2787,148 @@ function MarketSandbox() {
     registerStory({ id: storyId, headline: factText, category: "macro", personal: false, importance, status: "developing", reliability: "official", ticker: null, marketImpactPct: impact, createdAt: Date.now(), postCount: posts.length });
     pushPosts(posts.map((p) => ({ ...p, id: makeId("post"), storyId })));
   };
+  const spawnOilStory = () => {
+    const keys = Object.keys(OIL_EVENT_BANKS);
+    const key = keys[Math.floor(Math.random() * keys.length)];
+    const bank = OIL_EVENT_BANKS[key];
+    const isPos = bank.supplyDelta < 0 || bank.demandDelta > 0;
+    const roll = Math.random();
+    const importance = roll < 0.55 ? 1 : roll < 0.82 ? 2 : roll < 0.95 ? 3 : 4;
+    const magBase = importance === 1 ? 3 + Math.random() * 4 : importance === 2 ? 6 + Math.random() * 5 : importance === 3 ? 10 + Math.random() * 8 : 16 + Math.random() * 10;
+    const isRumor = importance <= 2 && Math.random() < 0.3;
+    const factText = pickFrom(bank.fact, Math.floor(Math.random() * 1e6));
+    const storyId = makeId("story");
+    const posts = [];
+    const appliedMag = isRumor ? magBase * 0.5 : magBase;
+    // Сокращение/рост добычи — это решения стран-экспортёров и картелей, публикуются от
+    // лица государства; сдвиги спроса — это данные экономики, их освещают финансовые СМИ.
+    const isGovCaused = key === "supply_cut" || key === "supply_up";
+    const factRole = isGovCaused ? "government" : "official";
+    let status = "confirmed";
+    let reliability = "official";
+    if (isRumor) {
+      status = "developing";
+      reliability = "low";
+      posts.push({ role: "insider", kind: "rumor", text: `\u0425\u043E\u0434\u044F\u0442 \u0441\u043B\u0443\u0445\u0438: ${factText.toLowerCase()} \u2014 \u043E\u0444\u0438\u0446\u0438\u0430\u043B\u044C\u043D\u043E\u0433\u043E \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043D\u0438\u044F \u043F\u043E\u043A\u0430 \u043D\u0435\u0442.`, positive: isPos, isMacro: true, ticker: "OIL", importance });
+      const dueAt = Date.now() + (45e3 + Math.random() * 70e3);
+      scheduleEvent({ id: makeId("sched"), kind: "oil_confirm", storyId, bankKey: key, dir: isPos ? "pos" : "neg", remainingMag: magBase * 0.5, importance, dueAt });
+    } else {
+      posts.push({ role: factRole, kind: "fact", text: factText, positive: isPos, isMacro: true, ticker: "OIL", importance });
+      if (importance >= 2) {
+        const useAnalysis = Math.random() < 0.5;
+        posts.push({ role: useAnalysis ? "analyst" : "trader", kind: "analysis", text: pickFrom(useAnalysis ? bank.analysis : bank.trader, 1), positive: isPos, isMacro: true, ticker: "OIL", importance });
+      }
+      if (importance >= 4) {
+        const devDueAt = Date.now() + (50e3 + Math.random() * 70e3);
+        scheduleEvent({ id: makeId("sched"), kind: "oil_dev", storyId, bankKey: key, dir: isPos ? "pos" : "neg", devMag: magBase * 0.25, importance, dueAt: devDueAt });
+      }
+    }
+    setMacro((m) => {
+      const next = {
+        ...m,
+        oilSupply: macroClamp(m.oilSupply + bank.supplyDelta * appliedMag, 0, 100),
+        oilDemand: macroClamp(m.oilDemand + bank.demandDelta * appliedMag, 0, 100)
+      };
+      macroRef.current = next;
+      return next;
+    });
+    registerStory({ id: storyId, headline: factText, category: "macro", personal: false, importance, status, reliability, ticker: "OIL", marketImpactPct: isPos ? appliedMag : -appliedMag, createdAt: Date.now(), postCount: posts.length });
+    pushPosts(posts.map((p) => ({ ...p, id: makeId("post"), storyId })));
+  };
+  const trySpawnRateDecision = () => {
+    const m = macroRef.current;
+    const now = Date.now();
+    if (now - (m.lastRateDecisionAt || 0) < CENTRAL_BANK_MIN_INTERVAL_MS) return;
+    const overheat = macroOverheat(m);
+    if (Math.abs(overheat) < 0.35) return;
+    const chance = macroClamp(Math.abs(overheat) * 0.06, 0, 0.22);
+    if (Math.random() >= chance) return;
+    const isHike = overheat > 0;
+    const step = CENTRAL_BANK_STEP * (1 + Math.min(1, Math.abs(overheat) - 0.35));
+    const newRate = macroClamp(m.interestRate + (isHike ? step : -step), CENTRAL_BANK_MIN_RATE, CENTRAL_BANK_MAX_RATE);
+    if (Math.abs(newRate - m.interestRate) < 1e-6) return;
+    setMacro((cur) => {
+      const next = { ...cur, interestRate: newRate, lastRateDecisionAt: now };
+      macroRef.current = next;
+      return next;
+    });
+    const storyId = makeId("story");
+    const factText = isHike ? `\u0424\u0435\u0434\u0411\u0430\u043D\u043A \u043F\u043E\u0432\u044B\u0448\u0430\u0435\u0442 \u043A\u043B\u044E\u0447\u0435\u0432\u0443\u044E \u0441\u0442\u0430\u0432\u043A\u0443 \u0434\u043E ${(newRate * 100).toFixed(2)}%` : `\u0424\u0435\u0434\u0411\u0430\u043D\u043A \u0441\u043D\u0438\u0436\u0430\u0435\u0442 \u043A\u043B\u044E\u0447\u0435\u0432\u0443\u044E \u0441\u0442\u0430\u0432\u043A\u0443 \u0434\u043E ${(newRate * 100).toFixed(2)}%`;
+    const analysisText = isHike ? "\u0420\u0435\u0448\u0435\u043D\u0438\u0435 \u043E\u0431\u044A\u044F\u0441\u043D\u044F\u044E\u0442 \u0440\u043E\u0441\u0442\u043E\u043C \u0438\u0437\u0434\u0435\u0440\u0436\u0435\u043A \u0432 \u044D\u043A\u043E\u043D\u043E\u043C\u0438\u043A\u0435 \u2014 \u0440\u0435\u0433\u0443\u043B\u044F\u0442\u043E\u0440 \u0441\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u0435\u0442 \u043F\u0435\u0440\u0435\u0433\u0440\u0435\u0432." : "\u0420\u0435\u0433\u0443\u043B\u044F\u0442\u043E\u0440 \u043F\u043E\u0434\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u0435\u0442 \u0434\u0435\u043B\u043E\u0432\u0443\u044E \u0430\u043A\u0442\u0438\u0432\u043D\u043E\u0441\u0442\u044C \u043D\u0430 \u0444\u043E\u043D\u0435 \u043E\u0445\u043B\u0430\u0436\u0434\u0435\u043D\u0438\u044F \u044D\u043A\u043E\u043D\u043E\u043C\u0438\u043A\u0438.";
+    const traderText = isHike ? "\u041A\u0440\u0435\u0434\u0438\u0442\u044B \u043F\u043E\u0434\u043E\u0440\u043E\u0436\u0430\u044E\u0442 \u2014 \u0447\u0430\u0441\u0442\u044C \u043A\u043E\u043C\u043F\u0430\u043D\u0438\u0439 \u043F\u0435\u0440\u0435\u0441\u043C\u043E\u0442\u0440\u0438\u0442 \u043F\u043B\u0430\u043D\u044B \u043F\u043E \u0437\u0430\u0439\u043C\u0430\u043C." : "\u041A\u0440\u0435\u0434\u0438\u0442\u044B \u043F\u043E\u0434\u0435\u0448\u0435\u0432\u0435\u044E\u0442 \u2014 \u043E\u0436\u0438\u0434\u0430\u0435\u0442\u0441\u044F \u043E\u0436\u0438\u0432\u043B\u0435\u043D\u0438\u0435 \u0441\u043F\u0440\u043E\u0441\u0430 \u043D\u0430 \u0437\u0430\u0439\u043C\u044B.";
+    const posts = [
+      { role: "government", kind: "fact", text: factText, positive: !isHike, isMacro: true, importance: 4 },
+      { role: "analyst", kind: "analysis", text: analysisText, positive: !isHike, isMacro: true, importance: 4 },
+      { role: "trader", kind: "reaction", text: traderText, positive: !isHike, isMacro: true, importance: 4 }
+    ];
+    registerStory({ id: storyId, headline: factText, category: "macro", personal: false, importance: 4, status: "confirmed", reliability: "official", ticker: null, marketImpactPct: 0, createdAt: Date.now(), postCount: posts.length });
+    pushPosts(posts.map((p) => ({ ...p, id: makeId("post"), storyId })));
+  };
+  const trySpawnDebtWarning = () => {
+    const m = macroRef.current;
+    const risk = m.govDefaultRisk || 0;
+    const triggered = m.govDebtWarningsTriggered || [];
+    const stillActive = triggered.filter((t) => risk >= t - 0.15);
+    let toFire = null;
+    for (const tier of GOV_DEBT_WARNING_TIERS) {
+      if (risk >= tier.threshold && !stillActive.includes(tier.threshold)) {
+        toFire = tier;
+        stillActive.push(tier.threshold);
+        break;
+      }
+    }
+    if (stillActive.length !== triggered.length) {
+      setMacro((cur) => {
+        const next = { ...cur, govDebtWarningsTriggered: stillActive };
+        macroRef.current = next;
+        return next;
+      });
+    }
+    if (!toFire) return;
+    const storyId = makeId("story");
+    const posts = [{ role: "government", kind: "fact", text: toFire.text, positive: false, isMacro: true, importance: toFire.importance }];
+    if (toFire.importance >= 3) {
+      posts.push({ role: "analyst", kind: "analysis", text: "\u0410\u043D\u0430\u043B\u0438\u0442\u0438\u043A\u0438 \u0441\u043B\u0435\u0434\u044F\u0442 \u0437\u0430 \u0441\u0438\u0442\u0443\u0430\u0446\u0438\u0435\u0439 \u2014 \u043F\u0440\u0438 \u0434\u0430\u043B\u044C\u043D\u0435\u0439\u0448\u0435\u043C \u0443\u0445\u0443\u0434\u0448\u0435\u043D\u0438\u0438 \u0432\u043E\u0437\u043C\u043E\u0436\u043D\u044B \u043F\u0440\u043E\u0431\u043B\u0435\u043C\u044B \u0443 \u0431\u0430\u043D\u043A\u043E\u0432 \u0438 \u0434\u0430\u0432\u043B\u0435\u043D\u0438\u0435 \u043D\u0430 \u0440\u044B\u043D\u043E\u043A.", positive: false, isMacro: true, importance: toFire.importance });
+    }
+    registerStory({ id: storyId, headline: toFire.text, category: "macro", personal: false, importance: toFire.importance, status: "developing", reliability: "official", ticker: null, marketImpactPct: 0, createdAt: Date.now(), postCount: posts.length });
+    pushPosts(posts.map((p) => ({ ...p, id: makeId("post"), storyId })));
+  };
+  const trySpawnSovereignDefault = () => {
+    const m = macroRef.current;
+    if ((m.govDefaultRisk || 0) < DEFAULT_RISK_TRIGGER) return;
+    if (Date.now() - (m.lastDefaultAt || 0) < DEFAULT_COOLDOWN_MS) return;
+    if (Math.random() >= DEFAULT_CHECK_CHANCE) return;
+    const now = Date.now();
+    setMacro((cur) => {
+      const next = {
+        ...cur,
+        govDebt: Math.max(GOV_DEBT_BASELINE, cur.govDebt * 0.55),
+        govDefaultRisk: 0.15,
+        govDebtWarningsTriggered: [],
+        interestRate: macroClamp(cur.interestRate + 0.04, CENTRAL_BANK_MIN_RATE, CENTRAL_BANK_MAX_RATE),
+        inflation: macroClamp((typeof cur.inflation === "number" ? cur.inflation : INFLATION_TARGET) + 0.08, -0.05, 0.4),
+        lastDefaultAt: now
+      };
+      macroRef.current = next;
+      return next;
+    });
+    const storyId = makeId("story");
+    const factText = "\u041F\u0440\u0430\u0432\u0438\u0442\u0435\u043B\u044C\u0441\u0442\u0432\u043E \u043E\u0431\u044A\u044F\u0432\u043B\u044F\u0435\u0442 \u0434\u0435\u0444\u043E\u043B\u0442 \u043F\u043E \u0433\u043E\u0441\u043E\u0431\u043B\u0438\u0433\u0430\u0446\u0438\u044F\u043C";
+    const posts = [
+      { role: "government", kind: "fact", text: factText, positive: false, isMacro: true, importance: 4 },
+      { role: "analyst", kind: "analysis", text: "\u0410\u043D\u0430\u043B\u0438\u0442\u0438\u043A\u0438 \u043F\u0440\u0435\u0434\u0443\u043F\u0440\u0435\u0436\u0434\u0430\u044E\u0442: \u043F\u043E\u0441\u043B\u0435\u0434\u0441\u0442\u0432\u0438\u044F \u0431\u0443\u0434\u0443\u0442 \u0440\u0430\u0441\u043F\u0440\u043E\u0441\u0442\u0440\u0430\u043D\u044F\u0442\u044C\u0441\u044F \u043D\u0430 \u0431\u0430\u043D\u043A\u0438, \u043A\u0440\u0435\u0434\u0438\u0442\u044B \u0438 \u0440\u044B\u043D\u043E\u043A \u0430\u043A\u0446\u0438\u0439 \u043F\u043E\u0441\u0442\u0435\u043F\u0435\u043D\u043D\u043E, \u0432 \u0442\u0435\u0447\u0435\u043D\u0438\u0435 \u0431\u043B\u0438\u0436\u0430\u0439\u0448\u0438\u0445 \u043D\u0435\u0434\u0435\u043B\u044C.", positive: false, isMacro: true, importance: 4 },
+      { role: "trader", kind: "reaction", text: "\u041F\u0430\u043D\u0438\u043A\u0430 \u043D\u0430 \u0440\u044B\u043D\u043A\u0435 \u2014 \u0442\u0440\u0435\u0439\u0434\u0435\u0440\u044B \u0440\u0430\u0441\u043F\u0440\u043E\u0434\u0430\u044E\u0442 \u043F\u043E\u0437\u0438\u0446\u0438\u0438 \u0432 \u0444\u0438\u043D\u0430\u043D\u0441\u043E\u0432\u043E\u043C \u0441\u0435\u043A\u0442\u043E\u0440\u0435.", positive: false, isMacro: true, importance: 4 }
+    ];
+    companiesRef.current.forEach((c) => {
+      const isBank = BANK_ACCOUNTS.some((b) => b.ticker === c.ticker) || c.ticker === IP_BANK.ticker;
+      const mult = isBank ? 1.6 : newsImpactMult(c);
+      applyImpact(c.id, -14 * mult);
+    });
+    const dev1DueAt = Date.now() + (45e3 + Math.random() * 45e3);
+    scheduleEvent({ id: makeId("sched"), kind: "default_dev", storyId, stage: 1, importance: 4, dueAt: dev1DueAt });
+    registerStory({ id: storyId, headline: factText, category: "macro", personal: false, importance: 4, status: "developing", reliability: "official", ticker: null, marketImpactPct: -14, createdAt: Date.now(), postCount: posts.length });
+    pushPosts(posts.map((p) => ({ ...p, id: makeId("post"), storyId })));
+  };
   const spawnRugPullStory = (c) => {
     applyImpact(c.id, -85 - Math.random() * 10);
     setCompanies((prev) => prev.map((x) => x.id === c.id ? { ...x, rugged: true } : x));
@@ -2631,6 +2980,56 @@ function MarketSandbox() {
       applyImpact(c.id, ev.correctionPct);
       updateStory(ev.storyId, { status: "denied", reliability: "low" });
       pushPost({ role: "insider", kind: "development", text: `\u0420\u044B\u043D\u043E\u043A \u043F\u0435\u0440\u0435\u043E\u0446\u0435\u043D\u0438\u043B \u043F\u043E\u0441\u0442 \u043F\u0440\u043E ${ev.ticker} \u2014 \u0447\u0430\u0441\u0442\u044C \u043F\u043E\u043A\u0443\u043F\u0430\u0442\u0435\u043B\u0435\u0439 \u0437\u0430\u043A\u0440\u044B\u0432\u0430\u0435\u0442 \u043F\u043E\u0437\u0438\u0446\u0438\u0438`, positive: false, isMacro: false, ticker: ev.ticker, importance: 2, storyId: ev.storyId });
+    } else if (ev.kind === "oil_confirm") {
+      const bank = OIL_EVENT_BANKS[ev.bankKey];
+      if (!bank) return;
+      const confirmed = Math.random() < 0.68;
+      if (confirmed) {
+        setMacro((m) => {
+          const next = { ...m, oilSupply: macroClamp(m.oilSupply + bank.supplyDelta * ev.remainingMag, 0, 100), oilDemand: macroClamp(m.oilDemand + bank.demandDelta * ev.remainingMag, 0, 100) };
+          macroRef.current = next;
+          return next;
+        });
+        updateStory(ev.storyId, { status: "confirmed", reliability: "confirmed", marketImpactPct: ev.remainingMag * 2 * (ev.dir === "pos" ? 1 : -1) });
+        pushPost({ role: "official", kind: "development", text: ev.dir === "pos" ? "\u041D\u0435\u0444\u0442\u044F\u043D\u044B\u0435 \u0440\u044B\u043D\u043A\u0438 \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u043B\u0438: \u0441\u043B\u0443\u0445\u0438 \u043E\u043A\u0430\u0437\u0430\u043B\u0438\u0441\u044C \u043F\u0440\u0430\u0432\u0434\u043E\u0439, \u0434\u0430\u0432\u043B\u0435\u043D\u0438\u0435 \u043D\u0430 \u0440\u044B\u043D\u043E\u043A \u0443\u0441\u0438\u043B\u0438\u0432\u0430\u0435\u0442\u0441\u044F." : "\u041D\u0435\u0444\u0442\u044F\u043D\u044B\u0435 \u0440\u044B\u043D\u043A\u0438 \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u043B\u0438: \u0441\u043B\u0443\u0445\u0438 \u043E\u043A\u0430\u0437\u0430\u043B\u0438\u0441\u044C \u043F\u0440\u0430\u0432\u0434\u043E\u0439, \u0434\u0430\u0432\u043B\u0435\u043D\u0438\u0435 \u043D\u0430 \u0440\u044B\u043D\u043E\u043A \u0443\u0441\u0438\u043B\u0438\u0432\u0430\u0435\u0442\u0441\u044F.", positive: ev.dir === "pos", isMacro: true, ticker: "OIL", importance: ev.importance, storyId: ev.storyId });
+      } else {
+        setMacro((m) => {
+          const next = { ...m, oilSupply: macroClamp(m.oilSupply - bank.supplyDelta * ev.remainingMag * 0.6, 0, 100), oilDemand: macroClamp(m.oilDemand - bank.demandDelta * ev.remainingMag * 0.6, 0, 100) };
+          macroRef.current = next;
+          return next;
+        });
+        updateStory(ev.storyId, { status: "denied", reliability: "denied" });
+        pushPost({ role: "official", kind: "development", text: "\u041D\u0435\u0444\u0442\u044F\u043D\u044B\u0435 \u0440\u044B\u043D\u043A\u0438: \u0441\u043B\u0443\u0445\u0438 \u043D\u0435 \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u043B\u0438\u0441\u044C \u2014 \u043E\u0436\u0438\u0434\u0430\u043D\u0438\u044F \u0447\u0430\u0441\u0442\u0438\u0447\u043D\u043E \u043E\u0442\u043A\u0430\u0442\u044B\u0432\u0430\u044E\u0442.", positive: ev.dir !== "pos", isMacro: true, ticker: "OIL", importance: ev.importance, storyId: ev.storyId });
+      }
+    } else if (ev.kind === "oil_dev") {
+      const bank = OIL_EVENT_BANKS[ev.bankKey];
+      if (!bank) return;
+      setMacro((m) => {
+        const next = { ...m, oilSupply: macroClamp(m.oilSupply + bank.supplyDelta * ev.devMag, 0, 100), oilDemand: macroClamp(m.oilDemand + bank.demandDelta * ev.devMag, 0, 100) };
+        macroRef.current = next;
+        return next;
+      });
+      updateStory(ev.storyId, { status: "resolved" });
+      pushPost({ role: "analyst", kind: "development", text: pickFrom(bank.dev, Math.floor(Math.random() * 1e6)), positive: ev.dir === "pos", isMacro: true, ticker: "OIL", importance: ev.importance, storyId: ev.storyId });
+    } else if (ev.kind === "default_dev") {
+      if (ev.stage === 1) {
+        companiesRef.current.forEach((c) => {
+          const isBank = BANK_ACCOUNTS.some((b) => b.ticker === c.ticker) || c.ticker === IP_BANK.ticker;
+          const mult = isBank ? 1.6 : newsImpactMult(c);
+          applyImpact(c.id, -8 * mult);
+        });
+        pushPost({ role: "government", kind: "development", text: "\u0411\u0430\u043D\u043A\u0438 \u0441\u043E\u043E\u0431\u0449\u0430\u044E\u0442 \u043E \u0442\u0440\u0443\u0434\u043D\u043E\u0441\u0442\u044F\u0445 \u0441 \u043B\u0438\u043A\u0432\u0438\u0434\u043D\u043E\u0441\u0442\u044C\u044E \u043D\u0430 \u0444\u043E\u043D\u0435 \u0434\u0435\u0444\u043E\u043B\u0442\u0430", positive: false, isMacro: true, importance: ev.importance, storyId: ev.storyId });
+        const dueAt = Date.now() + (60e3 + Math.random() * 60e3);
+        scheduleEvent({ id: makeId("sched"), kind: "default_dev", storyId: ev.storyId, stage: 2, importance: 4, dueAt });
+      } else {
+        companiesRef.current.forEach((c) => {
+          const isBank = BANK_ACCOUNTS.some((b) => b.ticker === c.ticker) || c.ticker === IP_BANK.ticker;
+          const mult = isBank ? 1.6 : newsImpactMult(c);
+          applyImpact(c.id, -4 * mult);
+        });
+        updateStory(ev.storyId, { status: "resolved" });
+        pushPost({ role: "analyst", kind: "development", text: "\u0420\u044B\u043D\u043E\u043A \u043D\u0430\u0445\u043E\u0434\u0438\u0442 \u043D\u043E\u0432\u043E\u0435 \u0440\u0430\u0432\u043D\u043E\u0432\u0435\u0441\u0438\u0435 \u043F\u043E\u0441\u043B\u0435 \u0434\u0435\u0444\u043E\u043B\u0442\u0430 \u2014 \u0445\u0443\u0434\u0448\u0435\u0435 \u043F\u043E\u0437\u0430\u0434\u0438", positive: false, isMacro: true, importance: ev.importance, storyId: ev.storyId });
+      }
     } else if (ev.kind === "marketplace_crisis_reveal") {
       const mp = marketplaceRef.current;
       if (!mp) return;
@@ -2693,9 +3092,14 @@ function MarketSandbox() {
         spawnMacroStory();
       } else if (Math.random() < 0.035) {
         spawnSectorStory();
+      } else if (Math.random() < 0.05) {
+        spawnOilStory();
       }
+      trySpawnRateDecision();
+      trySpawnDebtWarning();
+      trySpawnSovereignDefault();
       companiesRef.current.forEach((c) => {
-        if (Math.random() < 0.012) spawnCompanyStory(c);
+        if (c.ticker !== "OIL" && Math.random() < 0.012) spawnCompanyStory(c);
         if (c.isPlayer && c.kind === "crypto" && c.strategy === "scam" && !c.rugged && (c.scamHeat || 0) > 40) {
           const chance = (c.scamHeat - 40) * 1e-3;
           if (Math.random() < chance) spawnRugPullStory(c);
@@ -3018,8 +3422,24 @@ function MarketSandbox() {
   useEffect(() => {
     if (!loaded) return;
     const id = setInterval(() => {
-      setMarketIndex((idx) => Math.max(0.7, Math.min(1.5, idx * (1 + (Math.random() - 0.5) * 0.2))));
-    }, MARKET_INDEX_MS);
+      const oilCompany = companiesRef.current.find((c) => c.ticker === "OIL");
+      const oilPrice = oilCompany ? oilCompany.price : OIL_BASELINE_PRICE;
+      const next = macroTick(macroRef.current, oilPrice);
+      macroRef.current = next;
+      setMacro(next);
+      setMarketIndex((idx) => {
+        const target = macroRetailIndexTarget(next);
+        return Math.max(0.7, Math.min(1.5, idx + (target - idx) * RETAIL_LERP));
+      });
+      setZzoneBiz((zb) => {
+        const base = typeof zb.baseCommission === "number" ? zb.baseCommission : MARKETPLACE_FEE;
+        const target = zzoneBaseCommissionTarget(next, MARKETPLACE_FEE);
+        const baseCommission = base + (target - base) * ZZONE_BASE_COMMISSION_LERP;
+        const discount = (zb.reactionsTriggered || []).length * 0.005;
+        const commissionRate = macroClamp(baseCommission - discount, ZZONE_MIN_COMMISSION, baseCommission);
+        return { ...zb, baseCommission, commissionRate };
+      });
+    }, MACRO_TICK_MS);
     return () => clearInterval(id);
   }, [loaded]);
   useEffect(() => {
@@ -3723,18 +4143,20 @@ function MarketSandbox() {
       const newPlayerShare = clamp01(mp.marketShare + shift, 0.005, 0.9);
       const newZzoneShare = clamp01(zb.marketShare - shift, 0.05, 0.9);
       const triggered = [...zb.reactionsTriggered];
-      let newCommission = zb.commissionRate;
+      const baseCommission = typeof zb.baseCommission === "number" ? zb.baseCommission : MARKETPLACE_FEE;
       let newAggression = zb.aggressionLevel;
       let reactionPost = null;
       ZZONE_REACTION_THRESHOLDS.forEach((t) => {
         if (newPlayerShare >= t && !triggered.includes(t)) {
           triggered.push(t);
-          newCommission = Math.max(0.02, newCommission - 0.005);
           newAggression += 1;
-          reactionPost = `ZZONE снижает комиссию до ${Math.round(newCommission * 100)}% — доля нового маркетплейса на рынке достигла ${Math.round(t * 100)}%`;
         }
       });
-      setZzoneBiz({ marketShare: newZzoneShare, commissionRate: newCommission, aggressionLevel: newAggression, reactionsTriggered: triggered });
+      const newCommission = macroClamp(baseCommission - triggered.length * 0.005, ZZONE_MIN_COMMISSION, baseCommission);
+      if (triggered.length > zb.reactionsTriggered.length) {
+        reactionPost = `ZZONE снижает комиссию до ${Math.round(newCommission * 100)}% — доля нового маркетплейса на рынке растёт`;
+      }
+      setZzoneBiz({ marketShare: newZzoneShare, commissionRate: newCommission, baseCommission, aggressionLevel: newAggression, reactionsTriggered: triggered });
       if (reactionPost) {
         const zzoneCompany = companiesRef.current.find((c) => c.ticker === "ZZONE");
         if (zzoneCompany) applyImpact(zzoneCompany.id, -1.5 - Math.random() * 1.5);
@@ -5340,7 +5762,7 @@ function MarketSandbox() {
       setIpLoanFeedback({ ok: false, msg: `\u041F\u0440\u0438 \u0442\u0435\u043A\u0443\u0449\u0435\u043C \u043E\u0431\u043E\u0440\u043E\u0442\u0435 \u0438 \u0438\u0441\u0442\u043E\u0440\u0438\u0438 \u0431\u0430\u043D\u043A \u0434\u0430\u0451\u0442 \u043C\u0430\u043A\u0441\u0438\u043C\u0443\u043C \u2248 ${fmt(ipLoanLimit)}. \u0411\u043E\u043B\u044C\u0448\u0435 \u043E\u0431\u043E\u0440\u043E\u0442 \u2014 \u0431\u043E\u043B\u044C\u0448\u0435 \u043B\u0438\u043C\u0438\u0442.` });
       return;
     }
-    const totalRatePct = loanTotalRatePct(IP_BANK.ratePerTick, term, minTerm, maxTerm, 0, bankRatingRateMult(ipBankRating), bankHealthRateMult(bzkrHealth), repRateMult);
+    const totalRatePct = loanTotalRatePct(IP_BANK.ratePerTick, term, minTerm, maxTerm, 0, bankRatingRateMult(ipBankRating), bankHealthRateMult(bzkrHealth), repRateMult, keyRateLoanMult(macro));
     const totalDue = Math.round(amount * (1 + totalRatePct / 100));
     const installmentAmount = Math.round(totalDue / term);
     setIpCash((c) => c + amount);
@@ -5772,7 +6194,7 @@ function MarketSandbox() {
       return;
     }
     const collateralUsed = Math.min(collateral, amount);
-    const totalRatePct = loanTotalRatePct(bank.ratePerTick, term, minTerm, maxTerm, collateralUsed / amount, bankRatingRateMult(clientRating), bankHealthRateMult(bankHealth), repRateMult);
+    const totalRatePct = loanTotalRatePct(bank.ratePerTick, term, minTerm, maxTerm, collateralUsed / amount, bankRatingRateMult(clientRating), bankHealthRateMult(bankHealth), repRateMult, keyRateLoanMult(macro));
     const totalDue = Math.round(amount * (1 + totalRatePct / 100));
     const installmentAmount = Math.round(totalDue / term);
     setLoans((prev) => [...prev, { id: makeId("loan"), bankId, principal: amount, termCount: term, totalRatePct, totalDue, installmentAmount, balance: totalDue, paidToDate: 0, periodsElapsed: 0, missedPayments: 0, nextPaymentAt: Date.now() + INSTALLMENT_MS, collateralUsed, frozen: false, createdAt: Date.now() }]);
@@ -6207,7 +6629,7 @@ function MarketSandbox() {
     setTransactions([]);
     setPlayerSocialProfile({ trust: 50, postLog: [], lastPostAt: 0 });
     setMarketplace(null);
-    setZzoneBiz({ marketShare: ZZONE_MARKET_SHARE_START, commissionRate: MARKETPLACE_FEE, aggressionLevel: 0, reactionsTriggered: [] });
+    setZzoneBiz({ marketShare: ZZONE_MARKET_SHARE_START, commissionRate: MARKETPLACE_FEE, baseCommission: MARKETPLACE_FEE, aggressionLevel: 0, reactionsTriggered: [] });
     setBigSellers([]);
     setMarketplaceInvestorOffer(null);
     setMarketplaceComposerText("");
@@ -6242,6 +6664,8 @@ function MarketSandbox() {
     setIpLoanFeedback(null);
     setIpTransferInput("");
     setMarketIndex(1);
+    macroRef.current = MACRO_DEFAULT;
+    setMacro(MACRO_DEFAULT);
     setIpTab("account");
     setSuspicion(0);
     setBankRatings({ mfo: 50, priv: 50, fed: 50 });
@@ -7321,7 +7745,7 @@ function MarketSandbox() {
                 (() => {
                   const amt = Math.round(Number(ipLoanInput || 0));
                   if (!amt) return null;
-                  const rate = loanTotalRatePct(IP_BANK.ratePerTick, ipLoanTerm, LOAN_TERM_RANGE.ip[0], LOAN_TERM_RANGE.ip[1], 0, bankRatingRateMult(ipBankRating), bankHealthRateMult(bzkrHealth), repRateMult);
+                  const rate = loanTotalRatePct(IP_BANK.ratePerTick, ipLoanTerm, LOAN_TERM_RANGE.ip[0], LOAN_TERM_RANGE.ip[1], 0, bankRatingRateMult(ipBankRating), bankHealthRateMult(bzkrHealth), repRateMult, keyRateLoanMult(macro));
                   const total = Math.round(amt * (1 + rate / 100));
                   return /* @__PURE__ */ jsxs("div", { style: { fontSize: 11.5, color: C.inkDim, marginTop: 6 }, children: [
                     "\u041A \u0432\u043E\u0437\u0432\u0440\u0430\u0442\u0443: ",
@@ -10092,7 +10516,7 @@ function MarketSandbox() {
                     ] }),
                     /* @__PURE__ */ jsx("input", { type: "range", min: LOAN_TERM_RANGE.bank[0], max: LOAN_TERM_RANGE.bank[1], step: 1, value: term, onChange: (e) => setLoanTermInputs((f) => ({ ...f, [b.id]: Number(e.target.value) })), style: { width: "100%" } }),
                     amt > 0 && (() => {
-                      const rate = loanTotalRatePct(bankDef.ratePerTick, term, LOAN_TERM_RANGE.bank[0], LOAN_TERM_RANGE.bank[1], collateralUsed / amt, bankRatingRateMult(clientRating), bankHealthRateMult(health), repRateMult);
+                      const rate = loanTotalRatePct(bankDef.ratePerTick, term, LOAN_TERM_RANGE.bank[0], LOAN_TERM_RANGE.bank[1], collateralUsed / amt, bankRatingRateMult(clientRating), bankHealthRateMult(health), repRateMult, keyRateLoanMult(macro));
                       const total = Math.round(amt * (1 + rate / 100));
                       return /* @__PURE__ */ jsxs("div", { style: { fontSize: 11.5, color: C.inkDim, marginTop: 6 }, children: [
                         "\u041A \u0432\u043E\u0437\u0432\u0440\u0430\u0442\u0443: ",
