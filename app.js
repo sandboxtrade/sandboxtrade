@@ -1,4 +1,4 @@
-// Market Sandbox — V1.4 (крипта с дроп-карт видна и продаётся)
+// Market Sandbox — V1.5 (чужое ИП + фикс отправки крипты в даркнете)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -804,6 +804,7 @@ var IP_OVER_LIMIT_FINE = 2e4;
 var OOO_TAX_RATE = 0.135;
 var OOO_FIXED_FEE = 35e3;
 var OOO_CONVERSION_FEE = 5e3;
+var FAKE_IP_PRICE = 18e3;
 function computeIpTax(turnover) {
   if (turnover <= 0) return 0;
   let tax = 0;
@@ -1626,6 +1627,7 @@ function MarketSandbox() {
   const [quarterEndsAt, setQuarterEndsAt] = useState(() => Date.now() + QUARTER_MS);
   const [nextBizTaxAt, setNextBizTaxAt] = useState(() => Date.now() + 45e3);
   const [declarations, setDeclarations] = useState([]);
+  const [fakeIps, setFakeIps] = useState({});
   const [ipLoans, setIpLoans] = useState([]);
   const [ipLoanInput, setIpLoanInput] = useState("");
   const [ipLoanTerm, setIpLoanTerm] = useState(LOAN_TERM_RANGE.ip[0]);
@@ -1707,6 +1709,7 @@ function MarketSandbox() {
   const blackMarketOwnRoundsRef = useRef(blackMarketOwnRounds);
   const muleCardsRef = useRef(muleCards);
   const muleHoldingsRef = useRef(muleHoldings);
+  const fakeIpsRef = useRef(fakeIps);
   const ipBankRatingRef = useRef(ipBankRating);
   const jobRef = useRef(job);
   const jobHistoryRef = useRef(jobHistory);
@@ -1811,6 +1814,9 @@ function MarketSandbox() {
   useEffect(() => {
     muleHoldingsRef.current = muleHoldings;
   }, [muleHoldings]);
+  useEffect(() => {
+    fakeIpsRef.current = fakeIps;
+  }, [fakeIps]);
   useEffect(() => {
     ipBankRatingRef.current = ipBankRating;
   }, [ipBankRating]);
@@ -2273,6 +2279,7 @@ function MarketSandbox() {
     launderStatsRef.current = restoredLaunder;
     setMuleCards(data.muleCards && typeof data.muleCards === "object" ? data.muleCards : {});
     setMuleHoldings(data.muleHoldings && typeof data.muleHoldings === "object" ? data.muleHoldings : {});
+    setFakeIps(data.fakeIps && typeof data.fakeIps === "object" ? data.fakeIps : {});
     setTenders(Array.isArray(data.tenders) ? data.tenders : []);
     setTenderTrackRecord(data.tenderTrackRecord && typeof data.tenderTrackRecord === "object" ? { won: 0, lost: 0, completed: 0, failed: 0, ...data.tenderTrackRecord } : { won: 0, lost: 0, completed: 0, failed: 0 });
     setNextTenderSpawnAt(typeof data.nextTenderSpawnAt === "number" ? data.nextTenderSpawnAt : Date.now() + 2e4);
@@ -2375,6 +2382,7 @@ function MarketSandbox() {
     launderStats: launderStatsRef.current,
     muleCards: muleCardsRef.current,
     muleHoldings: muleHoldingsRef.current,
+    fakeIps: fakeIpsRef.current,
     tenders: tendersRef.current,
     tenderTrackRecord: tenderTrackRecordRef.current,
     nextTenderSpawnAt: nextTenderSpawnAtRef.current,
@@ -2715,6 +2723,17 @@ function MarketSandbox() {
       }, 0);
       const bankAccountsValue2 = Object.values(bankAccountsRef.current).reduce((sum, a) => sum + a.balance, 0);
       const muleCardsValue2 = Object.values(muleCardsRef.current).reduce((sum, c) => sum + c.balance, 0);
+      const muleHoldingsValue2 = Object.values(muleHoldingsRef.current).reduce((sum, pool) => sum + Object.entries(pool).reduce((s, [cid, h]) => {
+        const c = companiesRef.current.find((x) => x.id === cid);
+        return s + (c ? c.price * h.qty : 0);
+      }, 0), 0);
+      const fakeIpsValue2 = Object.values(fakeIpsRef.current).reduce((sum, entity) => {
+        const holdingsVal = Object.entries(entity.holdings || {}).reduce((s, [cid, h]) => {
+          const c = companiesRef.current.find((x) => x.id === cid);
+          return s + (c ? c.price * h.qty : 0);
+        }, 0);
+        return sum + entity.cash + holdingsVal - entity.taxOwed;
+      }, 0);
       const greyBalance2 = greyAccountRef.current ? greyAccountRef.current.balance : 0;
       const shopStockValue2 = resellShopsRef.current.reduce((sum, s) => sum + Object.values(s.categories || {}).reduce((cs, c) => cs + c.stock * c.avgCost, 0), 0);
       const itemsValue2 = Object.entries(ownedItemsRef.current).reduce((sum, [itemId, qty]) => {
@@ -2732,7 +2751,7 @@ function MarketSandbox() {
         const elapsed = Math.min(1, (Date.now() - b.boughtAt) / (bank.bond.termSeconds * 1e3));
         return sum + b.principal * (1 + bank.bond.totalReturnPct / 100 * elapsed);
       }, 0);
-      const nw = bankAccountsValue2 + greyBalance2 + greyHoldingsValue2 + muleCardsValue2 + ipCashRef.current + ipHoldingsValue2 + shopStockValue2 + holdingsValue + bondsValue2 + itemsValue2 + leverageValue2;
+      const nw = bankAccountsValue2 + greyBalance2 + greyHoldingsValue2 + muleCardsValue2 + muleHoldingsValue2 + fakeIpsValue2 + ipCashRef.current + ipHoldingsValue2 + shopStockValue2 + holdingsValue + bondsValue2 + itemsValue2 + leverageValue2;
       setNetWorthHistory((prev) => [...prev.slice(-79), nw]);
     }, 2e3);
     return () => clearInterval(id);
@@ -3020,6 +3039,33 @@ function MarketSandbox() {
       }
       setQuarterRevenue(0);
       setQuarterEndsAt(Date.now() + QUARTER_MS);
+    }, 5e3);
+    return () => clearInterval(id);
+  }, [loaded]);
+  useEffect(() => {
+    if (!loaded) return;
+    const id = setInterval(() => {
+      const now = Date.now();
+      const entries = Object.entries(fakeIpsRef.current);
+      let changed = false;
+      const next = { ...fakeIpsRef.current };
+      entries.forEach(([fakeId, entity]) => {
+        if (now < entity.quarterEndsAt) return;
+        changed = true;
+        const revenue = entity.quarterRevenue;
+        const isOoo = entity.entityType === "ooo";
+        let taxOwed = entity.taxOwed;
+        if (revenue > 0) {
+          const overLimit = !isOoo && revenue > IP_TURNOVER_HARD_CAP;
+          const baseTax = isOoo ? computeOooTax(revenue) : computeIpTax(revenue);
+          taxOwed = Number((taxOwed + baseTax + (overLimit ? IP_OVER_LIMIT_FINE : 0)).toFixed(2));
+          if (overLimit) {
+            pushPost({ text: `\u041E\u0431\u043E\u0440\u043E\u0442 \u0447\u0443\u0436\u043E\u0433\u043E \u0418\u041F \u0437\u0430 \u0447\u0430\u0441 \u043F\u0440\u0435\u0432\u044B\u0441\u0438\u043B $500,000 \u2014 \u043D\u0430\u0447\u0438\u0441\u043B\u0435\u043D \u0448\u0442\u0440\u0430\u0444 ${fmt(IP_OVER_LIMIT_FINE)} \u0437\u0430 \u0440\u0430\u0431\u043E\u0442\u0443 \u0431\u0435\u0437 \u041E\u041E\u041E`, positive: false, isMacro: false });
+          }
+        }
+        next[fakeId] = { ...entity, quarterRevenue: 0, quarterEndsAt: now + QUARTER_MS, taxOwed };
+      });
+      if (changed) setFakeIps(next);
     }, 5e3);
     return () => clearInterval(id);
   }, [loaded]);
@@ -3830,14 +3876,15 @@ function MarketSandbox() {
     const useGrey = account === "grey" && greyAccount && !greyAccount.frozen;
     const useBankCard = !useIp && !useGrey && BANK_ACCOUNTS.some((b) => b.id === account) && bankAccounts[account] && !bankAccounts[account].frozen;
     const useMule = !useIp && !useGrey && !useBankCard && muleCards[account] && !muleCards[account].frozen;
+    const useFakeIp = !useIp && !useGrey && !useBankCard && !useMule && fakeIps[account] && company.sector === "\u041A\u0440\u0438\u043F\u0442\u043E";
     if (!useIp && !useGrey && !useBankCard && !useMule && muleCards[account] && muleCards[account].frozen) return;
     if (side === "sell" && !useIp && !useGrey && !useBankCard && !useMule && loans.some((l) => l.frozen)) return;
-    const curCash = useGrey ? greyAccount.balance : useIp ? ipCash : useBankCard ? bankAccounts[account].balance : useMule ? muleCards[account].balance : 0;
-    const curHoldings = useGrey ? greyHoldings : useIp ? ipHoldings : useMule ? muleHoldings[account] || {} : holdings;
-    const setCurCash = useGrey ? (fn) => setGreyAccount((a) => a ? { ...a, balance: typeof fn === "function" ? fn(a.balance) : fn } : a) : useIp ? setIpCash : useBankCard ? (fn) => setBankAccounts((prev) => prev[account] ? { ...prev, [account]: { ...prev[account], balance: typeof fn === "function" ? fn(prev[account].balance) : fn } } : prev) : useMule ? (fn) => setMuleCards((prev) => prev[account] ? { ...prev, [account]: { ...prev[account], balance: typeof fn === "function" ? fn(prev[account].balance) : fn } } : prev) : () => {
+    const curCash = useGrey ? greyAccount.balance : useIp ? ipCash : useBankCard ? bankAccounts[account].balance : useMule ? muleCards[account].balance : useFakeIp ? fakeIps[account].cash : 0;
+    const curHoldings = useGrey ? greyHoldings : useIp ? ipHoldings : useMule ? muleHoldings[account] || {} : useFakeIp ? fakeIps[account].holdings || {} : holdings;
+    const setCurCash = useGrey ? (fn) => setGreyAccount((a) => a ? { ...a, balance: typeof fn === "function" ? fn(a.balance) : fn } : a) : useIp ? setIpCash : useBankCard ? (fn) => setBankAccounts((prev) => prev[account] ? { ...prev, [account]: { ...prev[account], balance: typeof fn === "function" ? fn(prev[account].balance) : fn } } : prev) : useMule ? (fn) => setMuleCards((prev) => prev[account] ? { ...prev, [account]: { ...prev[account], balance: typeof fn === "function" ? fn(prev[account].balance) : fn } } : prev) : useFakeIp ? (fn) => setFakeIps((prev) => prev[account] ? { ...prev, [account]: { ...prev[account], cash: typeof fn === "function" ? fn(prev[account].cash) : fn } } : prev) : () => {
     };
-    const setCurHoldings = useGrey ? setGreyHoldings : useIp ? setIpHoldings : useMule ? (fn) => setMuleHoldings((prev) => ({ ...prev, [account]: typeof fn === "function" ? fn(prev[account] || {}) : fn })) : setHoldings;
-    const acctTag = useGrey ? " \xB7 Meridian" : useIp ? " \xB7 \u0418\u041F" : useBankCard ? ` \xB7 ${BANK_ACCOUNTS.find((b) => b.id === account)?.name}` : useMule ? " \xB7 \u0447\u0443\u0436\u0430\u044F \u043A\u0430\u0440\u0442\u0430" : "";
+    const setCurHoldings = useGrey ? setGreyHoldings : useIp ? setIpHoldings : useMule ? (fn) => setMuleHoldings((prev) => ({ ...prev, [account]: typeof fn === "function" ? fn(prev[account] || {}) : fn })) : useFakeIp ? (fn) => setFakeIps((prev) => prev[account] ? { ...prev, [account]: { ...prev[account], holdings: typeof fn === "function" ? fn(prev[account].holdings || {}) : fn } } : prev) : setHoldings;
+    const acctTag = useGrey ? " \xB7 Meridian" : useIp ? " \xB7 \u0418\u041F" : useBankCard ? ` \xB7 ${BANK_ACCOUNTS.find((b) => b.id === account)?.name}` : useMule ? " \xB7 \u0447\u0443\u0436\u0430\u044F \u043A\u0430\u0440\u0442\u0430" : useFakeIp ? " \xB7 \u0447\u0443\u0436\u043E\u0435 \u0418\u041F" : "";
     const sizeRatio = qty / company.supply;
     const impactPct = Math.min(92, sizeRatio * 150);
     if (side === "buy") {
@@ -3857,7 +3904,7 @@ function MarketSandbox() {
         return { ...h, [companyId]: { qty: newQty, avgCost: newAvg } };
       });
       applyImpact(companyId, impactPct);
-      if (!useMule && sizeRatio > 0.08) flagSuspicion(sizeRatio * 35);
+      if (!useMule && !useFakeIp && sizeRatio > 0.08) flagSuspicion(sizeRatio * 35);
       logTx(`\u041F\u043E\u043A\u0443\u043F\u043A\u0430 ${company.ticker} \xD7${qty}${acctTag}`, cost, "out");
     } else {
       const held = curHoldings[companyId]?.qty || 0;
@@ -3880,6 +3927,8 @@ function MarketSandbox() {
       applyImpact(companyId, -impactPct);
       if (useIp) {
         setQuarterRevenue((r) => r + grossProceeds);
+      } else if (useFakeIp) {
+        setFakeIps((prev) => prev[account] ? { ...prev, [account]: { ...prev[account], quarterRevenue: prev[account].quarterRevenue + grossProceeds } } : prev);
       } else if (!useGrey && !useMule && profit > 0) {
         accrueTax(`\u041D\u0430\u043B\u043E\u0433 \u0441 \u043F\u0440\u0438\u0431\u044B\u043B\u0438 (${company.ticker})`, Math.round(profit * 0.13));
       }
@@ -4749,7 +4798,7 @@ function MarketSandbox() {
     }
     setXferFeedback({ ok: true, msg: "\u041F\u0435\u0440\u0435\u0432\u043E\u0434 \u043E\u0442\u043F\u0440\u0430\u0432\u043B\u0435\u043D" });
   };
-  const getAccountBalance = (accountId) => accountId === "grey" ? greyAccount?.balance || 0 : accountId === "ip" ? ipCash : muleCards[accountId] ? muleCards[accountId].balance || 0 : bankAccounts[accountId]?.balance || 0;
+  const getAccountBalance = (accountId) => accountId === "grey" ? greyAccount?.balance || 0 : accountId === "ip" ? ipCash : muleCards[accountId] ? muleCards[accountId].balance || 0 : fakeIps[accountId] ? fakeIps[accountId].cash || 0 : bankAccounts[accountId]?.balance || 0;
   const totalPropertyCollateralValue = () => Object.entries(ownedItems).reduce((sum, [itemId, qty]) => {
     const item = SHOP_ITEMS.find((i) => i.id === itemId);
     return sum + (item && qty > 0 ? item.price * item.ltv * qty : 0);
@@ -4773,6 +4822,10 @@ function MarketSandbox() {
     }
     if (muleCards[accountId]) {
       setMuleCards((prev) => prev[accountId] ? { ...prev, [accountId]: { ...prev[accountId], balance: prev[accountId].balance + delta } } : prev);
+      return;
+    }
+    if (fakeIps[accountId]) {
+      setFakeIps((prev) => prev[accountId] ? { ...prev, [accountId]: { ...prev[accountId], cash: prev[accountId].cash + delta } } : prev);
       return;
     }
     setBankAccounts((prev) => prev[accountId] ? { ...prev, [accountId]: { ...prev[accountId], balance: prev[accountId].balance + delta } } : prev);
@@ -4978,6 +5031,8 @@ function MarketSandbox() {
       adjustAccountBalance(accountId, amount);
       if (accountId === "ip") {
         setQuarterRevenue((r) => r + amount);
+      } else if (fakeIps[accountId]) {
+        setFakeIps((prev) => prev[accountId] ? { ...prev, [accountId]: { ...prev[accountId], quarterRevenue: prev[accountId].quarterRevenue + amount } } : prev);
       } else if (BANK_ACCOUNTS.some((b) => b.id === accountId)) {
         setBankAccounts((prev) => prev[accountId] ? { ...prev, [accountId]: { ...prev[accountId], turnoverUsed: prev[accountId].turnoverUsed + amount, lifetimeTurnover: (prev[accountId].lifetimeTurnover || 0) + amount } } : prev);
       }
@@ -4998,9 +5053,9 @@ function MarketSandbox() {
     if (!round || round.stage !== "received") return;
     const { amount, accountId } = round;
     const forward = Math.round(amount * (1 - blackMarketCutRate(amount)));
-    const poolType = accountId === "ip" ? "ip" : accountId === "grey" ? "grey" : "personal";
-    const pool = poolType === "ip" ? ipHoldings : poolType === "grey" ? greyHoldings : holdings;
-    const setPool = poolType === "ip" ? setIpHoldings : poolType === "grey" ? setGreyHoldings : setHoldings;
+    const poolType = accountId === "ip" ? "ip" : accountId === "grey" ? "grey" : muleCards[accountId] ? "mule" : fakeIps[accountId] ? "fakeip" : "personal";
+    const pool = poolType === "ip" ? ipHoldings : poolType === "grey" ? greyHoldings : poolType === "mule" ? muleHoldings[accountId] || {} : poolType === "fakeip" ? fakeIps[accountId].holdings || {} : holdings;
+    const setPool = poolType === "ip" ? setIpHoldings : poolType === "grey" ? setGreyHoldings : poolType === "mule" ? (fn) => setMuleHoldings((prev) => ({ ...prev, [accountId]: typeof fn === "function" ? fn(prev[accountId] || {}) : fn })) : poolType === "fakeip" ? (fn) => setFakeIps((prev) => prev[accountId] ? { ...prev, [accountId]: { ...prev[accountId], holdings: typeof fn === "function" ? fn(prev[accountId].holdings || {}) : fn } } : prev) : setHoldings;
     const company = companies.find((c) => c.id === companyId);
     if (!company) return;
     const held = pool[companyId]?.qty || 0;
@@ -5020,7 +5075,7 @@ function MarketSandbox() {
       return { ...h, [companyId]: { ...prevH, qty: newQty } };
     });
     const isOwnCoin = companyId === playerVentureId;
-    const isMuleReceiving = !!muleCards[accountId];
+    const isMuleReceiving = !!muleCards[accountId] || !!fakeIps[accountId];
     logTx(`\u0427\u0451\u0440\u043D\u044B\u0439 \u0440\u044B\u043D\u043E\u043A: \u043E\u0442\u043F\u0440\u0430\u0432\u043A\u0430 ${company.ticker} \u043F\u043E\u043B\u0443\u0447\u0430\u0442\u0435\u043B\u044E${isTeher ? " (\u043A\u043E\u043C\u0438\u0441\u0441\u0438\u044F TEHER 1%)" : ""}`, forward, "out");
     setBlackMarketVolume((v) => v + amount);
     if (isMuleReceiving) setBlackMarketMuleRounds((n) => n + 1); else setBlackMarketOwnRounds((n) => n + 1);
@@ -5185,6 +5240,84 @@ function MarketSandbox() {
     logTx(`\u041E\u0431\u043D\u0430\u043B\u0438\u0447\u043A\u0430 \u0441 \u0447\u0443\u0436\u043E\u0439 \u043A\u0430\u0440\u0442\u044B \xB7 ${bank.name}${fee > 0 ? ` (\u043A\u043E\u043C\u0438\u0441\u0441\u0438\u044F ${fmt(fee)})` : ""}`, total, "out");
     setMuleTransferInputs((f) => ({ ...f, [muleId]: "" }));
     setMuleFb(muleId, true, `\u041F\u0435\u0440\u0435\u0432\u0435\u0434\u0435\u043D\u043E ${fmt(amt)}${fee > 0 ? `, \u043A\u043E\u043C\u0438\u0441\u0441\u0438\u044F ${fmt(fee)}` : ""}`);
+    setTimeout(saveGame, 50);
+  };
+  const [fakeIpFeedback, setFakeIpFeedback] = useState({});
+  const [fakeIpTransferInputs, setFakeIpTransferInputs] = useState({});
+  const setFakeIpFb = (id, ok, msg) => setFakeIpFeedback((f) => ({ ...f, [id]: { ok, msg } }));
+  const buyFakeIp = () => {
+    const src = resolvedPayFrom;
+    const bal = getAccountBalance(src);
+    if (bal < FAKE_IP_PRICE) return;
+    adjustAccountBalance(src, -FAKE_IP_PRICE);
+    const id = makeId("fakeip");
+    setFakeIps((prev) => ({
+      ...prev,
+      [id]: { cash: 0, entityType: "ip", taxOwed: 0, quarterRevenue: 0, quarterEndsAt: Date.now() + QUARTER_MS, holdings: {}, purchasedAt: Date.now() }
+    }));
+    logTx("\u0427\u0451\u0440\u043D\u044B\u0439 \u0440\u044B\u043D\u043E\u043A: \u0447\u0443\u0436\u043E\u0435 \u0418\u041F", FAKE_IP_PRICE, "out");
+    setTimeout(saveGame, 50);
+  };
+  const depositToFakeIp = (fakeId, amount) => {
+    const entity = fakeIps[fakeId];
+    const amt = Math.round(Number(amount));
+    const src = resolvedPayFrom;
+    const bal = getAccountBalance(src);
+    if (!entity) return;
+    if (!amt || amt <= 0) {
+      setFakeIpFb(fakeId, false, "\u0423\u043A\u0430\u0436\u0438 \u0441\u0443\u043C\u043C\u0443");
+      return;
+    }
+    if (amt > bal) {
+      setFakeIpFb(fakeId, false, "\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u043D\u0430 \u0441\u0447\u0451\u0442\u0435-\u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A\u0435");
+      return;
+    }
+    const turnoverCheck = debitCardTurnoverForTransfer(src, amt);
+    if (!turnoverCheck.ok) {
+      setFakeIpFb(fakeId, false, turnoverCheck.msg);
+      return;
+    }
+    adjustAccountBalance(src, -amt);
+    setFakeIps((prev) => prev[fakeId] ? { ...prev, [fakeId]: { ...prev[fakeId], cash: prev[fakeId].cash + amt } } : prev);
+    setFakeIpTransferInputs((f) => ({ ...f, [fakeId]: "" }));
+    logTx("\u041F\u043E\u043F\u043E\u043B\u043D\u0435\u043D\u0438\u0435 \u0447\u0443\u0436\u043E\u0433\u043E \u0418\u041F", amt, "out");
+    setFakeIpFb(fakeId, true, `\u041F\u043E\u043F\u043E\u043B\u043D\u0435\u043D\u043E ${fmt(amt)}`);
+    setTimeout(saveGame, 50);
+  };
+  const withdrawFromFakeIp = (fakeId, amount) => {
+    const entity = fakeIps[fakeId];
+    const amt = Math.round(Number(amount));
+    if (!entity) return;
+    if (!amt || amt <= 0) {
+      setFakeIpFb(fakeId, false, "\u0423\u043A\u0430\u0436\u0438 \u0441\u0443\u043C\u043C\u0443");
+      return;
+    }
+    if (amt > entity.cash) {
+      setFakeIpFb(fakeId, false, "\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u043D\u0430 \u0441\u0447\u0451\u0442\u0435 \u0418\u041F");
+      return;
+    }
+    const fee = Math.round(amt * 0.02);
+    setFakeIps((prev) => prev[fakeId] ? { ...prev, [fakeId]: { ...prev[fakeId], cash: prev[fakeId].cash - amt } } : prev);
+    adjustAccountBalance(resolvedPayFrom, amt - fee);
+    setFakeIpTransferInputs((f) => ({ ...f, [fakeId]: "" }));
+    logTx("\u0412\u044B\u0432\u043E\u0434 \u0441 \u0447\u0443\u0436\u043E\u0433\u043E \u0418\u041F", amt - fee, "in");
+    setFakeIpFb(fakeId, true, `\u0412\u044B\u0432\u0435\u0434\u0435\u043D\u043E ${fmt(amt - fee)} (\u043A\u043E\u043C\u0438\u0441\u0441\u0438\u044F ${fmt(fee)})`);
+    setTimeout(saveGame, 50);
+  };
+  const payFakeIpTax = (fakeId, amountRaw) => {
+    const entity = fakeIps[fakeId];
+    if (!entity) return;
+    const amount = Math.min(Number(amountRaw) || entity.taxOwed, entity.cash, entity.taxOwed);
+    if (amount <= 0) return;
+    setFakeIps((prev) => prev[fakeId] ? { ...prev, [fakeId]: { ...prev[fakeId], cash: prev[fakeId].cash - amount, taxOwed: Number((prev[fakeId].taxOwed - amount).toFixed(2)) } } : prev);
+    logTx("\u041D\u0430\u043B\u043E\u0433\u0438 \u0447\u0443\u0436\u043E\u0433\u043E \u0418\u041F", amount, "out");
+    setTimeout(saveGame, 50);
+  };
+  const convertFakeIpToOoo = (fakeId) => {
+    const entity = fakeIps[fakeId];
+    if (!entity || entity.entityType === "ooo" || entity.cash < OOO_CONVERSION_FEE) return;
+    setFakeIps((prev) => prev[fakeId] ? { ...prev, [fakeId]: { ...prev[fakeId], entityType: "ooo", cash: prev[fakeId].cash - OOO_CONVERSION_FEE } } : prev);
+    logTx("\u041F\u0435\u0440\u0435\u0432\u043E\u0434 \u0447\u0443\u0436\u043E\u0433\u043E \u0418\u041F \u0432 \u041E\u041E\u041E", OOO_CONVERSION_FEE, "out");
     setTimeout(saveGame, 50);
   };
   const stockCollateralValue = resellShops.reduce((sum, s) => sum + Object.values(s.categories || {}).reduce((cs, c) => cs + c.stock * c.avgCost, 0), 0);
@@ -6011,7 +6144,7 @@ function MarketSandbox() {
     setTimeout(saveGame, 50);
   };
   const resolvedPayFrom = (() => {
-    const valid = (id) => id === "grey" ? !!(greyAccount && !greyAccount.frozen) : id === "ip" ? ipCash > 0 : muleCards[id] ? !muleCards[id].frozen : !!(bankAccounts[id] && !bankAccounts[id].frozen);
+    const valid = (id) => id === "grey" ? !!(greyAccount && !greyAccount.frozen) : id === "ip" ? ipCash > 0 : muleCards[id] ? !muleCards[id].frozen : fakeIps[id] ? true : !!(bankAccounts[id] && !bankAccounts[id].frozen);
     if (valid(payFromAccount)) return payFromAccount;
     const firstBank = BANK_ACCOUNTS.find((b) => bankAccounts[b.id] && !bankAccounts[b.id].frozen);
     if (firstBank) return firstBank.id;
@@ -6134,6 +6267,7 @@ function MarketSandbox() {
     setBlackMarketRoundsDone(0);
     setMuleCards({});
     setMuleHoldings({});
+    setFakeIps({});
     setMuleTransferInputs({});
     setMuleTransferDest({});
     setMuleFeedback({});
@@ -6171,12 +6305,23 @@ function MarketSandbox() {
   const shopStockValue = resellShops.reduce((sum, s) => sum + Object.values(s.categories || {}).reduce((cs, c) => cs + c.stock * c.avgCost, 0), 0);
   const bankAccountsValue = Object.values(bankAccounts).reduce((sum, a) => sum + a.balance, 0);
   const muleCardsValue = Object.values(muleCards).reduce((sum, c) => sum + c.balance, 0);
+  const muleHoldingsValue = Object.values(muleHoldings).reduce((sum, pool) => sum + Object.entries(pool).reduce((s, [cid, h]) => {
+    const c = companies.find((x) => x.id === cid);
+    return s + (c ? c.price * h.qty : 0);
+  }, 0), 0);
+  const fakeIpsValue = Object.values(fakeIps).reduce((sum, entity) => {
+    const holdingsVal = Object.entries(entity.holdings || {}).reduce((s, [cid, h]) => {
+      const c = companies.find((x) => x.id === cid);
+      return s + (c ? c.price * h.qty : 0);
+    }, 0);
+    return sum + entity.cash + holdingsVal - entity.taxOwed;
+  }, 0);
   const greyBalance = greyAccount ? greyAccount.balance : 0;
   const greyHoldingsValue = Object.entries(greyHoldings).reduce((sum, [cid, h]) => {
     const c = companies.find((x) => x.id === cid);
     return sum + (c ? c.price * h.qty : 0);
   }, 0);
-  const netWorth = bankAccountsValue + greyBalance + greyHoldingsValue + muleCardsValue + ipCash + ipHoldingsValue + shopStockValue + Object.entries(holdings).reduce((sum, [cid, h]) => {
+  const netWorth = bankAccountsValue + greyBalance + greyHoldingsValue + muleCardsValue + muleHoldingsValue + fakeIpsValue + ipCash + ipHoldingsValue + shopStockValue + Object.entries(holdings).reduce((sum, [cid, h]) => {
     const c = companies.find((x) => x.id === cid);
     return sum + (c ? c.price * h.qty : 0);
   }, 0) + bondsValue + itemsValue + leverageValue;
@@ -9006,7 +9151,8 @@ function MarketSandbox() {
                     { id: "ip", label: "\u0418\u041F" },
                     ...BANK_ACCOUNTS.filter((b) => bankAccounts[b.id] && !bankAccounts[b.id].frozen).map((b) => ({ id: b.id, label: `${b.name} \xB7 \u043A\u0430\u0440\u0442\u0430` })),
                     ...greyAccount && !greyAccount.frozen ? [{ id: "grey", label: `${GREY_BANK.name} \xB7 \u043A\u0430\u0440\u0442\u0430` }] : [],
-                    ...Object.entries(muleCards).filter(([, c]) => !c.frozen).map(([muleId, c]) => ({ id: muleId, label: `${BANK_ACCOUNTS.find((b) => b.id === c.bankId)?.name || c.bankId} \xB7 \u0447\u0443\u0436\u0430\u044F \u2022\u2022\u2022\u2022 ${c.cardLast4}` }))
+                    ...Object.entries(muleCards).filter(([, c]) => !c.frozen).map(([muleId, c]) => ({ id: muleId, label: `${BANK_ACCOUNTS.find((b) => b.id === c.bankId)?.name || c.bankId} \xB7 \u0447\u0443\u0436\u0430\u044F \u2022\u2022\u2022\u2022 ${c.cardLast4}` })),
+                    ...Object.keys(fakeIps).map((fakeId) => ({ id: fakeId, label: "\u0447\u0443\u0436\u043E\u0435 \u0418\u041F" }))
                   ];
                   return /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 12 }, children: [
                     /* @__PURE__ */ jsx("div", { style: { fontSize: 13, fontWeight: 700, marginBottom: 4 }, children: "\u0412\u0445\u043E\u0434\u044F\u0449\u0438\u0439 \u043F\u043B\u0430\u0442\u0451\u0436" }),
@@ -9026,10 +9172,10 @@ function MarketSandbox() {
                   const rate = blackMarketCutRate(round.amount);
                   const forward = Math.round(round.amount * (1 - rate));
                   const keep = round.amount - forward;
-                  const acctLabel = round.accountId === "ip" ? "\u0418\u041F" : round.accountId === "grey" ? GREY_BANK.name : round.accountId in muleCards ? `\u0447\u0443\u0436\u0430\u044F \u2022\u2022\u2022\u2022 ${muleCards[round.accountId]?.cardLast4}` : BANK_ACCOUNTS.find((b) => b.id === round.accountId)?.name;
+                  const acctLabel = round.accountId === "ip" ? "\u0418\u041F" : round.accountId === "grey" ? GREY_BANK.name : round.accountId in muleCards ? `\u0447\u0443\u0436\u0430\u044F \u2022\u2022\u2022\u2022 ${muleCards[round.accountId]?.cardLast4}` : round.accountId in fakeIps ? "\u0447\u0443\u0436\u043E\u0435 \u0418\u041F" : BANK_ACCOUNTS.find((b) => b.id === round.accountId)?.name;
                   const secLeft = Math.max(0, Math.ceil((round.deadlineAt - Date.now()) / 1e3));
-                  const poolType = round.accountId === "ip" ? "ip" : round.accountId === "grey" ? "grey" : "personal";
-                  const pool = poolType === "ip" ? ipHoldings : poolType === "grey" ? greyHoldings : holdings;
+                  const poolType = round.accountId === "ip" ? "ip" : round.accountId === "grey" ? "grey" : muleCards[round.accountId] ? "mule" : fakeIps[round.accountId] ? "fakeip" : "personal";
+                  const pool = poolType === "ip" ? ipHoldings : poolType === "grey" ? greyHoldings : poolType === "mule" ? muleHoldings[round.accountId] || {} : poolType === "fakeip" ? fakeIps[round.accountId].holdings || {} : holdings;
                   const cryptoOptions = [
                     ...companies.filter((c) => c.sector === "\u041A\u0440\u0438\u043F\u0442\u043E" && !c.isPlayer),
                     ...playerVenture && playerVenture.kind === "crypto" ? [playerVenture] : []
@@ -9125,6 +9271,20 @@ function MarketSandbox() {
                 ] })
               ] }) }, b.id);
             }),
+            (() => {
+              const resolvedBal3 = getAccountBalance(resolvedPayFrom);
+              return /* @__PURE__ */ jsx("div", { style: { background: C.surface, border: `1px solid ${C.gold}55`, borderRadius: 14, padding: 16, marginBottom: 12 }, children: /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" }, children: [
+                /* @__PURE__ */ jsxs("div", { children: [
+                  /* @__PURE__ */ jsx("div", { style: { fontWeight: 700, fontSize: 14 }, children: "\u0427\u0443\u0436\u043E\u0435 \u0418\u041F" }),
+                  /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkDim }, children: Object.keys(fakeIps).length > 0 ? `\u0443 \u0442\u0435\u0431\u044F: ${Object.keys(fakeIps).length}` : "\u0413\u043E\u0442\u043E\u0432\u0430\u044F \u0440\u0435\u0433\u0438\u0441\u0442\u0440\u0430\u0446\u0438\u044F \u043D\u0430 \u0447\u0443\u0436\u043E\u0435 \u0438\u043C\u044F" })
+                ] }),
+                /* @__PURE__ */ jsxs("button", { onClick: buyFakeIp, disabled: resolvedBal3 < FAKE_IP_PRICE, style: { padding: "9px 14px", borderRadius: 9, border: "none", fontWeight: 700, fontSize: 12.5, background: resolvedBal3 >= FAKE_IP_PRICE ? C.gold : C.surface2, color: resolvedBal3 >= FAKE_IP_PRICE ? "#161207" : C.inkFaint }, children: [
+                  "\u041A\u0443\u043F\u0438\u0442\u044C \xB7 ",
+                  fmt(FAKE_IP_PRICE)
+                ] })
+              ] }) });
+            })(),
+            /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, textAlign: "center", marginBottom: 14 }, children: "\u0427\u0443\u0436\u043E\u0435 \u0418\u041F \u2014 \u043F\u043E\u043B\u043D\u043E\u0446\u0435\u043D\u043D\u0430\u044F \u0431\u0438\u0437\u043D\u0435\u0441-\u043E\u0431\u043E\u043B\u043E\u0447\u043A\u0430 \u043D\u0430 \u0447\u0443\u0436\u043E\u0435 \u0438\u043C\u044F: \u0442\u0435 \u0436\u0435 \u043B\u0438\u043C\u0438\u0442 \u043E\u0431\u043E\u0440\u043E\u0442\u0430, \u043D\u0430\u043B\u043E\u0433\u0438 \u0438 \u0432\u043E\u0437\u043C\u043E\u0436\u043D\u043E\u0441\u0442\u044C \u043F\u0435\u0440\u0435\u0439\u0442\u0438 \u043D\u0430 \u041E\u041E\u041E, \u0447\u0442\u043E \u0438 \u0443 \u043E\u0431\u044B\u0447\u043D\u043E\u0433\u043E, \u043D\u043E \u043D\u0435 \u0441\u0432\u044F\u0437\u0430\u043D\u043E \u0441 \u0442\u0432\u043E\u0435\u0439 \u0440\u0435\u043F\u0443\u0442\u0430\u0446\u0438\u0435\u0439. \u0423\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0438\u0435 \u2014 \u0432 \xAB\u041A\u0430\u0431\u0438\u043D\u0435\u0442 \u2192 \u0427\u0443\u0436\u0438\u0435 \u043A\u0430\u0440\u0442\u044B\xBB." }),
             /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, textAlign: "center" }, children: "\u041A\u0443\u043F\u043B\u0435\u043D\u043D\u044B\u0435 \u043A\u0430\u0440\u0442\u044B \u043F\u043E\u044F\u0432\u044F\u0442\u0441\u044F \u0432 \xAB\u041A\u0430\u0431\u0438\u043D\u0435\u0442 \u2192 \u0411\u0430\u043D\u043A\u0438\xBB, \u0432\u043D\u0443\u0442\u0440\u0438 \u0441\u043E\u043E\u0442\u0432\u0435\u0442\u0441\u0442\u0432\u0443\u044E\u0449\u0435\u0433\u043E \u0431\u0430\u043D\u043A\u0430." }),
             Object.keys(muleCards).length > 0 && resellShops.length > 0 && /* @__PURE__ */ jsxs("div", { style: { marginTop: 20 }, children: [
               /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }, children: "\u041E\u0431\u043D\u0430\u043B \u0447\u0435\u0440\u0435\u0437 \u043C\u0430\u0433\u0430\u0437\u0438\u043D" }),
@@ -9182,9 +9342,9 @@ function MarketSandbox() {
               "\u0411\u0430\u043D\u043A\u0438",
               Object.keys(bankAccounts).length > 0 ? ` (${Object.keys(bankAccounts).length})` : ""
             ] }),
-            Object.keys(muleCards).length > 0 && /* @__PURE__ */ jsxs("button", { onClick: () => setCabinetSubTab("mule"), style: segStyle(cabinetSubTab === "mule"), children: [
+            (Object.keys(muleCards).length > 0 || Object.keys(fakeIps).length > 0) && /* @__PURE__ */ jsxs("button", { onClick: () => setCabinetSubTab("mule"), style: segStyle(cabinetSubTab === "mule"), children: [
               "\u0427\u0443\u0436\u0438\u0435 \u043A\u0430\u0440\u0442\u044B (",
-              Object.keys(muleCards).length,
+              Object.keys(muleCards).length + Object.keys(fakeIps).length,
               ")"
             ] }),
             /* @__PURE__ */ jsx("button", { onClick: () => setCabinetSubTab("history"), style: segStyle(cabinetSubTab === "history"), children: "\u0418\u0441\u0442\u043E\u0440\u0438\u044F" })
@@ -9996,7 +10156,7 @@ function MarketSandbox() {
           })() }),
           cabinetSubTab === "mule" && /* @__PURE__ */ jsxs("div", { children: [
             /* @__PURE__ */ jsx("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 12, marginBottom: 14, fontSize: 11.5, color: C.inkDim, lineHeight: 1.6 }, children: "\u0412\u0441\u0435 \u043A\u0430\u0440\u0442\u044B \u043D\u0430 \u0447\u0443\u0436\u043E\u0435 \u0438\u043C\u044F, \u043A\u0443\u043F\u043B\u0435\u043D\u043D\u044B\u0435 \u0432 \u0434\u0430\u0440\u043A\u043D\u0435\u0442\u0435, \u0432 \u043E\u0434\u043D\u043E\u043C \u043C\u0435\u0441\u0442\u0435 \u2014 \u0441 \u043F\u0440\u043E\u0433\u0440\u0435\u0432\u043E\u043C, \u043B\u0438\u043C\u0438\u0442\u0430\u043C\u0438 \u0438 \u0440\u0438\u0441\u043A\u043E\u043C \u0431\u043B\u043E\u043A\u0438\u0440\u043E\u0432\u043A\u0438 \u043F\u043E 115-\u0424\u0417 \u0443 \u043A\u0430\u0436\u0434\u043E\u0439." }),
-            Object.keys(muleCards).length === 0 ? /* @__PURE__ */ jsx("div", { style: { fontSize: 13, color: C.inkFaint, textAlign: "center", padding: "20px 0" }, children: "\u041F\u043E\u043A\u0430 \u043D\u0435\u0442 \u043D\u0438 \u043E\u0434\u043D\u043E\u0439 \u2014 \u043A\u0443\u043F\u0438\u0442\u044C \u043C\u043E\u0436\u043D\u043E \u0432 \xAB\u0414\u0430\u0440\u043A\u043D\u0435\u0442 \u2192 \u0422\u043E\u0432\u0430\u0440\u044B\xBB." }) : Object.entries(muleCards).map(([muleId, card]) => {
+            Object.keys(muleCards).length === 0 && Object.keys(fakeIps).length === 0 ? /* @__PURE__ */ jsx("div", { style: { fontSize: 13, color: C.inkFaint, textAlign: "center", padding: "20px 0" }, children: "\u041F\u043E\u043A\u0430 \u043D\u0435\u0442 \u043D\u0438 \u043E\u0434\u043D\u043E\u0439 \u2014 \u043A\u0443\u043F\u0438\u0442\u044C \u043C\u043E\u0436\u043D\u043E \u0432 \xAB\u0414\u0430\u0440\u043A\u043D\u0435\u0442 \u2192 \u0422\u043E\u0432\u0430\u0440\u044B\xBB." }) : Object.entries(muleCards).map(([muleId, card]) => {
               const b = BANK_ACCOUNTS.find((x) => x.id === card.bankId);
               const mfb = muleFeedback[muleId];
               const mAmt = Number(muleTransferInputs[muleId] || 0);
@@ -10112,6 +10272,81 @@ function MarketSandbox() {
                 ] }),
                 /* @__PURE__ */ jsx("button", { onClick: () => closeMuleCard(muleId), style: { width: "100%", padding: 8, borderRadius: 9, border: `1px solid ${C.border}`, background: "transparent", color: C.inkDim, fontSize: 11.5, marginTop: 8 }, children: "\u0417\u0430\u043A\u0440\u044B\u0442\u044C \u043A\u0430\u0440\u0442\u0443" })
               ] }, muleId);
+            }),
+            Object.entries(fakeIps).map(([fakeId, entity]) => {
+              const fb = fakeIpFeedback[fakeId];
+              const revPct = Math.min(100, entity.quarterRevenue / IP_TURNOVER_HARD_CAP * 100);
+              const positions = Object.entries(entity.holdings || {}).filter(([, h]) => h.qty > 0);
+              return /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.gold}40`, borderRadius: 14, padding: 16, marginBottom: 12 }, children: [
+                /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }, children: [
+                  /* @__PURE__ */ jsxs("div", { children: [
+                    /* @__PURE__ */ jsxs("div", { style: { fontWeight: 700, fontSize: 14 }, children: [
+                      "\u0427\u0443\u0436\u043E\u0435 \u0418\u041F \xB7 ",
+                      entity.entityType === "ooo" ? "\u041E\u041E\u041E" : "\u0418\u041F"
+                    ] }),
+                    /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint }, children: "\u043D\u0435 \u0442\u0432\u043E\u0451 \u0438\u043C\u044F" })
+                  ] }),
+                  /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 16, fontWeight: 700 }, children: fmt(entity.cash) })
+                ] }),
+                entity.entityType === "ip" && /* @__PURE__ */ jsxs("div", { style: { margin: "8px 0" }, children: [
+                  /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 10, color: C.inkDim, marginBottom: 3 }, children: [
+                    /* @__PURE__ */ jsx("span", { children: "\u041E\u0431\u043E\u0440\u043E\u0442 \u0437\u0430 \u043A\u0432\u0430\u0440\u0442\u0430\u043B" }),
+                    /* @__PURE__ */ jsxs("span", { children: [
+                      fmt(entity.quarterRevenue),
+                      " / ",
+                      fmt(IP_TURNOVER_HARD_CAP)
+                    ] })
+                  ] }),
+                  /* @__PURE__ */ jsx("div", { style: { height: 4, borderRadius: 2, background: C.surface2, overflow: "hidden" }, children: /* @__PURE__ */ jsx("div", { style: { height: "100%", width: `${revPct}%`, background: revPct >= 85 ? C.red : C.violet } }) })
+                ] }),
+                entity.taxOwed > 0 && /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", background: `${C.red}14`, border: `1px solid ${C.red}40`, borderRadius: 10, padding: "8px 10px", margin: "8px 0" }, children: [
+                  /* @__PURE__ */ jsxs("div", { style: { fontSize: 11.5, color: C.red }, children: [
+                    "\u041D\u0430\u043B\u043E\u0433 \u043A \u0443\u043F\u043B\u0430\u0442\u0435: ",
+                    fmt(entity.taxOwed)
+                  ] }),
+                  /* @__PURE__ */ jsx("button", { onClick: () => payFakeIpTax(fakeId), disabled: entity.cash <= 0, style: { padding: "6px 10px", borderRadius: 8, border: "none", background: C.red, color: "#fff", fontWeight: 700, fontSize: 11 }, children: "\u041E\u043F\u043B\u0430\u0442\u0438\u0442\u044C" })
+                ] }),
+                positions.length > 0 && /* @__PURE__ */ jsxs("div", { style: { margin: "8px 0", background: C.surface2, borderRadius: 10, padding: 10 }, children: [
+                  /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkDim, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }, children: "\u0410\u043A\u0442\u0438\u0432\u044B" }),
+                  positions.map(([companyId, h]) => {
+                    const comp = companies.find((c) => c.id === companyId);
+                    if (!comp) return null;
+                    const value = comp.price * h.qty;
+                    const pnlPct = h.avgCost > 0 ? (comp.price / h.avgCost - 1) * 100 : 0;
+                    return /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderTop: `1px solid ${C.border}` }, children: [
+                      /* @__PURE__ */ jsxs("div", { children: [
+                        /* @__PURE__ */ jsxs("div", { style: { fontSize: 12.5, fontWeight: 700 }, children: [
+                          comp.ticker,
+                          " \xD7",
+                          h.qty
+                        ] }),
+                        /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: pnlPct >= 0 ? C.green : C.red }, children: [
+                          fmt(value),
+                          " \xB7 ",
+                          pnlPct >= 0 ? "+" : "",
+                          pnlPct.toFixed(1),
+                          "%"
+                        ] })
+                      ] }),
+                      /* @__PURE__ */ jsx("button", { onClick: () => executeTrade(companyId, "sell", h.qty, fakeId), style: { padding: "7px 12px", borderRadius: 8, border: "none", background: C.gold, color: "#161207", fontWeight: 700, fontSize: 11.5 }, children: "\u041F\u0440\u043E\u0434\u0430\u0442\u044C" })
+                    ] }, companyId);
+                  })
+                ] }),
+                /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8, marginBottom: 8 }, children: [
+                  /* @__PURE__ */ jsx("input", { value: fakeIpTransferInputs[fakeId] || "", onChange: (e) => setFakeIpTransferInputs((f) => ({ ...f, [fakeId]: e.target.value.replace(/[^0-9]/g, "") })), placeholder: "\u0421\u0443\u043C\u043C\u0430", inputMode: "numeric", style: { ...inputStyle, marginBottom: 0, flex: 1 } })
+                ] }),
+                /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8 }, children: [
+                  /* @__PURE__ */ jsx("button", { onClick: () => depositToFakeIp(fakeId, fakeIpTransferInputs[fakeId]), style: { flex: 1, padding: 9, borderRadius: 9, border: `1px solid ${C.border}`, background: C.surface2, color: C.ink, fontWeight: 600, fontSize: 12 }, children: "\u041F\u043E\u043F\u043E\u043B\u043D\u0438\u0442\u044C" }),
+                  /* @__PURE__ */ jsx("button", { onClick: () => withdrawFromFakeIp(fakeId, fakeIpTransferInputs[fakeId]), style: { flex: 1, padding: 9, borderRadius: 9, border: "none", background: C.gold, color: "#161207", fontWeight: 700, fontSize: 12 }, children: "\u041E\u0431\u043D\u0430\u043B\u0438\u0447\u0438\u0442\u044C" })
+                ] }),
+                fb && /* @__PURE__ */ jsx("div", { style: { fontSize: 11.5, color: fb.ok ? C.green : C.red, marginTop: 8 }, children: fb.msg }),
+                entity.entityType === "ip" && /* @__PURE__ */ jsx("button", { onClick: () => convertFakeIpToOoo(fakeId), disabled: entity.cash < OOO_CONVERSION_FEE, style: { width: "100%", padding: 8, borderRadius: 9, border: `1px solid ${C.border}`, background: "transparent", color: entity.cash >= OOO_CONVERSION_FEE ? C.violet : C.inkFaint, fontSize: 11.5, marginTop: 8 }, children: `\u041F\u0435\u0440\u0435\u0439\u0442\u0438 \u043D\u0430 \u041E\u041E\u041E \xB7 ${fmt(OOO_CONVERSION_FEE)}` }),
+                /* @__PURE__ */ jsx("button", { onClick: () => setFakeIps((prev) => {
+                  const rest = { ...prev };
+                  delete rest[fakeId];
+                  return rest;
+                }), style: { width: "100%", padding: 8, borderRadius: 9, border: `1px solid ${C.border}`, background: "transparent", color: C.inkDim, fontSize: 11.5, marginTop: 8 }, children: "\u0417\u0430\u043A\u0440\u044B\u0442\u044C" })
+              ] }, fakeId);
             })
           ] }),
           cabinetSubTab === "history" && /* @__PURE__ */ jsxs("div", { children: [
