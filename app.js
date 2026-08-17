@@ -1,4 +1,4 @@
-// Market Sandbox — V1.7 (MacroEconomyEngine фазы 1-5: OIL, ЦБ/ключевая ставка, инфляция, гос-долг/дефолт, отраслевая чувствительность)
+// Market Sandbox — V1.8 (кликабельные новостные аккаунты — государство/финансовые СМИ с профилем и историей постов)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -48,6 +48,7 @@ var NPC_SEED = [
 ];
 var MACRO_ACCOUNT = { handle: "@FinVestnik", name: "Финансовый Вестник", color: "#E8B14C", verified: true };
 var GOVERNMENT_ACCOUNT = { handle: "@GovPress", name: "Пресс-служба правительства", color: "#5AA9E6", verified: true };
+var NEWS_ACCOUNTS = [GOVERNMENT_ACCOUNT, MACRO_ACCOUNT];
 var ROLE_AUTHORS = {
   official: [MACRO_ACCOUNT],
   government: [GOVERNMENT_ACCOUNT],
@@ -1870,6 +1871,7 @@ function MarketSandbox() {
   const [transactions, setTransactions] = useState([]);
   const [selectedBizId, setSelectedBizId] = useState(null);
   const [viewingCompanyId, setViewingCompanyId] = useState(null);
+  const [viewingAuthorHandle, setViewingAuthorHandle] = useState(null);
   const engineRef = useRef({});
   const lastPumpAtRef = useRef(0);
   const pendingBufferRef = useRef([]);
@@ -6989,7 +6991,7 @@ function MarketSandbox() {
             " ",
             pendingCount > 0 ? `${pendingCount} \u043D\u043E\u0432\u044B\u0445 \u043F\u043E\u0441\u0442\u043E\u0432 \u2014 \u043F\u043E\u043A\u0430\u0437\u0430\u0442\u044C` : "\u041F\u0440\u043E\u0432\u0435\u0440\u0438\u0442\u044C \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F"
           ] }),
-          !viewingStoryId && !viewingCompanyId && (() => {
+          !viewingStoryId && !viewingCompanyId && !viewingAuthorHandle && (() => {
             const v = playerVenture && !playerVenture.rugged ? playerVenture : null;
             const adBoostCost = Math.round(SOCIAL_AD_BOOST_COST_BASE * Math.pow(1.4, v?.hypeLevel || 0));
             const charsLeft = SOCIAL_POST_MAX_CHARS - composerText.length;
@@ -7086,7 +7088,11 @@ function MarketSandbox() {
                 return /* @__PURE__ */ jsx("div", { style: { borderBottom: `1px solid ${C.border}`, padding: "12px 2px" }, children: /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 10 }, children: [
                   /* @__PURE__ */ jsx("div", { style: { width: 36, height: 36, borderRadius: "50%", background: `${author.color}22`, color: author.color, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 12, flexShrink: 0 }, children: author.name.slice(0, 1) }),
                   /* @__PURE__ */ jsxs("div", { style: { minWidth: 0, flex: 1 }, children: [
-                    /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "center", gap: 5, fontSize: 13 }, children: [
+                    /* @__PURE__ */ jsxs("button", { onClick: () => {
+                      setViewingStoryId(null);
+                      setViewingCompanyId(null);
+                      setViewingAuthorHandle(author.handle);
+                    }, style: { display: "flex", alignItems: "center", gap: 5, fontSize: 13, background: "none", border: "none", padding: 0, cursor: "pointer" }, children: [
                       /* @__PURE__ */ jsx("span", { style: { fontWeight: 700 }, children: author.name }),
                       author.verified && /* @__PURE__ */ jsx("span", { style: { color: C.gold, fontSize: 11 }, children: "\u2713" }),
                       /* @__PURE__ */ jsx("span", { style: { color: C.inkFaint, fontSize: 12 }, children: author.handle })
@@ -7151,7 +7157,11 @@ function MarketSandbox() {
                 return /* @__PURE__ */ jsx("div", { style: { borderBottom: `1px solid ${C.border}`, padding: "12px 2px" }, children: /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 10 }, children: [
                   /* @__PURE__ */ jsx("div", { style: { width: 36, height: 36, borderRadius: "50%", background: `${author.color}22`, color: author.color, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 12, flexShrink: 0 }, children: author.name.slice(0, 1) }),
                   /* @__PURE__ */ jsxs("div", { style: { minWidth: 0, flex: 1 }, children: [
-                    /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "center", gap: 5, fontSize: 13 }, children: [
+                    /* @__PURE__ */ jsxs("button", { onClick: () => {
+                      setViewingStoryId(null);
+                      setViewingCompanyId(null);
+                      setViewingAuthorHandle(author.handle);
+                    }, style: { display: "flex", alignItems: "center", gap: 5, fontSize: 13, background: "none", border: "none", padding: 0, cursor: "pointer" }, children: [
                       /* @__PURE__ */ jsx("span", { style: { fontWeight: 700 }, children: author.name }),
                       author.verified && /* @__PURE__ */ jsx("span", { style: { color: C.gold, fontSize: 11 }, children: "\u2713" }),
                       /* @__PURE__ */ jsx("span", { style: { color: C.inkFaint, fontSize: 12 }, children: author.handle })
@@ -7176,12 +7186,76 @@ function MarketSandbox() {
                 ] }) }, post.id);
               })
             ] });
+          })() : viewingAuthorHandle ? (() => {
+            const acc = NEWS_ACCOUNTS.find((a) => a.handle === viewingAuthorHandle) || Object.values(ROLE_AUTHORS).flat().find((a) => a.handle === viewingAuthorHandle);
+            if (!acc) return null;
+            const accPosts = feedPosts.filter((p) => authorFor(p).handle === viewingAuthorHandle);
+            return /* @__PURE__ */ jsxs("div", { children: [
+              /* @__PURE__ */ jsx("button", { onClick: () => setViewingAuthorHandle(null), style: { background: "none", border: "none", color: C.inkDim, fontSize: 12.5, marginBottom: 12, padding: 0 }, children: "\u2190 \u041D\u0430\u0437\u0430\u0434 \u043A \u043B\u0435\u043D\u0442\u0435" }),
+              /* @__PURE__ */ jsx("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 16, padding: 16, marginBottom: 16 }, children: /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "center", gap: 12 }, children: [
+                /* @__PURE__ */ jsx("div", { style: { width: 44, height: 44, borderRadius: "50%", background: `${acc.color}22`, color: acc.color, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 16, flexShrink: 0 }, children: acc.name.slice(0, 1) }),
+                /* @__PURE__ */ jsxs("div", { style: { minWidth: 0, flex: 1 }, children: [
+                  /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "center", gap: 5, fontWeight: 700, fontSize: 15 }, children: [
+                    acc.name,
+                    acc.verified && /* @__PURE__ */ jsx("span", { style: { color: C.gold, fontSize: 12 }, children: "\u2713" })
+                  ] }),
+                  /* @__PURE__ */ jsxs("div", { style: { fontSize: 12, color: C.inkDim }, children: [
+                    acc.handle,
+                    " \xB7 ",
+                    accPosts.length,
+                    " \u043F\u043E\u0441\u0442\u043E\u0432"
+                  ] })
+                ] })
+              ] }) }),
+              /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }, children: "\u041F\u043E\u0441\u0442\u044B" }),
+              accPosts.length === 0 && /* @__PURE__ */ jsx("div", { style: { color: C.inkFaint, fontSize: 13, padding: "30px 0", textAlign: "center" }, children: "\u041F\u043E\u043A\u0430 \u043D\u0438\u0447\u0435\u0433\u043E \u043D\u0435 \u043F\u0438\u0441\u0430\u043B\u0438" }),
+              accPosts.map((post) => {
+                const eng = engagementFor(post);
+                return /* @__PURE__ */ jsx("div", { style: { borderBottom: `1px solid ${C.border}`, padding: "12px 2px" }, children: /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 10 }, children: [
+                  /* @__PURE__ */ jsx("div", { style: { width: 36, height: 36, borderRadius: "50%", background: `${acc.color}22`, color: acc.color, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 12, flexShrink: 0 }, children: acc.name.slice(0, 1) }),
+                  /* @__PURE__ */ jsxs("div", { style: { minWidth: 0, flex: 1 }, children: [
+                    /* @__PURE__ */ jsxs("div", { style: { fontSize: 13.5, color: C.ink, lineHeight: 1.4 }, children: [
+                      post.isMacro ? "\u{1F6A8} " : !post.positive ? "\u{1F4C9} " : "\u{1F4C8} ",
+                      post.text
+                    ] }),
+                    post.ticker && /* @__PURE__ */ jsxs("button", { onClick: () => {
+                      const comp = companies.find((c) => c.ticker === post.ticker);
+                      if (comp) {
+                        setViewingAuthorHandle(null);
+                        setViewingCompanyId(comp.id);
+                      }
+                    }, style: { background: "none", border: "none", color: C.gold, fontSize: 11, fontWeight: 600, padding: 0, marginTop: 4 }, children: [
+                      "@",
+                      post.ticker,
+                      " \u2192"
+                    ] }),
+                    /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 18, marginTop: 8, fontSize: 11.5, color: C.inkFaint }, children: [
+                      /* @__PURE__ */ jsxs("span", { style: { display: "flex", alignItems: "center", gap: 4 }, children: [
+                        /* @__PURE__ */ jsx(Heart, { size: 12 }),
+                        " ",
+                        eng.likes.toLocaleString()
+                      ] }),
+                      /* @__PURE__ */ jsxs("span", { style: { display: "flex", alignItems: "center", gap: 4 }, children: [
+                        /* @__PURE__ */ jsx(MessageSquare, { size: 12 }),
+                        " ",
+                        eng.reposts.toLocaleString()
+                      ] })
+                    ] })
+                  ] })
+                ] }) }, post.id);
+              })
+            ] });
           })() : /* @__PURE__ */ jsxs(Fragment, { children: [
             /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }, children: "\u041A\u043E\u043C\u043F\u0430\u043D\u0438\u0438 \u043D\u0430 \u0431\u0438\u0440\u0436\u0435" }),
             /* @__PURE__ */ jsx("div", { style: { display: "flex", gap: 10, overflowX: "auto", paddingBottom: 4, marginBottom: 16 }, children: companies.map((c) => /* @__PURE__ */ jsxs("button", { onClick: () => setViewingCompanyId(c.id), style: { display: "flex", flexDirection: "column", alignItems: "center", gap: 5, background: "none", border: "none", flexShrink: 0, width: 56 }, children: [
               /* @__PURE__ */ jsx("div", { style: { width: 46, height: 46, borderRadius: "50%", background: `${c.rugged ? C.red : c.isPlayer ? C.gold : C.surface2}${c.isPlayer || c.rugged ? "22" : ""}`, border: c.isPlayer ? `1px solid ${c.rugged ? C.red : C.gold}` : `1px solid ${C.border}`, color: c.rugged ? C.red : c.isPlayer ? C.gold : C.inkDim, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 12 }, children: c.ticker.slice(0, 2) }),
               /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, textAlign: "center", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", width: "100%" }, children: c.ticker })
             ] }, c.id)) }),
+            /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }, children: "\u041D\u043E\u0432\u043E\u0441\u0442\u043D\u044B\u0435 \u0430\u043A\u043A\u0430\u0443\u043D\u0442\u044B" }),
+            /* @__PURE__ */ jsx("div", { style: { display: "flex", gap: 10, overflowX: "auto", paddingBottom: 4, marginBottom: 16 }, children: NEWS_ACCOUNTS.map((acc) => /* @__PURE__ */ jsxs("button", { onClick: () => setViewingAuthorHandle(acc.handle), style: { display: "flex", flexDirection: "column", alignItems: "center", gap: 5, background: "none", border: "none", flexShrink: 0, width: 56 }, children: [
+              /* @__PURE__ */ jsx("div", { style: { width: 46, height: 46, borderRadius: "50%", background: `${acc.color}22`, border: `1px solid ${acc.color}`, color: acc.color, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 15 }, children: acc.name.slice(0, 1) }),
+              /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, textAlign: "center", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", width: "100%" }, children: acc.handle })
+            ] }, acc.handle)) }),
             playerVenture ? /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 16, padding: 16, marginBottom: 16 }, children: [
               /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "center", gap: 12 }, children: [
                 /* @__PURE__ */ jsx("div", { style: { width: 44, height: 44, borderRadius: "50%", background: `${C.gold}22`, color: playerVenture.rugged ? C.red : C.gold, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 14, flexShrink: 0 }, children: playerVenture.ticker.slice(0, 2) }),
@@ -7212,7 +7286,7 @@ function MarketSandbox() {
                 /* @__PURE__ */ jsx("button", { onClick: () => setActiveTab("company"), style: { flex: 1, padding: 10, borderRadius: 10, border: "none", fontWeight: 700, fontSize: 12.5, background: C.gold, color: "#161207" }, children: "Опубликовать пост" }),
                 /* @__PURE__ */ jsx("button", { onClick: () => setActiveTab("company"), disabled: (playerVenture.investorCooldown || 0) > 0, style: { flex: 1, padding: 10, borderRadius: 10, border: "none", fontWeight: 700, fontSize: 12.5, background: (playerVenture.investorCooldown || 0) > 0 ? C.surface2 : C.green, color: (playerVenture.investorCooldown || 0) > 0 ? C.inkFaint : "#06210f" }, children: (playerVenture.investorCooldown || 0) > 0 ? `\u0416\u0434\u0451\u043C\u2026 ${playerVenture.investorCooldown}\u0441` : "\u041F\u0438\u0442\u0447 \u0432\u043E \u0432\u043A\u043B\u0430\u0434\u043A\u0435 \xAB\u0411\u0438\u0437\u043D\u0435\u0441\xBB" })
               ] })
-            ] }) : /* @__PURE__ */ jsx("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 16, textAlign: "center" }, children: /* @__PURE__ */ jsx("div", { style: { fontSize: 13, color: C.inkDim }, children: "\u0417\u0430\u0432\u0435\u0434\u0438 \u0431\u0438\u0437\u043D\u0435\u0441 \u0432\u043E \u0432\u043A\u043B\u0430\u0434\u043A\u0435 \xAB\u0411\u0438\u0437\u043D\u0435\u0441\xBB, \u0447\u0442\u043E\u0431\u044B \u043F\u043E\u043B\u0443\u0447\u0438\u0442\u044C \u0442\u0443\u0442 \u043F\u0440\u043E\u0444\u0438\u043B\u044C \u0438 \u043F\u0440\u0438\u0432\u043B\u0435\u043A\u0430\u0442\u044C \u043F\u043E\u0434\u043F\u0438\u0441\u0447\u0438\u043A\u043E\u0432 \u0438 \u0438\u043D\u0432\u0435\u0441\u0442\u043E\u0440\u043E\u0432" }) }),
+            ] }) : null,
             (() => {
               const FILTERS = [
                 { id: "all", label: "\u0412\u0441\u0435" },
