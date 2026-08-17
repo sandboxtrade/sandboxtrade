@@ -1,4 +1,4 @@
-// Market Sandbox — V1.8 (кликабельные новостные аккаунты — государство/финансовые СМИ с профилем и историей постов)
+// Market Sandbox — V1.9 (КРИТИЧЕСКИЙ ФИКС: убран открытый компаундящийся дрейф банков/поставщиков/ZZONE, добавлен возврат к среднему для нефти)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -965,10 +965,13 @@ function macroTick(macro, oilPrice) {
 function macroRetailIndexTarget(macro) {
   return macroClamp(1 + (macro.productionCost - 1) * 0.8, 0.7, 1.5);
 }
-function oilFrameStep(macro, gaussFn, dtFactor) {
-  const drift = macro.oilTrend * 0.015 * dtFactor;
+function oilFrameStep(macro, gaussFn, dtFactor, currentPrice) {
+  const drift = macro.oilTrend * 0.012 * dtFactor;
   const noise = gaussFn() * 0.012 * dtFactor;
-  return drift + noise;
+  // Лёгкий возврат к базовой цене (как у TEHER-пега, но намного слабее) — не мешает
+  // тренду отыгрываться, но не даёт цене разогнаться в бесконечность за долгую сессию.
+  const meanReversion = -((currentPrice - OIL_BASELINE_PRICE) / OIL_BASELINE_PRICE) * 100 * 0.002 * dtFactor;
+  return drift + noise + meanReversion;
 }
 // Перегрев экономики двигает решения центробанка: отклонение реальной инфляции от
 // таргета (INFLATION_TARGET) + опережающий сигнал по тренду нефти (ожидания).
@@ -982,21 +985,13 @@ function keyRateLoanMult(macro) {
 function zzoneBaseCommissionTarget(macro, baseFee) {
   return macroClamp(baseFee - (macro.logisticsCost - 1) * ZZONE_LOGISTICS_SENSITIVITY, ZZONE_MIN_COMMISSION, baseFee);
 }
-// Фаза 5: у каждой отрасли — своя чувствительность к макро-состоянию, а не один общий
-// множитель на всех (см. §17 ТЗ). Небольшой направленный дрейф поверх старого шума:
-// банки — ключевая ставка (выше ставка → выше маржа), Потребтовары (транспорт/снабжение)
-// и ZZONE — логистика (дороже логистика → ниже маржа), крипта и остальное — не затронуты.
-var BANK_RATE_DRIFT = 0.6;
-var SUPPLIER_LOGISTICS_DRIFT = 0.2;
-var ZZONE_LOGISTICS_DRIFT = 0.12;
-var ZZONE_RATE_DRIFT = 0.4;
-function macroSectorDrift(c, macro) {
-  const isBank = BANK_ACCOUNTS.some((b) => b.ticker === c.ticker) || c.ticker === IP_BANK.ticker;
-  if (isBank) return (macro.interestRate - CENTRAL_BANK_BASE_RATE) * BANK_RATE_DRIFT;
-  if (c.ticker === "ZZONE") return -(macro.logisticsCost - 1) * ZZONE_LOGISTICS_DRIFT - (macro.interestRate - CENTRAL_BANK_BASE_RATE) * ZZONE_RATE_DRIFT;
-  if (c.sector === "\u041F\u043E\u0442\u0440\u0435\u0431\u0442\u043E\u0432\u0430\u0440\u044B") return -(macro.logisticsCost - 1) * SUPPLIER_LOGISTICS_DRIFT;
-  return 0;
-}
+// Фаза 5 (ОТКЛЮЧЕНО, см. V1.9): здесь была отраслевая чувствительность в виде
+// постоянного процентного дрейфа, применявшегося каждый RAF-кадр (60 раз/сек). Это
+// открытый цикл без возврата к среднему — при устойчивом отклонении macro-состояния
+// экспоненциально компаундилось за минуты игры (наблюдалось: +1 500 000% на ASIM/VSLG).
+// Правильная реализация должна тянуть цену к обоснованному уровню (отрицательная
+// обратная связь, как у TEHER-пега), а не открыто дрейфовать — сделаем это отдельным
+// безопасным проходом, здесь оставлен только чистый шум.
 
 // ===================== SOCIAL INFLUENCE ENGINE =====================
 // Многофакторная оценка поста (не "слово X = +10%"). Считает независимые
@@ -2672,10 +2667,10 @@ function MarketSandbox() {
         if (!e) e = engine[c.id] = { price: c.price, cOpen: c.price, cHigh: c.price, cLow: c.price, candleStart: ts };
         let step;
         if (c.ticker === "OIL") {
-          step = oilFrameStep(macroRef.current, gauss, Math.sqrt(dt / 16.67));
+          step = oilFrameStep(macroRef.current, gauss, Math.sqrt(dt / 16.67), e.price);
         } else {
           const dtFactor = Math.sqrt(dt / 16.67);
-          step = gauss() * (c.vol || 1) * 0.035 * dtFactor + macroSectorDrift(c, macroRef.current) * dtFactor;
+          step = gauss() * (c.vol || 1) * 0.035 * dtFactor;
           if (c.ticker === "TEHER") {
             const pegDeviationPct = (1 - e.price) / e.price * 100;
             step += pegDeviationPct * 0.05;
