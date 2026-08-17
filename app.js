@@ -1,4 +1,4 @@
-// Market Sandbox — V2.9 (реклама маркетплейса переделана по образцу крипто-кампаний: вместо фиксированных тарифов ×1.5/×2.2/×3.2 — свободный бюджет + выбор длительности, коэффициент к спросу растёт линейно от бюджета без потолка (×100 и выше реально достижим), общий множитель от нескольких кампаний тоже больше не капается на ×6)
+// Market Sandbox — V2.9.1 (баланс рекламы маркетплейса: коэффициент теперь растёт от бюджета через квадратный корень, а не линейно — $1000 всё ещё даёт ×3.2 как раньше, но $2000 честные ×4.1, а не ×11; дорогие бюджеты дают всё меньшую отдачу на доллар, х100 остаётся возможным только при огромных вложениях. Несколько кампаний друг на друга по-прежнему можно докупать, пока старая ещё активна)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -1215,9 +1215,9 @@ function computeAdBoost(activeAds) {
   });
   return boost;
 }
-var AD_BUDGET_SCALE = 300;
+var AD_BUDGET_K = 0.07;
 function computeAdBudgetMult(budget) {
-  return 1 + Math.max(0, budget) / AD_BUDGET_SCALE;
+  return 1 + AD_BUDGET_K * Math.sqrt(Math.max(0, budget));
 }
 var INVESTOR_PERSONAS = [
   { id: "retail", name: "\u0420\u043E\u0437\u043D\u0438\u0447\u043D\u044B\u0439 \u0438\u043D\u0432\u0435\u0441\u0442\u043E\u0440", icon: "\u{1F9CD}", likes: "growth", wants: "\u043F\u0440\u043E\u0441\u0442\u0443\u044E \u0438\u0441\u0442\u043E\u0440\u0438\u044E \u0438 \u0440\u043E\u0441\u0442 \u0430\u0443\u0434\u0438\u0442\u043E\u0440\u0438\u0438", metric: "reputation", dilutionRange: [0.02, 0.05], hypeGain: 4, trustGain: 1, color: "#8FD19E" },
