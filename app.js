@@ -1,4 +1,4 @@
-// Market Sandbox — V0.8 (маркетплейс фаза 4b: IPO + соцсеть компании)
+// Market Sandbox — V1.3 (адаптация под устройства)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -61,7 +61,10 @@ function hashStr(s) {
   for (let i = 0; i < s.length; i++) h = h * 31 + s.charCodeAt(i) >>> 0;
   return h;
 }
+var PLAYER_ACCOUNT = { handle: "@you", name: "Вы", color: "#7C5CFC", verified: false };
 function authorFor(post) {
+  if (post.ownKind === "personal") return PLAYER_ACCOUNT;
+  if (post.ownKind === "company") return { handle: `@${post.ticker || "me"}`, name: post.companyName || post.ticker || "Моя компания", color: "#E8B14C", verified: true };
   const group = ROLE_AUTHORS[post.role] || ROLE_AUTHORS.official;
   return group[hashStr(post.id) % group.length];
 }
@@ -1517,7 +1520,7 @@ function AccountRow({ icon, iconBg, iconColor, amount, label, badge, onClick, pr
     ] })
   ] });
 }
-var inputStyle = { width: "100%", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: "11px 12px", color: C.ink, fontSize: 14, marginBottom: 12, marginTop: 6, outline: "none" };
+var inputStyle = { width: "100%", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: "11px 12px", color: C.ink, fontSize: 16, marginBottom: 12, marginTop: 6, outline: "none" };
 var qtyBtnStyle = { width: 36, height: 36, borderRadius: 8, border: "none", background: C.surface, color: C.ink, fontSize: 18, fontWeight: 700 };
 var choiceCardStyle = (active, color = C.gold) => ({ flex: 1, textAlign: "left", padding: "12px 12px", borderRadius: 12, border: `1px solid ${active ? color : C.border}`, background: active ? `${color}18` : C.surface });
 var actionBtnStyle = (enabled, color = C.gold) => ({ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, background: enabled ? color : C.surface2, color: enabled ? "#161207" : C.inkDim, border: "none", borderRadius: 12, padding: 14, fontWeight: 700, fontSize: 14, marginBottom: 10 });
@@ -1628,6 +1631,7 @@ function MarketSandbox() {
   const [ipLoanTerm, setIpLoanTerm] = useState(LOAN_TERM_RANGE.ip[0]);
   const [ipLoanFeedback, setIpLoanFeedback] = useState(null);
   const [ipTransferInput, setIpTransferInput] = useState("");
+  const [ipTransferError, setIpTransferError] = useState(null);
   const [marketIndex, setMarketIndex] = useState(1);
   const [ipTab, setIpTab] = useState("account");
   const [bankAccounts, setBankAccounts] = useState({});
@@ -1653,6 +1657,7 @@ function MarketSandbox() {
   const [blackMarketMuleRounds, setBlackMarketMuleRounds] = useState(0);
   const [blackMarketOwnRounds, setBlackMarketOwnRounds] = useState(0);
   const [muleCards, setMuleCards] = useState({});
+  const [muleHoldings, setMuleHoldings] = useState({});
   const [muleTransferInputs, setMuleTransferInputs] = useState({});
   const [muleTransferDest, setMuleTransferDest] = useState({});
   const [muleFeedback, setMuleFeedback] = useState({});
@@ -1701,6 +1706,7 @@ function MarketSandbox() {
   const blackMarketMuleRoundsRef = useRef(blackMarketMuleRounds);
   const blackMarketOwnRoundsRef = useRef(blackMarketOwnRounds);
   const muleCardsRef = useRef(muleCards);
+  const muleHoldingsRef = useRef(muleHoldings);
   const ipBankRatingRef = useRef(ipBankRating);
   const jobRef = useRef(job);
   const jobHistoryRef = useRef(jobHistory);
@@ -1802,6 +1808,9 @@ function MarketSandbox() {
   useEffect(() => {
     muleCardsRef.current = muleCards;
   }, [muleCards]);
+  useEffect(() => {
+    muleHoldingsRef.current = muleHoldings;
+  }, [muleHoldings]);
   useEffect(() => {
     ipBankRatingRef.current = ipBankRating;
   }, [ipBankRating]);
@@ -2204,7 +2213,37 @@ function MarketSandbox() {
     setIpBankRating(typeof data.ipBankRating === "number" ? data.ipBankRating : 50);
     setReputation(typeof data.reputation === "number" ? data.reputation : 100);
     setPlayerSocialProfile(data.playerSocialProfile && typeof data.playerSocialProfile === "object" ? { trust: typeof data.playerSocialProfile.trust === "number" ? data.playerSocialProfile.trust : 50, postLog: Array.isArray(data.playerSocialProfile.postLog) ? data.playerSocialProfile.postLog : [], lastPostAt: data.playerSocialProfile.lastPostAt || 0 } : { trust: 50, postLog: [], lastPostAt: 0 });
-    setMarketplace(data.marketplace && typeof data.marketplace === "object" ? data.marketplace : null);
+    setMarketplace(data.marketplace && typeof data.marketplace === "object" ? (() => {
+      const saved = data.marketplace;
+      return {
+        cash: 0,
+        sellerCount: 1,
+        buyerCount: 40,
+        commissionRate: MARKETPLACE_BASE_COMMISSION,
+        trustScore: 50,
+        marketShare: 0.02,
+        techLevel: 0,
+        logisticsLevel: 0,
+        sellersLevel: 0,
+        buyersLevel: 0,
+        brandLevel: 0,
+        equityGiven: 0,
+        pendingCrisis: null,
+        crisisPenaltyCyclesLeft: 0,
+        ipoStatus: null,
+        stockCompanyId: null,
+        stockTicker: null,
+        totalGmv: 0,
+        totalRevenue: 0,
+        cyclesRun: 0,
+        warehouseIds: [],
+        nextCycleAt: Date.now() + MARKETPLACE_CYCLE_MS,
+        ...saved,
+        staff: { dev: 0, logistics: 0, support: 0, legal: 0, marketing: 0, ...(saved.staff || {}) },
+        socialProfile: { trust: 50, postLog: [], lastPostAt: 0, ...(saved.socialProfile || {}) },
+        investorRounds: Array.isArray(saved.investorRounds) ? saved.investorRounds : []
+      };
+    })() : null);
     setZzoneBiz(data.zzoneBiz && typeof data.zzoneBiz === "object" ? { marketShare: typeof data.zzoneBiz.marketShare === "number" ? data.zzoneBiz.marketShare : ZZONE_MARKET_SHARE_START, commissionRate: typeof data.zzoneBiz.commissionRate === "number" ? data.zzoneBiz.commissionRate : MARKETPLACE_FEE, aggressionLevel: data.zzoneBiz.aggressionLevel || 0, reactionsTriggered: Array.isArray(data.zzoneBiz.reactionsTriggered) ? data.zzoneBiz.reactionsTriggered : [] } : { marketShare: ZZONE_MARKET_SHARE_START, commissionRate: MARKETPLACE_FEE, aggressionLevel: 0, reactionsTriggered: [] });
     setBigSellers(Array.isArray(data.bigSellers) ? data.bigSellers : []);
     setBankAccounts(rawBankAccounts);
@@ -2233,6 +2272,7 @@ function MarketSandbox() {
     setLaunderStats(restoredLaunder);
     launderStatsRef.current = restoredLaunder;
     setMuleCards(data.muleCards && typeof data.muleCards === "object" ? data.muleCards : {});
+    setMuleHoldings(data.muleHoldings && typeof data.muleHoldings === "object" ? data.muleHoldings : {});
     setTenders(Array.isArray(data.tenders) ? data.tenders : []);
     setTenderTrackRecord(data.tenderTrackRecord && typeof data.tenderTrackRecord === "object" ? { won: 0, lost: 0, completed: 0, failed: 0, ...data.tenderTrackRecord } : { won: 0, lost: 0, completed: 0, failed: 0 });
     setNextTenderSpawnAt(typeof data.nextTenderSpawnAt === "number" ? data.nextTenderSpawnAt : Date.now() + 2e4);
@@ -2334,6 +2374,7 @@ function MarketSandbox() {
     blackMarketRounds: blackMarketRoundsRef.current,
     launderStats: launderStatsRef.current,
     muleCards: muleCardsRef.current,
+    muleHoldings: muleHoldingsRef.current,
     tenders: tendersRef.current,
     tenderTrackRecord: tenderTrackRecordRef.current,
     nextTenderSpawnAt: nextTenderSpawnAtRef.current,
@@ -2800,11 +2841,22 @@ function MarketSandbox() {
         if (Math.random() < chance) {
           const liquid = Object.values(bankAccountsRef.current).reduce((s2, a) => s2 + (a.balance || 0), 0);
           const base = Math.max(liquid, 200);
-          const fine = Math.round(base * (0.18 + Math.random() * 0.22));
-          if (fine > 0) {
+          const claimAmount = Math.round(base * (0.18 + Math.random() * 0.22));
+          if (claimAmount > 0) {
             const reason = reasons[Math.floor(Math.random() * reasons.length)];
-            setFines((prev) => [{ id: makeId("fine"), label: reason, amount: fine, paid: false }, ...prev].slice(0, 30));
-            pushPost({ id: makeId("news"), text: "\u0424\u0438\u043D\u0430\u043D\u0441\u043E\u0432\u0430\u044F \u0438\u043D\u0441\u043F\u0435\u043A\u0446\u0438\u044F \u0432\u044B\u044F\u0432\u0438\u043B\u0430 \u043F\u043E\u0434\u043E\u0437\u0440\u0438\u0442\u0435\u043B\u044C\u043D\u044B\u0435 \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u0438 \u0438 \u0432\u044B\u043F\u0438\u0441\u0430\u043B\u0430 \u0448\u0442\u0440\u0430\u0444", positive: false, isMacro: true });
+            createCourtCase({
+              source: "market_monitoring",
+              plaintiffName: "\u0424\u0438\u043D\u043C\u043E\u043D\u0438\u0442\u043E\u0440\u0438\u043D\u0433",
+              amountClaimed: claimAmount,
+              basis: `\u0424\u0438\u043D\u0430\u043D\u0441\u043E\u0432\u0430\u044F \u0438\u043D\u0441\u043F\u0435\u043A\u0446\u0438\u044F \u0432\u044B\u044F\u0432\u0438\u043B\u0430 \u043F\u043E\u0434\u043E\u0437\u0440\u0438\u0442\u0435\u043B\u044C\u043D\u044B\u0435 \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u0438: ${reason}. \u0428\u0442\u0440\u0430\u0444 \u043D\u0435 \u0432\u044B\u043F\u0438\u0441\u044B\u0432\u0430\u0435\u0442\u0441\u044F \u0430\u0432\u0442\u043E\u043C\u0430\u0442\u0438\u0447\u0435\u0441\u043A\u0438 \u2014 \u0434\u0435\u043B\u043E \u043F\u0435\u0440\u0435\u0434\u0430\u043D\u043E \u0432 \u0441\u0443\u0434.`,
+              evidence: [
+                { label: reason, positive: false },
+                { label: "\u0410\u0432\u0442\u043E\u043C\u0430\u0442\u0438\u0447\u0435\u0441\u043A\u0430\u044F \u0441\u0438\u0441\u0442\u0435\u043C\u0430 \u043C\u043E\u043D\u0438\u0442\u043E\u0440\u0438\u043D\u0433\u0430 \u0437\u0430\u0444\u0438\u043A\u0441\u0438\u0440\u043E\u0432\u0430\u043B\u0430 \u0430\u043D\u043E\u043C\u0430\u043B\u0438\u044E, \u043D\u0435 \u0434\u043E\u043A\u0430\u0437\u0430\u0442\u0435\u043B\u044C\u0441\u0442\u0432\u043E", positive: true }
+              ],
+              linkedRefId: null,
+              fundingSide: "personal",
+              importance: 2
+            });
             adjustReputation(-6);
           }
           setSuspicion((v) => v * 0.35);
@@ -3142,10 +3194,23 @@ function MarketSandbox() {
         const chance = Math.min(0.35, (s - 20) * 0.012);
         if (Math.random() < chance && greyAccountRef.current && !greyAccountRef.current.frozen) {
           const acct = greyAccountRef.current;
-          const fine = Math.round(acct.balance * (0.2 + Math.random() * 0.15));
+          const claimAmount = Math.round(acct.balance * (0.2 + Math.random() * 0.15));
           setGreyAccount((prev) => prev ? { ...prev, frozen: true, frozenUntil: Date.now() + GREY_BANK.freezeDurationMs } : prev);
-          if (fine > 0) setFines((prev) => [{ id: makeId("fine"), label: "Meridian Offshore: \u0437\u0430\u043F\u0440\u043E\u0441 \u043D\u0430 \u043E\u0431\u044A\u044F\u0441\u043D\u0435\u043D\u0438\u0435 \u043F\u0440\u043E\u0438\u0441\u0445\u043E\u0436\u0434\u0435\u043D\u0438\u044F \u0441\u0440\u0435\u0434\u0441\u0442\u0432", amount: fine, paid: false }, ...prev].slice(0, 30));
-          pushPost({ text: "\u0424\u0438\u043D\u043C\u043E\u043D\u0438\u0442\u043E\u0440\u0438\u043D\u0433 \u043D\u0430\u043F\u0440\u0430\u0432\u0438\u043B \u0437\u0430\u043F\u0440\u043E\u0441 \u0438\u043D\u043E\u0441\u0442\u0440\u0430\u043D\u043D\u043E\u043C\u0443 \u0431\u0430\u043D\u043A\u0443 \u2014 \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u0438 \u043F\u043E \u043E\u0444\u0448\u043E\u0440\u043D\u043E\u043C\u0443 \u0441\u0447\u0451\u0442\u0443 \u043F\u0440\u0438\u043E\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u044B \u0434\u043E \u043E\u0431\u044A\u044F\u0441\u043D\u0435\u043D\u0438\u0439", positive: false, isMacro: true });
+          if (claimAmount > 0) {
+            createCourtCase({
+              source: "offshore_inquiry",
+              plaintiffName: "\u0424\u0438\u043D\u043C\u043E\u043D\u0438\u0442\u043E\u0440\u0438\u043D\u0433",
+              amountClaimed: claimAmount,
+              basis: "\u0424\u0438\u043D\u043C\u043E\u043D\u0438\u0442\u043E\u0440\u0438\u043D\u0433 \u043D\u0430\u043F\u0440\u0430\u0432\u0438\u043B \u0437\u0430\u043F\u0440\u043E\u0441 \u0438\u043D\u043E\u0441\u0442\u0440\u0430\u043D\u043D\u043E\u043C\u0443 \u0431\u0430\u043D\u043A\u0443 \u2014 \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u0438 \u043F\u043E \u043E\u0444\u0448\u043E\u0440\u043D\u043E\u043C\u0443 \u0441\u0447\u0451\u0442\u0443 \u043F\u0440\u0438\u043E\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u044B \u0434\u043E \u043E\u0431\u044A\u044F\u0441\u043D\u0435\u043D\u0438\u0439 \u0447\u0435\u0440\u0435\u0437 \u0441\u0443\u0434.",
+              evidence: [
+                { label: "\u041A\u0440\u0443\u043F\u043D\u044B\u0439 \u043D\u0435\u043E\u0431\u044A\u044F\u0441\u043D\u0451\u043D\u043D\u044B\u0439 \u043F\u0440\u0438\u0442\u043E\u043A \u043D\u0430 \u043E\u0444\u0448\u043E\u0440\u043D\u044B\u0439 \u0441\u0447\u0451\u0442", positive: false },
+                { label: "\u0421\u0447\u0451\u0442 \u043F\u0440\u0438\u043E\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D \u0431\u0430\u043D\u043A\u043E\u043C \u0434\u043B\u044F \u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0438", positive: false }
+              ],
+              linkedRefId: null,
+              fundingSide: "personal",
+              importance: 3
+            });
+          }
           adjustReputation(-20);
           flagSuspicion(25);
           setGreySuspicion((v) => v * 0.25);
@@ -3767,10 +3832,10 @@ function MarketSandbox() {
     const useMule = !useIp && !useGrey && !useBankCard && muleCards[account] && !muleCards[account].frozen;
     if (side === "sell" && !useIp && !useGrey && !useBankCard && !useMule && loans.some((l) => l.frozen)) return;
     const curCash = useGrey ? greyAccount.balance : useIp ? ipCash : useBankCard ? bankAccounts[account].balance : useMule ? muleCards[account].balance : 0;
-    const curHoldings = useGrey ? greyHoldings : useIp ? ipHoldings : holdings;
+    const curHoldings = useGrey ? greyHoldings : useIp ? ipHoldings : useMule ? muleHoldings[account] || {} : holdings;
     const setCurCash = useGrey ? (fn) => setGreyAccount((a) => a ? { ...a, balance: typeof fn === "function" ? fn(a.balance) : fn } : a) : useIp ? setIpCash : useBankCard ? (fn) => setBankAccounts((prev) => prev[account] ? { ...prev, [account]: { ...prev[account], balance: typeof fn === "function" ? fn(prev[account].balance) : fn } } : prev) : useMule ? (fn) => setMuleCards((prev) => prev[account] ? { ...prev, [account]: { ...prev[account], balance: typeof fn === "function" ? fn(prev[account].balance) : fn } } : prev) : () => {
     };
-    const setCurHoldings = useGrey ? setGreyHoldings : useIp ? setIpHoldings : setHoldings;
+    const setCurHoldings = useGrey ? setGreyHoldings : useIp ? setIpHoldings : useMule ? (fn) => setMuleHoldings((prev) => ({ ...prev, [account]: typeof fn === "function" ? fn(prev[account] || {}) : fn })) : setHoldings;
     const acctTag = useGrey ? " \xB7 Meridian" : useIp ? " \xB7 \u0418\u041F" : useBankCard ? ` \xB7 ${BANK_ACCOUNTS.find((b) => b.id === account)?.name}` : useMule ? " \xB7 \u0447\u0443\u0436\u0430\u044F \u043A\u0430\u0440\u0442\u0430" : "";
     const sizeRatio = qty / company.supply;
     const impactPct = Math.min(92, sizeRatio * 150);
@@ -3814,7 +3879,7 @@ function MarketSandbox() {
       applyImpact(companyId, -impactPct);
       if (useIp) {
         setQuarterRevenue((r) => r + grossProceeds);
-      } else if (!useGrey && profit > 0) {
+      } else if (!useGrey && !useMule && profit > 0) {
         accrueTax(`\u041D\u0430\u043B\u043E\u0433 \u0441 \u043F\u0440\u0438\u0431\u044B\u043B\u0438 (${company.ticker})`, Math.round(profit * 0.13));
       }
       logTx(`\u041F\u0440\u043E\u0434\u0430\u0436\u0430 ${company.ticker} \xD7${qty}${acctTag}`, grossProceeds, "in");
@@ -3874,11 +3939,12 @@ function MarketSandbox() {
     adjustAccountBalance(payoutAccount, payout);
     setLeveragedPositions((prev) => prev.filter((p) => p.id !== positionId));
     logTx(`\u0417\u0430\u043A\u0440\u044B\u0442\u0438\u0435 \u043F\u043E\u0437\u0438\u0446\u0438\u0438 ${pos.ticker} \xD7${pos.leverage}`, payout, "in");
-    if (pnl > 0) accrueTax(`\u041D\u0430\u043B\u043E\u0433 \u0441 \u043F\u0440\u0438\u0431\u044B\u043B\u0438 \u043F\u043E \u043F\u043B\u0435\u0447\u0443 (${pos.ticker})`, Math.round(pnl * 0.13));
+    const closedViaMule = !!muleCards[pos.account];
+    if (pnl > 0 && !closedViaMule) accrueTax(`\u041D\u0430\u043B\u043E\u0433 \u0441 \u043F\u0440\u0438\u0431\u044B\u043B\u0438 \u043F\u043E \u043F\u043B\u0435\u0447\u0443 (${pos.ticker})`, Math.round(pnl * 0.13));
     if (company) {
       applyImpact(pos.companyId, -impactPct);
       const recentPump = Date.now() - lastPumpAtRef.current < 12e4;
-      const useMule = !!muleCards[pos.account];
+      const useMule = closedViaMule;
       if (useMule) {
       } else if (pos.companyId === playerVentureId && sizeRatio > 0.05) flagSuspicion(sizeRatio * 55 + (recentPump ? 20 : 0));
       else if (sizeRatio > 0.08) flagSuspicion(sizeRatio * 28);
@@ -4419,7 +4485,15 @@ function MarketSandbox() {
   };
   const transferToPersonal = (amount) => {
     const amt = Math.round(Number(amount));
-    if (!amt || amt <= 0 || amt > ipCash) return;
+    if (!amt || amt <= 0) {
+      setIpTransferError("\u0423\u043A\u0430\u0436\u0438 \u0441\u0443\u043C\u043C\u0443");
+      return;
+    }
+    if (amt > ipCash) {
+      setIpTransferError("\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u043D\u0430 \u0441\u0447\u0451\u0442\u0435 \u0418\u041F");
+      return;
+    }
+    setIpTransferError(null);
     const fee = Math.round(amt * 0.02);
     setIpCash((c) => c - amt);
     adjustAccountBalance(resolvedPayFrom, amt - fee);
@@ -4441,9 +4515,20 @@ function MarketSandbox() {
     const amt = Math.round(Number(amount));
     const src = resolvedPayFrom;
     const bal = getAccountBalance(src);
-    if (!amt || amt <= 0 || amt > bal) return;
+    if (!amt || amt <= 0) {
+      setIpTransferError("\u0423\u043A\u0430\u0436\u0438 \u0441\u0443\u043C\u043C\u0443");
+      return;
+    }
+    if (amt > bal) {
+      setIpTransferError("\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u043D\u0430 \u0441\u0447\u0451\u0442\u0435-\u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A\u0435");
+      return;
+    }
     const turnoverCheck = debitCardTurnoverForTransfer(src, amt);
-    if (!turnoverCheck.ok) return;
+    if (!turnoverCheck.ok) {
+      setIpTransferError(turnoverCheck.msg);
+      return;
+    }
+    setIpTransferError(null);
     adjustAccountBalance(src, -amt);
     setIpCash((c) => c + amt);
     setIpTransferInput("");
@@ -4512,7 +4597,14 @@ function MarketSandbox() {
     if (!bank || !acct) return;
     const src = resolvedPayFrom;
     const bal = getAccountBalance(src);
-    if (!amt || amt <= 0 || amt > bal) return;
+    if (!amt || amt <= 0) {
+      setBankFb(bankId, false, "\u0423\u043A\u0430\u0436\u0438 \u0441\u0443\u043C\u043C\u0443");
+      return;
+    }
+    if (amt > bal) {
+      setBankFb(bankId, false, "\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u043D\u0430 \u0441\u0447\u0451\u0442\u0435-\u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A\u0435");
+      return;
+    }
     const turnoverCheck = debitCardTurnoverForTransfer(src, amt);
     if (!turnoverCheck.ok) {
       setBankFb(bankId, false, turnoverCheck.msg);
@@ -4522,6 +4614,7 @@ function MarketSandbox() {
     setBankAccounts((prev) => ({ ...prev, [bankId]: { ...prev[bankId], balance: prev[bankId].balance + amt } }));
     setBankTransferInputs((f) => ({ ...f, [bankId]: "" }));
     logTx(`\u041F\u043E\u043F\u043E\u043B\u043D\u0435\u043D\u0438\u0435 \u0441\u0447\u0451\u0442\u0430 \xB7 ${bank.name}`, amt, "out");
+    setBankFb(bankId, true, `\u041F\u043E\u043F\u043E\u043B\u043D\u0435\u043D\u043E ${fmt(amt)}`);
     setTimeout(saveGame, 50);
   };
   const withdrawFromBankAccount = (bankId, amount, destOverride) => {
@@ -4655,7 +4748,7 @@ function MarketSandbox() {
     }
     setXferFeedback({ ok: true, msg: "\u041F\u0435\u0440\u0435\u0432\u043E\u0434 \u043E\u0442\u043F\u0440\u0430\u0432\u043B\u0435\u043D" });
   };
-  const getAccountBalance = (accountId) => accountId === "grey" ? greyAccount?.balance || 0 : accountId === "ip" ? ipCash : bankAccounts[accountId]?.balance || 0;
+  const getAccountBalance = (accountId) => accountId === "grey" ? greyAccount?.balance || 0 : accountId === "ip" ? ipCash : muleCards[accountId] ? muleCards[accountId].balance || 0 : bankAccounts[accountId]?.balance || 0;
   const totalPropertyCollateralValue = () => Object.entries(ownedItems).reduce((sum, [itemId, qty]) => {
     const item = SHOP_ITEMS.find((i) => i.id === itemId);
     return sum + (item && qty > 0 ? item.price * item.ltv * qty : 0);
@@ -5017,7 +5110,24 @@ function MarketSandbox() {
     const amt = Math.round(Number(amount));
     const src = resolvedPayFrom;
     const bal = getAccountBalance(src);
-    if (!card || card.frozen || !amt || amt <= 0 || amt > bal) return;
+    if (!card) return;
+    if (card.frozen) {
+      setMuleFb(muleId, false, "\u041A\u0430\u0440\u0442\u0430 \u0437\u0430\u0431\u043B\u043E\u043A\u0438\u0440\u043E\u0432\u0430\u043D\u0430 \u0431\u0430\u043D\u043A\u043E\u043C \u2014 \u0438\u0441\u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u044C \u0431\u043E\u043B\u044C\u0448\u0435 \u043D\u0435\u043B\u044C\u0437\u044F");
+      return;
+    }
+    if (!amt || amt <= 0) {
+      setMuleFb(muleId, false, "\u0423\u043A\u0430\u0436\u0438 \u0441\u0443\u043C\u043C\u0443");
+      return;
+    }
+    if (amt > bal) {
+      setMuleFb(muleId, false, "\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u043D\u0430 \u0441\u0447\u0451\u0442\u0435-\u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A\u0435");
+      return;
+    }
+    const turnoverCheck = debitCardTurnoverForTransfer(src, amt);
+    if (!turnoverCheck.ok) {
+      setMuleFb(muleId, false, turnoverCheck.msg);
+      return;
+    }
     const bank = BANK_ACCOUNTS.find((b) => b.id === card.bankId);
     const isSmall = amt <= bank.singleLimit * 0.15;
     adjustAccountBalance(src, -amt);
@@ -5072,8 +5182,6 @@ function MarketSandbox() {
     } else if (dest === "grey") setGreyAccount((a) => a ? { ...a, balance: a.balance + amt } : a);
     else setBankAccounts((prev) => prev[dest] ? { ...prev, [dest]: { ...prev[dest], balance: prev[dest].balance + amt, turnoverUsed: prev[dest].turnoverUsed + amt, lifetimeTurnover: (prev[dest].lifetimeTurnover || 0) + amt } } : prev);
     logTx(`\u041E\u0431\u043D\u0430\u043B\u0438\u0447\u043A\u0430 \u0441 \u0447\u0443\u0436\u043E\u0439 \u043A\u0430\u0440\u0442\u044B \xB7 ${bank.name}${fee > 0 ? ` (\u043A\u043E\u043C\u0438\u0441\u0441\u0438\u044F ${fmt(fee)})` : ""}`, total, "out");
-    const nearLimit = amt >= bank.singleLimit * 0.85 && amt <= bank.singleLimit * 1.05;
-    if (amt > bank.singleLimit * 0.5) flagTransferSuspicion(card.bankId, amt / bank.singleLimit * (nearLimit ? 12 : 5));
     setMuleTransferInputs((f) => ({ ...f, [muleId]: "" }));
     setMuleFb(muleId, true, `\u041F\u0435\u0440\u0435\u0432\u0435\u0434\u0435\u043D\u043E ${fmt(amt)}${fee > 0 ? `, \u043A\u043E\u043C\u0438\u0441\u0441\u0438\u044F ${fmt(fee)}` : ""}`);
     setTimeout(saveGame, 50);
@@ -5178,10 +5286,9 @@ function MarketSandbox() {
   var SOCIAL_POST_MAX_CHARS = 240;
   var SOCIAL_POST_COOLDOWN_MS = 20e3;
   var SOCIAL_AD_BOOST_COST_BASE = 300;
-  const publishVenturePost = () => {
-    const v = companies.find((c) => c.id === playerVentureId);
+  const publishSocialPost = () => {
+    const v = playerVentureId ? companies.find((c) => c.id === playerVentureId && !c.rugged) : null;
     const text = composerText.trim();
-    if (!v || v.rugged) return { ok: false, reason: "no-venture" };
     if (text.length < SOCIAL_POST_MIN_CHARS || text.length > SOCIAL_POST_MAX_CHARS) {
       setComposerError("\u041F\u043E\u0441\u0442 \u0434\u043E\u043B\u0436\u0435\u043D \u0431\u044B\u0442\u044C \u043E\u0442 12 \u0434\u043E 240 \u0441\u0438\u043C\u0432\u043E\u043B\u043E\u0432");
       return { ok: false, reason: "length" };
@@ -5192,7 +5299,7 @@ function MarketSandbox() {
       setComposerError("\u0410\u0443\u0434\u0438\u0442\u043E\u0440\u0438\u044F \u0435\u0449\u0451 \u043D\u0435 \u043E\u0441\u0442\u044B\u043B\u0430 \u043E\u0442 \u043F\u0440\u0435\u0434\u044B\u0434\u0443\u0449\u0435\u0433\u043E \u043F\u043E\u0441\u0442\u0430 \u2014 \u043F\u043E\u0434\u043E\u0436\u0434\u0438\u0442\u0435 \u043D\u0435\u043C\u043D\u043E\u0433\u043E");
       return { ok: false, reason: "cooldown" };
     }
-    const adBoostCost = composerAdBoost ? Math.round(SOCIAL_AD_BOOST_COST_BASE * Math.pow(1.4, v.hypeLevel || 0)) : 0;
+    const adBoostCost = composerAdBoost ? Math.round(SOCIAL_AD_BOOST_COST_BASE * Math.pow(1.4, v?.hypeLevel || 0)) : 0;
     const src = resolvedPayFrom;
     if (adBoostCost > 0 && getAccountBalance(src) < adBoostCost) {
       setComposerError("\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u043D\u0430 \u0440\u0435\u043A\u043B\u0430\u043C\u043D\u043E\u0435 \u043F\u0440\u043E\u0434\u0432\u0438\u0436\u0435\u043D\u0438\u0435");
@@ -5200,36 +5307,39 @@ function MarketSandbox() {
     }
     setComposerError(null);
     const recentPostCount = (profile.postLog || []).filter((p) => now - (p.ts || 0) < 15 * 60e3).length;
-    const followers = Math.round(150 + (v.marketingLevel || 0) * 280 + (v.hypeLevel || 0) * 180 + (v.rdLevel || 0) * 120 + (v.investorRounds || 0) * 400);
+    const followers = v ? Math.round(150 + (v.marketingLevel || 0) * 280 + (v.hypeLevel || 0) * 180 + (v.rdLevel || 0) * 120 + (v.investorRounds || 0) * 400) : Math.round(80 + profile.trust * 3);
     const reachMult = clamp01(0.4 + Math.log10(Math.max(10, followers)) / 3, 0.4, 1.4) * (composerAdBoost ? 1.8 : 1);
     const score = scoreSocialPost(text, { authorTrust: profile.trust, postLog: profile.postLog, recentPostCount });
     const segReactions = socialSegmentReactions(score);
-    const assetVol = v.vol || 1;
-    const liquidityDamp = clamp01(1 - Math.log10(Math.max(1, v.supply * v.price)) / 14, 0.35, 1);
-    const totalInfluence = socialMarketInfluence(score, segReactions, { assetVol, liquidityDamp, reachMult });
+    const assetVol = v ? v.vol || 1 : 1;
+    const liquidityDamp = v ? clamp01(1 - Math.log10(Math.max(1, v.supply * v.price)) / 14, 0.35, 1) : 1;
+    const totalInfluence = v ? socialMarketInfluence(score, segReactions, { assetVol, liquidityDamp, reachMult }) : 0;
     if (adBoostCost > 0) adjustAccountBalance(src, -adBoostCost);
     const immediatePct = totalInfluence * 0.35;
-    applyImpact(v.id, immediatePct);
-    flagLeveragedPumpPattern(v.id, immediatePct);
     const remainingPct = totalInfluence - immediatePct;
     const band = socialReactionBand(score.audienceReaction);
     const storyId = makeId("story");
-    const comments = pickSocialComments(score, v.id + now);
-    const mainPost = { role: "official", kind: "hype", text, positive: score.audienceReaction >= 0, isMacro: false, ticker: v.ticker, importance: score.engagement >= 55 ? 3 : score.engagement >= 25 ? 2 : 1, storyId };
-    const commentPosts = comments.map((c) => ({ role: score.scamRisk >= 55 ? "insider" : score.credibility >= 60 ? "trader" : "user", kind: "reaction", text: c, positive: score.credibility >= 55, isMacro: false, ticker: v.ticker, importance: 1, storyId }));
-    registerStory({ id: storyId, headline: text, category: v.sector === "\u041A\u0440\u0438\u043F\u0442\u043E" ? "crypto" : "companies", personal: true, importance: mainPost.importance, status: "developing", reliability: score.scamRisk >= 55 ? "low" : "official", ticker: v.ticker, marketImpactPct: immediatePct, createdAt: now, postCount: 1 + commentPosts.length });
+    const comments = pickSocialComments(score, (v ? v.id : "personal") + now);
+    const ownExtra = v ? { ownKind: "company", companyName: v.name, ticker: v.ticker } : { ownKind: "personal" };
+    const mainPost = { role: "official", kind: "hype", text, positive: score.audienceReaction >= 0, isMacro: false, importance: score.engagement >= 55 ? 3 : score.engagement >= 25 ? 2 : 1, storyId, ...ownExtra };
+    const commentPosts = comments.map((c) => ({ role: score.scamRisk >= 55 ? "insider" : score.credibility >= 60 ? "trader" : "user", kind: "reaction", text: c, positive: score.credibility >= 55, isMacro: false, ticker: v ? v.ticker : void 0, importance: 1, storyId }));
+    if (v) {
+      applyImpact(v.id, immediatePct);
+      flagLeveragedPumpPattern(v.id, immediatePct);
+    }
+    registerStory({ id: storyId, headline: text, category: v ? v.sector === "\u041A\u0440\u0438\u043F\u0442\u043E" ? "crypto" : "companies" : "personal", personal: true, importance: mainPost.importance, status: "developing", reliability: score.scamRisk >= 55 ? "low" : "official", ticker: v ? v.ticker : null, marketImpactPct: immediatePct, createdAt: now, postCount: 1 + commentPosts.length });
     pushPosts([mainPost, ...commentPosts].map((p) => ({ ...p, id: makeId("post"), storyId })));
-    if (Math.abs(remainingPct) > 0.3) {
+    if (v && Math.abs(remainingPct) > 0.3) {
       const overshoot = score.scamRisk >= 55 && score.hype >= 55;
       const dueAt = now + (25e3 + Math.random() * 45e3);
       scheduleEvent({ id: makeId("sched"), kind: "social_post_resolve", storyId, companyId: v.id, ticker: v.ticker, remainingPct, overshoot, dueAt });
     }
     const trustDelta = score.scamRisk >= 55 ? -3 - score.scamRisk / 40 : score.credibility >= 60 ? 1.2 : score.credibility <= 30 ? -1.5 : 0.2;
     const newTrust = Math.max(0, Math.min(100, profile.trust + trustDelta));
-    const newLog = [{ ts: now, text, ticker: v.ticker, score: { credibility: score.credibility, hype: score.hype, scamRisk: score.scamRisk } }, ...(profile.postLog || [])].slice(0, 30);
+    const newLog = [{ ts: now, text, ticker: v ? v.ticker : null, score: { credibility: score.credibility, hype: score.hype, scamRisk: score.scamRisk } }, ...(profile.postLog || [])].slice(0, 30);
     setPlayerSocialProfile({ trust: newTrust, postLog: newLog, lastPostAt: now });
     setComposerText("");
-    setLastPostFeedback({ reach: Math.round(followers * reachMult), band, scamRisk: Math.round(score.scamRisk), demandPct: Math.round(totalInfluence * 10) / 10, ticker: v.ticker });
+    setLastPostFeedback({ reach: Math.round(followers * reachMult), band, scamRisk: Math.round(score.scamRisk), demandPct: Math.round(totalInfluence * 10) / 10, ticker: v ? v.ticker : null });
     setTimeout(saveGame, 50);
     return { ok: true };
   };
@@ -5900,7 +6010,7 @@ function MarketSandbox() {
     setTimeout(saveGame, 50);
   };
   const resolvedPayFrom = (() => {
-    const valid = (id) => id === "grey" ? !!(greyAccount && !greyAccount.frozen) : id === "ip" ? ipCash > 0 : !!(bankAccounts[id] && !bankAccounts[id].frozen);
+    const valid = (id) => id === "grey" ? !!(greyAccount && !greyAccount.frozen) : id === "ip" ? ipCash > 0 : muleCards[id] ? !muleCards[id].frozen : !!(bankAccounts[id] && !bankAccounts[id].frozen);
     if (valid(payFromAccount)) return payFromAccount;
     const firstBank = BANK_ACCOUNTS.find((b) => bankAccounts[b.id] && !bankAccounts[b.id].frozen);
     if (firstBank) return firstBank.id;
@@ -6022,11 +6132,10 @@ function MarketSandbox() {
     setBlackMarketHeat(0);
     setBlackMarketRoundsDone(0);
     setMuleCards({});
+    setMuleHoldings({});
     setMuleTransferInputs({});
     setMuleTransferDest({});
     setMuleFeedback({});
-    setIpTurnoverUsed(0);
-    setIpTurnoverResetAt(Date.now() + TURNOVER_RESET_MS);
     setTenders([]);
     setTenderTrackRecord({ won: 0, lost: 0, completed: 0, failed: 0 });
     setNextTenderSpawnAt(Date.now() + 2e4);
@@ -6089,7 +6198,7 @@ function MarketSandbox() {
   const tradeAvailableCash = tradeIsGrey ? greyAccount.balance : tradeIsIp ? ipCash : tradeIsBankCard ? bankAccounts[tradeAccountResolved].balance : tradeIsMule ? muleCards[tradeAccountResolved].balance : 0;
   const assetsFrozen = !tradeIsIp && !tradeIsGrey && loans.some((l) => l.frozen);
   const tabTitle = { market: "\u0420\u044B\u043D\u043E\u043A", news: "\u0421\u043E\u0446\u0441\u0435\u0442\u044C", job: "\u0420\u0430\u0431\u043E\u0442\u0430", tenders: "\u0422\u0435\u043D\u0434\u0435\u0440\u044B", inspection: "\u0418\u041F", company: "\u041C\u043E\u0439 \u0431\u0438\u0437\u043D\u0435\u0441", darkshop: "\u0414\u0430\u0440\u043A\u043D\u0435\u0442", cabinet: "\u041A\u0430\u0431\u0438\u043D\u0435\u0442", transfers: "\u041F\u0435\u0440\u0435\u0432\u043E\u0434\u044B" }[activeTab];
-  return /* @__PURE__ */ jsxs("div", { style: { height: "100vh", background: C.bg, display: "flex", justifyContent: "center", overflow: "hidden" }, children: [
+  return /* @__PURE__ */ jsxs("div", { className: "msb-shell", style: { background: C.bg, display: "flex", justifyContent: "center", overflow: "hidden" }, children: [
     /* @__PURE__ */ jsx("style", { children: `
         @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
         *,*::before,*::after{box-sizing:border-box;}
@@ -6099,6 +6208,8 @@ function MarketSandbox() {
         @keyframes spin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}
         @keyframes pulse{0%,100%{opacity:1;}50%{opacity:0.25;}}
         ::-webkit-scrollbar{width:0;height:0;}
+        .msb-shell{height:100vh;height:100dvh;}
+        .msb-modal-h{max-height:85vh;max-height:85dvh;}
       ` }),
     /* @__PURE__ */ jsx("div", { style: { width: "100%", maxWidth: 430, height: "100%", display: "flex", flexDirection: "column", overflow: "hidden", background: C.bg, color: C.ink, fontFamily: "'Space Grotesk', system-ui, sans-serif" }, children: !loaded ? /* @__PURE__ */ jsx("div", { style: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }, children: /* @__PURE__ */ jsx("div", { style: { color: C.inkDim, fontFamily: "'JetBrains Mono', monospace", fontSize: 13, letterSpacing: 1 }, children: "\u0417\u0410\u0413\u0420\u0423\u0417\u041A\u0410 \u0420\u042B\u041D\u041A\u0410\u2026" }) }) : !onboarded ? /* @__PURE__ */ jsxs("div", { style: { flex: 1, overflowY: "auto", padding: "24px 20px" }, children: [
       /* @__PURE__ */ jsxs("div", { style: { textAlign: "center", marginBottom: 24 }, children: [
@@ -6287,7 +6398,7 @@ function MarketSandbox() {
                 "\u0421\u0443\u043C\u043C\u0430 \xB7 \u043A\u043E\u043C\u0438\u0441\u0441\u0438\u044F ",
                 feeNote
               ] }),
-              /* @__PURE__ */ jsx("input", { type: "number", value: transferForm.amount, onChange: (e) => setTransferForm((f) => ({ ...f, amount: e.target.value })), placeholder: `\u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E ${fmt(fromBal)}`, style: { width: "100%", background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, color: C.ink, fontSize: 15, padding: "10px 10px", fontFamily: "'JetBrains Mono', monospace" } }),
+              /* @__PURE__ */ jsx("input", { type: "number", value: transferForm.amount, onChange: (e) => setTransferForm((f) => ({ ...f, amount: e.target.value })), placeholder: `\u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E ${fmt(fromBal)}`, style: { width: "100%", background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, color: C.ink, fontSize: 16, padding: "10px 10px", fontFamily: "'JetBrains Mono', monospace" } }),
               xferFeedback && /* @__PURE__ */ jsx("div", { style: { marginTop: 10, fontSize: 12, color: xferFeedback.ok ? C.green : C.red }, children: xferFeedback.msg }),
               /* @__PURE__ */ jsx("button", { onClick: doTransfer, disabled: !canSend, style: { width: "100%", padding: 12, borderRadius: 10, border: "none", fontWeight: 700, fontSize: 13.5, marginTop: 14, background: canSend ? C.violet : C.surface2, color: canSend ? "#fff" : C.inkFaint }, children: "\u041F\u0435\u0440\u0435\u0432\u0435\u0441\u0442\u0438" })
             ] }),
@@ -6308,6 +6419,67 @@ function MarketSandbox() {
             " ",
             pendingCount > 0 ? `${pendingCount} \u043D\u043E\u0432\u044B\u0445 \u043F\u043E\u0441\u0442\u043E\u0432 \u2014 \u043F\u043E\u043A\u0430\u0437\u0430\u0442\u044C` : "\u041F\u0440\u043E\u0432\u0435\u0440\u0438\u0442\u044C \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F"
           ] }),
+          !viewingStoryId && !viewingCompanyId && (() => {
+            const v = playerVenture && !playerVenture.rugged ? playerVenture : null;
+            const adBoostCost = Math.round(SOCIAL_AD_BOOST_COST_BASE * Math.pow(1.4, v?.hypeLevel || 0));
+            const charsLeft = SOCIAL_POST_MAX_CHARS - composerText.length;
+            const tooShort = composerText.trim().length > 0 && composerText.trim().length < SOCIAL_POST_MIN_CHARS;
+            const canPublish = composerText.trim().length >= SOCIAL_POST_MIN_CHARS && charsLeft >= 0;
+            const feedback = lastPostFeedback && lastPostFeedback.ticker === (v ? v.ticker : null) ? lastPostFeedback : null;
+            const bandColor = feedback ? (feedback.band.color === "green" ? C.green : feedback.band.color === "red" ? C.red : C.gold) : C.gold;
+            return /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
+              /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }, children: [
+                /* @__PURE__ */ jsx("div", { style: { width: 30, height: 30, borderRadius: "50%", background: `${PLAYER_ACCOUNT.color}22`, color: PLAYER_ACCOUNT.color, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 12, flexShrink: 0 }, children: "\u0412" }),
+                /* @__PURE__ */ jsxs("div", { children: [
+                  /* @__PURE__ */ jsx("div", { style: { fontSize: 13, fontWeight: 700 }, children: v ? `\u041F\u043E\u0441\u0442 \u043E\u0442 \u043B\u0438\u0446\u0430 \xAB${v.name}\xBB` : "\u041C\u043E\u0439 \u043F\u0440\u043E\u0444\u0438\u043B\u044C" }),
+                  /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint }, children: v ? `@${v.ticker} \xB7 \u0432\u043B\u0438\u044F\u0435\u0442 \u043D\u0430 \u0446\u0435\u043D\u0443 \u0430\u043A\u0446\u0438\u0438` : "\u0412\u044B \xB7 \u043B\u0438\u0447\u043D\u044B\u0439 \u0430\u043A\u043A\u0430\u0443\u043D\u0442" })
+                ] })
+              ] }),
+              !v && /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkFaint, marginBottom: 10, lineHeight: 1.4 }, children: "\u0411\u0435\u0437 \u0431\u0438\u0437\u043D\u0435\u0441\u0430 \u043F\u043E\u0441\u0442 \u043D\u0435 \u0432\u043B\u0438\u044F\u0435\u0442 \u043D\u0430 \u0440\u044B\u043D\u043E\u043A \u2014 \u043F\u0440\u043E\u0441\u0442\u043E \u043F\u043E\u044F\u0432\u0438\u0442\u0441\u044F \u0432 \u043B\u0435\u043D\u0442\u0435." }),
+              /* @__PURE__ */ jsx("textarea", { value: composerText, onChange: (e) => {
+                setComposerText(e.target.value.slice(0, SOCIAL_POST_MAX_CHARS));
+                setComposerError(null);
+              }, placeholder: "\u0420\u0430\u0441\u0441\u043A\u0430\u0436\u0438 \u0430\u0443\u0434\u0438\u0442\u043E\u0440\u0438\u0438 \u043D\u043E\u0432\u043E\u0441\u0442\u044C \u0441\u0432\u043E\u0438\u043C\u0438 \u0441\u043B\u043E\u0432\u0430\u043C\u0438 \u2014 \u0442\u043E\u0447\u043D\u043E\u0441\u0442\u044C \u0438 \u043A\u043E\u043D\u043A\u0440\u0435\u0442\u0438\u043A\u0430 \u0443\u0431\u0435\u0436\u0434\u0430\u044E\u0442 \u043B\u0443\u0447\u0448\u0435, \u0447\u0435\u043C \u043E\u0431\u0435\u0449\u0430\u043D\u0438\u044F.", rows: 3, style: { width: "100%", background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, padding: 10, color: C.ink, fontSize: 16, resize: "none", fontFamily: "inherit" } }),
+              /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4, marginBottom: 10 }, children: [
+                /* @__PURE__ */ jsx("span", { style: { fontSize: 10.5, color: tooShort ? C.red : C.inkFaint }, children: tooShort ? "\u0421\u043B\u0438\u0448\u043A\u043E\u043C \u043A\u043E\u0440\u043E\u0442\u043A\u043E" : "\u041C\u0438\u043D\u0438\u043C\u0443\u043C 12 \u0441\u0438\u043C\u0432\u043E\u043B\u043E\u0432" }),
+                /* @__PURE__ */ jsx("span", { style: { fontSize: 10.5, color: charsLeft < 20 ? C.gold : C.inkFaint }, children: `${charsLeft}` })
+              ] }),
+              v && /* @__PURE__ */ jsxs("button", { onClick: () => setComposerAdBoost((b) => !b), style: { width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 12px", borderRadius: 10, border: `1px solid ${composerAdBoost ? C.gold : C.border}`, background: composerAdBoost ? `${C.gold}18` : "transparent", color: composerAdBoost ? C.gold : C.inkDim, fontSize: 12, fontWeight: 600, marginBottom: 10 }, children: [
+                /* @__PURE__ */ jsxs("span", { children: [
+                  "\u0420\u0435\u043A\u043B\u0430\u043C\u0430 \u2014 \u0440\u0430\u0441\u0448\u0438\u0440\u0438\u0442\u044C \u043E\u0445\u0432\u0430\u0442 \xB7 ",
+                  fmt(adBoostCost)
+                ] }),
+                /* @__PURE__ */ jsx("span", { children: composerAdBoost ? "\u2713" : "" })
+              ] }),
+              composerError && /* @__PURE__ */ jsx("div", { style: { fontSize: 11.5, color: C.red, marginBottom: 8 }, children: composerError }),
+              /* @__PURE__ */ jsx("button", { onClick: publishSocialPost, disabled: !canPublish, style: actionBtnStyle(canPublish), children: "\u041E\u043F\u0443\u0431\u043B\u0438\u043A\u043E\u0432\u0430\u0442\u044C" }),
+              feedback && /* @__PURE__ */ jsxs("div", { style: { marginTop: 12, background: C.surface2, borderRadius: 10, padding: 12 }, children: [
+                /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 6 }, children: [
+                  /* @__PURE__ */ jsx("span", { style: { color: C.inkDim }, children: "\u041E\u0445\u0432\u0430\u0442" }),
+                  /* @__PURE__ */ jsx("span", { style: { fontWeight: 700 }, children: feedback.reach.toLocaleString() })
+                ] }),
+                /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 6 }, children: [
+                  /* @__PURE__ */ jsx("span", { style: { color: C.inkDim }, children: "\u0420\u0435\u0430\u043A\u0446\u0438\u044F \u0430\u0443\u0434\u0438\u0442\u043E\u0440\u0438\u0438" }),
+                  /* @__PURE__ */ jsx("span", { style: { fontWeight: 700, color: bandColor }, children: feedback.band.label })
+                ] }),
+                /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: v ? 6 : 0 }, children: [
+                  /* @__PURE__ */ jsx("span", { style: { color: C.inkDim }, children: "\u0421\u043A\u0435\u043F\u0441\u0438\u0441" }),
+                  /* @__PURE__ */ jsxs("span", { style: { fontWeight: 700, color: feedback.scamRisk >= 55 ? C.red : C.inkDim }, children: [
+                    feedback.scamRisk,
+                    "%"
+                  ] })
+                ] }),
+                v && /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12 }, children: [
+                  /* @__PURE__ */ jsx("span", { style: { color: C.inkDim }, children: "\u041F\u043E\u043A\u0443\u043F\u0430\u0442\u0435\u043B\u044C\u0441\u043A\u0430\u044F \u0430\u043A\u0442\u0438\u0432\u043D\u043E\u0441\u0442\u044C" }),
+                  /* @__PURE__ */ jsxs("span", { style: { fontWeight: 700, color: feedback.demandPct >= 0 ? C.green : C.red }, children: [
+                    feedback.demandPct >= 0 ? "+" : "",
+                    feedback.demandPct,
+                    "%"
+                  ] })
+                ] })
+              ] })
+            ] });
+          })(),
           viewingStoryId ? (() => {
             const story = storiesById[viewingStoryId];
             const storyPosts = feedPosts.filter((p) => p.storyId === viewingStoryId).slice().sort((a, b) => (a.ts || 0) - (b.ts || 0));
@@ -6865,6 +7037,7 @@ function MarketSandbox() {
                 /* @__PURE__ */ jsx("button", { onClick: () => depositToIp(ipTransferInput), disabled: !ipTransferInput || Number(ipTransferInput) > getAccountBalance(resolvedPayFrom), style: { flex: 1, padding: 10, borderRadius: 10, border: "none", fontWeight: 700, fontSize: 12.5, background: C.surface2, color: C.ink }, children: "\u041F\u043E\u043F\u043E\u043B\u043D\u0438\u0442\u044C \u0441 \u043A\u0430\u0440\u0442\u044B" }),
                 /* @__PURE__ */ jsx("button", { onClick: () => transferToPersonal(ipTransferInput), disabled: !ipTransferInput || Number(ipTransferInput) > ipCash, style: { flex: 1, padding: 10, borderRadius: 10, border: "none", fontWeight: 700, fontSize: 12.5, background: C.gold, color: "#161207" }, children: "\u0412\u044B\u0432\u0435\u0441\u0442\u0438 \u043D\u0430 \u043A\u0430\u0440\u0442\u0443 (\u22122%)" })
               ] }),
+              ipTransferError && /* @__PURE__ */ jsx("div", { style: { fontSize: 11.5, color: C.red, marginTop: 8 }, children: ipTransferError }),
               /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkFaint, marginTop: 8 }, children: "\u041F\u043E\u043F\u043E\u043B\u043D\u0435\u043D\u0438\u0435 \u0431\u0435\u0441\u043F\u043B\u0430\u0442\u043D\u043E. \u0412\u044B\u0432\u043E\u0434 \u043F\u0440\u0438\u0431\u044B\u043B\u0438 \u043D\u0430 \u043A\u0430\u0440\u0442\u0443 \u2014 \u043A\u043E\u043C\u0438\u0441\u0441\u0438\u044F 2%." })
             ] }),
             Object.keys(ipHoldings).length > 0 && /* @__PURE__ */ jsxs(Fragment, { children: [
@@ -7232,59 +7405,6 @@ function MarketSandbox() {
               ] }),
               /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkFaint, lineHeight: 1.5, textAlign: "center", padding: "4px 8px" }, children: "Маркетинг разгоняет спрос и цену. Разработка снижает волатильность и укрепляет доверие к проекту." })
             ] }) : null,
-            !playerVenture.rugged && (() => {
-              const adBoostCost = Math.round(SOCIAL_AD_BOOST_COST_BASE * Math.pow(1.4, playerVenture.hypeLevel || 0));
-              const charsLeft = SOCIAL_POST_MAX_CHARS - composerText.length;
-              const tooShort = composerText.trim().length > 0 && composerText.trim().length < SOCIAL_POST_MIN_CHARS;
-              const canPublish = composerText.trim().length >= SOCIAL_POST_MIN_CHARS && charsLeft >= 0;
-              const feedback = lastPostFeedback && lastPostFeedback.ticker === playerVenture.ticker ? lastPostFeedback : null;
-              const bandColor = feedback ? (feedback.band.color === "green" ? C.green : feedback.band.color === "red" ? C.red : C.gold) : C.gold;
-              return /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
-                /* @__PURE__ */ jsx("div", { style: { fontSize: 13, fontWeight: 700, marginBottom: 8 }, children: "Опубликовать пост" }),
-                /* @__PURE__ */ jsx("textarea", { value: composerText, onChange: (e) => {
-                  setComposerText(e.target.value.slice(0, SOCIAL_POST_MAX_CHARS));
-                  setComposerError(null);
-                }, placeholder: "Расскажи аудитории новость своими словами — точность и конкретика убеждают лучше, чем обещания.", rows: 3, style: { width: "100%", background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, padding: 10, color: C.ink, fontSize: 13, resize: "none", fontFamily: "inherit" } }),
-                /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4, marginBottom: 10 }, children: [
-                  /* @__PURE__ */ jsx("span", { style: { fontSize: 10.5, color: tooShort ? C.red : C.inkFaint }, children: tooShort ? "Слишком коротко" : "Минимум 12 символов" }),
-                  /* @__PURE__ */ jsx("span", { style: { fontSize: 10.5, color: charsLeft < 20 ? C.gold : C.inkFaint }, children: `${charsLeft}` })
-                ] }),
-                /* @__PURE__ */ jsxs("button", { onClick: () => setComposerAdBoost((b) => !b), style: { width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 12px", borderRadius: 10, border: `1px solid ${composerAdBoost ? C.gold : C.border}`, background: composerAdBoost ? `${C.gold}18` : "transparent", color: composerAdBoost ? C.gold : C.inkDim, fontSize: 12, fontWeight: 600, marginBottom: 10 }, children: [
-                  /* @__PURE__ */ jsxs("span", { children: [
-                    "Реклама — расширить охват · ",
-                    fmt(adBoostCost)
-                  ] }),
-                  /* @__PURE__ */ jsx("span", { children: composerAdBoost ? "✓" : "" })
-                ] }),
-                composerError && /* @__PURE__ */ jsx("div", { style: { fontSize: 11.5, color: C.red, marginBottom: 8 }, children: composerError }),
-                /* @__PURE__ */ jsx("button", { onClick: publishVenturePost, disabled: !canPublish, style: actionBtnStyle(canPublish), children: "Опубликовать" }),
-                feedback && /* @__PURE__ */ jsxs("div", { style: { marginTop: 12, background: C.surface2, borderRadius: 10, padding: 12 }, children: [
-                  /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 6 }, children: [
-                    /* @__PURE__ */ jsx("span", { style: { color: C.inkDim }, children: "Охват" }),
-                    /* @__PURE__ */ jsx("span", { style: { fontWeight: 700 }, children: feedback.reach.toLocaleString() })
-                  ] }),
-                  /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 6 }, children: [
-                    /* @__PURE__ */ jsx("span", { style: { color: C.inkDim }, children: "Реакция аудитории" }),
-                    /* @__PURE__ */ jsx("span", { style: { fontWeight: 700, color: bandColor }, children: feedback.band.label })
-                  ] }),
-                  /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 6 }, children: [
-                    /* @__PURE__ */ jsx("span", { style: { color: C.inkDim }, children: "Скепсис" }),
-                    /* @__PURE__ */ jsxs("span", { style: { fontWeight: 700, color: feedback.scamRisk >= 55 ? C.red : C.inkDim }, children: [
-                      feedback.scamRisk,
-                      "%"
-                    ] })
-                  ] }),
-                  /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12 }, children: [
-                    /* @__PURE__ */ jsx("span", { style: { color: C.inkDim }, children: "Покупательская активность" }),
-                    /* @__PURE__ */ jsxs("span", { style: { fontWeight: 700, color: feedback.demandPct >= 0 ? C.green : C.red }, children: [
-                      feedback.demandPct >= 0 ? "+" : "",
-                      feedback.demandPct,
-                      "%"
-                    ] })
-                  ] })
-                ] })
-              ] });
-            })(),
             /* @__PURE__ */ jsx("button", { onClick: () => setConfirmCloseVenture(true), style: { width: "100%", padding: 12, borderRadius: 10, border: `1px solid ${C.red}55`, background: "transparent", color: C.red, fontSize: 13, fontWeight: 600, marginTop: 14 }, children: "\u0417\u0430\u043A\u0440\u044B\u0442\u044C \u0431\u0438\u0437\u043D\u0435\u0441" })
           ] }),
           resellShops.some((s) => s.id === selectedBizId) && (() => {
@@ -7550,7 +7670,7 @@ function MarketSandbox() {
                   /* @__PURE__ */ jsx("textarea", { value: marketplaceComposerText, onChange: (e) => {
                     setMarketplaceComposerText(e.target.value.slice(0, SOCIAL_POST_MAX_CHARS));
                     setMarketplaceComposerError(null);
-                  }, placeholder: "\u041D\u0430\u043F\u0440\u0438\u043C\u0435\u0440: \u041C\u044B \u043E\u0442\u043A\u0440\u044B\u0432\u0430\u0435\u043C \u043D\u043E\u0432\u044B\u0439 \u043B\u043E\u0433\u0438\u0441\u0442\u0438\u0447\u0435\u0441\u043A\u0438\u0439 \u0446\u0435\u043D\u0442\u0440.", rows: 3, style: { width: "100%", background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, padding: 10, color: C.ink, fontSize: 13, resize: "none", fontFamily: "inherit" } }),
+                  }, placeholder: "\u041D\u0430\u043F\u0440\u0438\u043C\u0435\u0440: \u041C\u044B \u043E\u0442\u043A\u0440\u044B\u0432\u0430\u0435\u043C \u043D\u043E\u0432\u044B\u0439 \u043B\u043E\u0433\u0438\u0441\u0442\u0438\u0447\u0435\u0441\u043A\u0438\u0439 \u0446\u0435\u043D\u0442\u0440.", rows: 3, style: { width: "100%", background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, padding: 10, color: C.ink, fontSize: 16, resize: "none", fontFamily: "inherit" } }),
                   /* @__PURE__ */ jsx("div", { style: { textAlign: "right", fontSize: 10.5, color: charsLeft < 20 ? C.gold : C.inkFaint, marginTop: 4, marginBottom: 10 }, children: `${charsLeft}` }),
                   marketplaceComposerError && /* @__PURE__ */ jsx("div", { style: { fontSize: 11.5, color: C.red, marginBottom: 8 }, children: marketplaceComposerError }),
                   /* @__PURE__ */ jsx("button", { onClick: publishMarketplacePost, disabled: !canPublish, style: actionBtnStyle(canPublish), children: "\u041E\u043F\u0443\u0431\u043B\u0438\u043A\u043E\u0432\u0430\u0442\u044C" }),
@@ -7900,7 +8020,7 @@ function MarketSandbox() {
                         ] }),
                         /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u0417\u0430\u0437\u043E\u0440 \u043E\u0442 \u043C\u0430\u043A\u0441. \u0440\u044B\u043D\u043E\u0447\u043D\u043E\u0439 \u0446\u0435\u043D\u044B ($)" }),
                         /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8, marginBottom: 10 }, children: [
-                          /* @__PURE__ */ jsx("input", { type: "number", value: priceGapDraft, onChange: (e) => setManagerFormInputs((prev) => ({ ...prev, [shop.id]: { ...prev[shop.id], priceGap: e.target.value } })), onBlur: commitPriceGap, style: { flex: 1, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 12, padding: "8px 10px" } }),
+                          /* @__PURE__ */ jsx("input", { type: "number", value: priceGapDraft, onChange: (e) => setManagerFormInputs((prev) => ({ ...prev, [shop.id]: { ...prev[shop.id], priceGap: e.target.value } })), onBlur: commitPriceGap, style: { flex: 1, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 16, padding: "8px 10px" } }),
                           /* @__PURE__ */ jsx("button", { onClick: commitPriceGap, style: { padding: "0 14px", borderRadius: 8, border: `1px solid ${C.border}`, background: "transparent", color: C.inkDim, fontSize: 11.5 }, children: "OK" })
                         ] }),
                         /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u0420\u0435\u043A\u043B\u0430\u043C\u0430 (\u043E\u043D\u043B\u0430\u0439\u043D + \u0442\u043E\u0447\u043A\u0430)" }),
@@ -7911,7 +8031,7 @@ function MarketSandbox() {
                         ] }),
                         /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u041C\u0438\u043D. \u043E\u0441\u0442\u0430\u0442\u043E\u043A (\u0434\u043E\u043A\u0443\u043F\u0430\u0435\u0442 \u0441\u0440\u0430\u0437\u0443 \u0434\u043E \u00D72)" }),
                         /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8, marginBottom: 10 }, children: [
-                          /* @__PURE__ */ jsx("input", { type: "number", value: restockDraft, onChange: (e) => setManagerFormInputs((prev) => ({ ...prev, [shop.id]: { ...prev[shop.id], minStock: e.target.value } })), onBlur: commitMinStock, style: { flex: 1, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 12, padding: "8px 10px" } }),
+                          /* @__PURE__ */ jsx("input", { type: "number", value: restockDraft, onChange: (e) => setManagerFormInputs((prev) => ({ ...prev, [shop.id]: { ...prev[shop.id], minStock: e.target.value } })), onBlur: commitMinStock, style: { flex: 1, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 16, padding: "8px 10px" } }),
                           /* @__PURE__ */ jsx("button", { onClick: commitMinStock, style: { padding: "0 14px", borderRadius: 8, border: `1px solid ${C.border}`, background: "transparent", color: C.inkDim, fontSize: 11.5 }, children: "OK" })
                         ] }),
                         /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u041F\u043E\u0441\u0442\u0430\u0432\u0449\u0438\u043A" }),
@@ -7942,7 +8062,7 @@ function MarketSandbox() {
                       return /* @__PURE__ */ jsxs("div", { children: [
                         /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginBottom: 10, lineHeight: 1.6 }, children: `\u0410\u0432\u0442\u043E\u043C\u0430\u0442\u0438\u0447\u0435\u0441\u043A\u0438 \u0434\u0435\u0440\u0436\u0438\u0442 \u043E\u0441\u0442\u0430\u0442\u043E\u043A, \u0446\u0435\u043D\u0443 \u0438 \u0440\u0435\u043A\u043B\u0430\u043C\u0443. \u0417\u0430\u0440\u043F\u043B\u0430\u0442\u0430 ${fmt(MANAGER_SALARY)} \u043A\u0430\u0436\u0434\u044B\u0435 ${MANAGER_SALARY_CYCLE_MS / 6e4} \u043C\u0438\u043D \u2014 \u043D\u0430\u0447\u0438\u0441\u043B\u044F\u0435\u0442\u0441\u044F, \u043D\u043E \u0441\u043F\u0438\u0441\u044B\u0432\u0430\u0435\u0442\u0441\u044F \u0442\u043E\u043B\u044C\u043A\u043E \u043A\u043E\u0433\u0434\u0430 \u0442\u044B \u0441\u0430\u043C \u043E\u043F\u043B\u0430\u0442\u0438\u0448\u044C \u0441\u043E \u0441\u0447\u0451\u0442\u0430 \u0418\u041F.` }),
                         /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u0417\u0430\u0437\u043E\u0440 \u043E\u0442 \u043C\u0430\u043A\u0441. \u0440\u044B\u043D\u043E\u0447\u043D\u043E\u0439 \u0446\u0435\u043D\u044B ($)" }),
-                        /* @__PURE__ */ jsx("input", { type: "number", value: f.priceGap, onChange: (e) => setF({ priceGap: e.target.value }), style: { width: "100%", marginBottom: 10, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 12, padding: "8px 10px" } }),
+                        /* @__PURE__ */ jsx("input", { type: "number", value: f.priceGap, onChange: (e) => setF({ priceGap: e.target.value }), style: { width: "100%", marginBottom: 10, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 16, padding: "8px 10px" } }),
                         /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u0420\u0435\u043A\u043B\u0430\u043C\u0430 (\u043E\u043D\u043B\u0430\u0439\u043D + \u0442\u043E\u0447\u043A\u0430)" }),
                         /* @__PURE__ */ jsx("div", { style: { display: "flex", gap: 6, marginBottom: 10 }, children: ["min", "mid", "max"].map((k) => /* @__PURE__ */ jsx("button", { onClick: () => setF({ adTier: k }), style: segStyle(f.adTier === k), children: MANAGER_AD_TIER_LABEL[k] }, k)) }),
                         /* @__PURE__ */ jsxs("button", { onClick: () => setF({ autoAdEnabled: !f.autoAdEnabled }), style: { width: "100%", textAlign: "left", padding: 10, borderRadius: 8, border: `1px solid ${C.border}`, background: C.surface2, color: C.ink, fontSize: 12, marginBottom: 10 }, children: [
@@ -7950,7 +8070,7 @@ function MarketSandbox() {
                           " \u0414\u0435\u0440\u0436\u0430\u0442\u044C \u0440\u0435\u043A\u043B\u0430\u043C\u0443 \u0430\u043A\u0442\u0438\u0432\u043D\u043E\u0439 \u043F\u043E\u0441\u0442\u043E\u044F\u043D\u043D\u043E"
                         ] }),
                         /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u041C\u0438\u043D. \u043E\u0441\u0442\u0430\u0442\u043E\u043A (\u0434\u043E\u043A\u0443\u043F\u0430\u0435\u0442 \u0441\u0440\u0430\u0437\u0443 \u0434\u043E \u00D72)" }),
-                        /* @__PURE__ */ jsx("input", { type: "number", value: f.minStock, onChange: (e) => setF({ minStock: e.target.value }), style: { width: "100%", marginBottom: 10, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 12, padding: "8px 10px" } }),
+                        /* @__PURE__ */ jsx("input", { type: "number", value: f.minStock, onChange: (e) => setF({ minStock: e.target.value }), style: { width: "100%", marginBottom: 10, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 16, padding: "8px 10px" } }),
                         /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u041F\u043E\u0441\u0442\u0430\u0432\u0449\u0438\u043A" }),
                         /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }, children: [
                           /* @__PURE__ */ jsx("button", { onClick: () => setF({ supplierId: "auto" }), style: { ...segStyle((f.supplierId || "auto") === "auto"), flex: "0 1 auto" }, children: "\u0410\u0432\u0442\u043E (\u0434\u0435\u0448\u0435\u0432\u043B\u0435)" }),
@@ -8001,7 +8121,7 @@ function MarketSandbox() {
                       ] }),
                       /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u0417\u0430\u0437\u043E\u0440 \u043E\u0442 \u043C\u0430\u043A\u0441. \u0440\u044B\u043D\u043E\u0447\u043D\u043E\u0439 \u0446\u0435\u043D\u044B ($)" }),
                       /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8, marginBottom: 10 }, children: [
-                        /* @__PURE__ */ jsx("input", { type: "number", value: priceGapDraft, onChange: (e) => setManagerFormInputs((prev) => ({ ...prev, [shop.id]: { ...prev[shop.id], priceGap: e.target.value } })), onBlur: commitPriceGap, style: { flex: 1, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 12, padding: "8px 10px" } }),
+                        /* @__PURE__ */ jsx("input", { type: "number", value: priceGapDraft, onChange: (e) => setManagerFormInputs((prev) => ({ ...prev, [shop.id]: { ...prev[shop.id], priceGap: e.target.value } })), onBlur: commitPriceGap, style: { flex: 1, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 16, padding: "8px 10px" } }),
                         /* @__PURE__ */ jsx("button", { onClick: commitPriceGap, style: { padding: "0 14px", borderRadius: 8, border: `1px solid ${C.border}`, background: "transparent", color: C.inkDim, fontSize: 11.5 }, children: "OK" })
                       ] }),
                       /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u0420\u0435\u043A\u043B\u0430\u043C\u0430 \u043D\u0430 \u043C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441\u0435" }),
@@ -8012,7 +8132,7 @@ function MarketSandbox() {
                       ] }),
                       /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u041C\u0438\u043D. \u043E\u0441\u0442\u0430\u0442\u043E\u043A (\u0434\u043E\u043A\u0443\u043F\u0430\u0435\u0442 \u0441\u0440\u0430\u0437\u0443 \u0434\u043E \u00D72)" }),
                       /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8, marginBottom: 10 }, children: [
-                        /* @__PURE__ */ jsx("input", { type: "number", value: draft, onChange: (e) => setManagerFormInputs((prev) => ({ ...prev, [shop.id]: { ...prev[shop.id], minStock: e.target.value } })), onBlur: commitMinStock, style: { flex: 1, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 12, padding: "8px 10px" } }),
+                        /* @__PURE__ */ jsx("input", { type: "number", value: draft, onChange: (e) => setManagerFormInputs((prev) => ({ ...prev, [shop.id]: { ...prev[shop.id], minStock: e.target.value } })), onBlur: commitMinStock, style: { flex: 1, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 16, padding: "8px 10px" } }),
                         /* @__PURE__ */ jsx("button", { onClick: commitMinStock, style: { padding: "0 14px", borderRadius: 8, border: `1px solid ${C.border}`, background: "transparent", color: C.inkDim, fontSize: 11.5 }, children: "OK" })
                       ] }),
                       /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u041F\u043E\u0441\u0442\u0430\u0432\u0449\u0438\u043A" }),
@@ -8043,7 +8163,7 @@ function MarketSandbox() {
                     return /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16 }, children: [
                       /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginBottom: 10, lineHeight: 1.6 }, children: `\u0410\u0432\u0442\u043E\u043C\u0430\u0442\u0438\u0447\u0435\u0441\u043A\u0438 \u0434\u0435\u0440\u0436\u0438\u0442 \u043E\u0441\u0442\u0430\u0442\u043E\u043A, \u0446\u0435\u043D\u0443 \u0438 \u0440\u0435\u043A\u043B\u0430\u043C\u0443 \u043D\u0430 \u043C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441\u0435 \u2014 \u0431\u0435\u0437 \u0444\u0438\u0437\u0438\u0447\u0435\u0441\u043A\u043E\u0439 \u0442\u043E\u0447\u043A\u0438. \u0417\u0430\u0440\u043F\u043B\u0430\u0442\u0430 ${fmt(MANAGER_SALARY)} \u043A\u0430\u0436\u0434\u044B\u0435 ${MANAGER_SALARY_CYCLE_MS / 6e4} \u043C\u0438\u043D \u2014 \u043D\u0430\u0447\u0438\u0441\u043B\u044F\u0435\u0442\u0441\u044F, \u043D\u043E \u0441\u043F\u0438\u0441\u044B\u0432\u0430\u0435\u0442\u0441\u044F \u0442\u043E\u043B\u044C\u043A\u043E \u043A\u043E\u0433\u0434\u0430 \u0442\u044B \u0441\u0430\u043C \u043E\u043F\u043B\u0430\u0442\u0438\u0448\u044C \u0441\u043E \u0441\u0447\u0451\u0442\u0430 \u0418\u041F.` }),
                       /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u0417\u0430\u0437\u043E\u0440 \u043E\u0442 \u043C\u0430\u043A\u0441. \u0440\u044B\u043D\u043E\u0447\u043D\u043E\u0439 \u0446\u0435\u043D\u044B ($)" }),
-                      /* @__PURE__ */ jsx("input", { type: "number", value: f.priceGap, onChange: (e) => setF({ priceGap: e.target.value }), style: { width: "100%", marginBottom: 10, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 12, padding: "8px 10px" } }),
+                      /* @__PURE__ */ jsx("input", { type: "number", value: f.priceGap, onChange: (e) => setF({ priceGap: e.target.value }), style: { width: "100%", marginBottom: 10, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 16, padding: "8px 10px" } }),
                       /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u0420\u0435\u043A\u043B\u0430\u043C\u0430 \u043D\u0430 \u043C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441\u0435" }),
                       /* @__PURE__ */ jsx("div", { style: { display: "flex", gap: 6, marginBottom: 10 }, children: ["min", "mid", "max"].map((k) => /* @__PURE__ */ jsx("button", { onClick: () => setF({ adTier: k }), style: segStyle(f.adTier === k), children: MANAGER_AD_TIER_LABEL[k] }, k)) }),
                       /* @__PURE__ */ jsxs("button", { onClick: () => setF({ autoAdEnabled: !f.autoAdEnabled }), style: { width: "100%", textAlign: "left", padding: 10, borderRadius: 8, border: `1px solid ${C.border}`, background: C.surface2, color: C.ink, fontSize: 12, marginBottom: 10 }, children: [
@@ -8051,7 +8171,7 @@ function MarketSandbox() {
                         " \u0414\u0435\u0440\u0436\u0430\u0442\u044C \u0440\u0435\u043A\u043B\u0430\u043C\u0443 \u0430\u043A\u0442\u0438\u0432\u043D\u043E\u0439 \u043F\u043E\u0441\u0442\u043E\u044F\u043D\u043D\u043E"
                       ] }),
                       /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u041C\u0438\u043D. \u043E\u0441\u0442\u0430\u0442\u043E\u043A (\u0434\u043E\u043A\u0443\u043F\u0430\u0435\u0442 \u0441\u0440\u0430\u0437\u0443 \u0434\u043E \u00D72)" }),
-                      /* @__PURE__ */ jsx("input", { type: "number", value: f.minStock, onChange: (e) => setF({ minStock: e.target.value }), style: { width: "100%", marginBottom: 10, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 12, padding: "8px 10px" } }),
+                      /* @__PURE__ */ jsx("input", { type: "number", value: f.minStock, onChange: (e) => setF({ minStock: e.target.value }), style: { width: "100%", marginBottom: 10, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 16, padding: "8px 10px" } }),
                       /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u041F\u043E\u0441\u0442\u0430\u0432\u0449\u0438\u043A" }),
                       /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }, children: [
                         /* @__PURE__ */ jsx("button", { onClick: () => setF({ supplierId: "auto" }), style: { ...segStyle((f.supplierId || "auto") === "auto"), flex: "0 1 auto" }, children: "\u0410\u0432\u0442\u043E (\u0434\u0435\u0448\u0435\u0432\u043B\u0435)" }),
@@ -8257,7 +8377,7 @@ function MarketSandbox() {
                     /* @__PURE__ */ jsx("div", { style: { fontSize: 11.5, fontWeight: 700, marginBottom: 8 }, children: "\u041D\u0430\u0447\u0430\u0442\u044C \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u043E" }),
                     room <= 0 ? /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkFaint }, children: "\u0421\u043A\u043B\u0430\u0434 \u0437\u0430\u043F\u043E\u043B\u043D\u0435\u043D \u2014 \u0441\u043D\u0430\u0447\u0430\u043B\u0430 \u043F\u0440\u043E\u0434\u0430\u0439 \u043E\u0441\u0442\u0430\u0442\u043E\u043A" }) : /* @__PURE__ */ jsxs(Fragment, { children: [
                       /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8 }, children: [
-                        /* @__PURE__ */ jsx("input", { type: "number", value: pu, onChange: (e) => setFactoryProductionInputs((prev) => ({ ...prev, [f.id]: e.target.value })), placeholder: `\u0434\u043E ${room} \u0448\u0442`, min: 1, max: room, style: { flex: 1, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 12, padding: "8px 10px" } }),
+                        /* @__PURE__ */ jsx("input", { type: "number", value: pu, onChange: (e) => setFactoryProductionInputs((prev) => ({ ...prev, [f.id]: e.target.value })), placeholder: `\u0434\u043E ${room} \u0448\u0442`, min: 1, max: room, style: { flex: 1, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 16, padding: "8px 10px" } }),
                         /* @__PURE__ */ jsx("button", { onClick: () => setFactoryProductionInputs((prev) => ({ ...prev, [f.id]: String(room) })), style: { padding: "0 12px", borderRadius: 8, border: `1px solid ${C.border}`, background: "transparent", color: C.inkDim, fontSize: 11.5 }, children: "\u041C\u0430\u043A\u0441." })
                       ] }),
                       /* @__PURE__ */ jsx("button", { onClick: () => {
@@ -8295,9 +8415,9 @@ function MarketSandbox() {
                       Math.round(FACTORY_SHOP_TRANSFER_FEE_PCT * 100),
                       "% \u043E\u0442 \u0441\u0435\u0431\u0435\u0441\u0442\u043E\u0438\u043C\u043E\u0441\u0442\u0438 \u2014 \u0434\u0435\u0448\u0435\u0432\u043B\u0435 \u0442\u0435\u043D\u0434\u0435\u0440\u043E\u0432, \u043D\u043E \u0437\u0430\u0431\u0438\u0440\u0430\u0435\u0442 \u0442\u043E\u0432\u0430\u0440, \u043A\u043E\u0442\u043E\u0440\u044B\u0439 \u043C\u043E\u0433 \u0431\u044B \u0443\u0439\u0442\u0438 \u043D\u0430 \u0431\u043E\u043B\u0435\u0435 \u0432\u044B\u0433\u043E\u0434\u043D\u044B\u0439 \u0442\u0435\u043D\u0434\u0435\u0440."
                     ] }),
-                    resellShops.length > 1 && /* @__PURE__ */ jsx("select", { value: ft.shopId, onChange: (e) => setFt({ shopId: e.target.value }), style: { width: "100%", marginBottom: 8, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 12, padding: "8px 10px" }, children: resellShops.map((s) => /* @__PURE__ */ jsx("option", { value: s.id, children: s.name }, s.id)) }),
+                    resellShops.length > 1 && /* @__PURE__ */ jsx("select", { value: ft.shopId, onChange: (e) => setFt({ shopId: e.target.value }), style: { width: "100%", marginBottom: 8, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 16, padding: "8px 10px" }, children: resellShops.map((s) => /* @__PURE__ */ jsx("option", { value: s.id, children: s.name }, s.id)) }),
                     /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8 }, children: [
-                      /* @__PURE__ */ jsx("input", { type: "number", value: ft.units, onChange: (e) => setFt({ units: e.target.value }), placeholder: `\u0434\u043E ${f.stock} \u0448\u0442`, style: { flex: 1, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 12, padding: "8px 10px" } }),
+                      /* @__PURE__ */ jsx("input", { type: "number", value: ft.units, onChange: (e) => setFt({ units: e.target.value }), placeholder: `\u0434\u043E ${f.stock} \u0448\u0442`, style: { flex: 1, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 16, padding: "8px 10px" } }),
                       /* @__PURE__ */ jsxs("button", { onClick: () => {
                         transferFactoryStockToShop(f.id, ft.shopId, ft.units);
                         setFt({ units: "" });
@@ -9998,7 +10118,7 @@ function MarketSandbox() {
           ] })
         ] })
       ] }),
-      /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "flex-end", borderTop: `1px solid ${C.border}`, background: C.surface, position: "relative" }, children: [
+      /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "flex-end", borderTop: `1px solid ${C.border}`, background: C.surface, position: "relative", flexShrink: 0, paddingBottom: "env(safe-area-inset-bottom)" }, children: [
         [
           { key: "market", label: "\u0420\u044B\u043D\u043E\u043A", icon: TrendingUp },
           { key: "news", label: "\u0421\u043E\u0446\u0441\u0435\u0442\u044C", icon: MessageCircle },
@@ -10025,7 +10145,7 @@ function MarketSandbox() {
           ] }, t.key);
         })
       ] }),
-      selectedId && selectedCompany && /* @__PURE__ */ jsx("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 50 }, onClick: () => setSelectedId(null), children: /* @__PURE__ */ jsxs("div", { onClick: (e) => e.stopPropagation(), style: { width: "100%", maxWidth: 430, background: C.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, maxHeight: "85vh", overflowY: "auto" }, children: [
+      selectedId && selectedCompany && /* @__PURE__ */ jsx("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 50 }, onClick: () => setSelectedId(null), children: /* @__PURE__ */ jsxs("div", { className: "msb-modal-h", onClick: (e) => e.stopPropagation(), style: { width: "100%", maxWidth: 430, background: C.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, overflowY: "auto" }, children: [
         /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }, children: [
           /* @__PURE__ */ jsxs("div", { children: [
             /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkDim }, children: selectedCompany.sector }),
@@ -10242,7 +10362,7 @@ function MarketSandbox() {
           /* @__PURE__ */ jsx("button", { onClick: resetGame, style: { flex: 1, padding: 12, borderRadius: 10, border: "none", background: C.red, color: "#fff", fontWeight: 700 }, children: "\u0421\u0431\u0440\u043E\u0441\u0438\u0442\u044C" })
         ] })
       ] }) }),
-      showBackupModal && /* @__PURE__ */ jsx("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 60, padding: 20 }, children: /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 16, padding: 20, width: "100%", maxWidth: 360, maxHeight: "85vh", overflowY: "auto" }, children: [
+      showBackupModal && /* @__PURE__ */ jsx("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 60, padding: 20 }, children: /* @__PURE__ */ jsxs("div", { className: "msb-modal-h", style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 16, padding: 20, width: "100%", maxWidth: 360, overflowY: "auto" }, children: [
         /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }, children: [
           /* @__PURE__ */ jsx("div", { style: { fontWeight: 700, fontSize: 16 }, children: "\u0420\u0435\u0437\u0435\u0440\u0432\u043D\u0430\u044F \u043A\u043E\u043F\u0438\u044F" }),
           /* @__PURE__ */ jsx("button", { onClick: () => setShowBackupModal(false), style: { background: "none", border: "none", color: C.inkDim }, children: /* @__PURE__ */ jsx(X, { size: 18 }) })
