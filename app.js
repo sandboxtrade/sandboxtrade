@@ -1,4 +1,4 @@
-// Market Sandbox — V1.3 (адаптация под устройства)
+// Market Sandbox — V1.4 (крипта с дроп-карт видна и продаётся)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -3830,6 +3830,7 @@ function MarketSandbox() {
     const useGrey = account === "grey" && greyAccount && !greyAccount.frozen;
     const useBankCard = !useIp && !useGrey && BANK_ACCOUNTS.some((b) => b.id === account) && bankAccounts[account] && !bankAccounts[account].frozen;
     const useMule = !useIp && !useGrey && !useBankCard && muleCards[account] && !muleCards[account].frozen;
+    if (!useIp && !useGrey && !useBankCard && !useMule && muleCards[account] && muleCards[account].frozen) return;
     if (side === "sell" && !useIp && !useGrey && !useBankCard && !useMule && loans.some((l) => l.frozen)) return;
     const curCash = useGrey ? greyAccount.balance : useIp ? ipCash : useBankCard ? bankAccounts[account].balance : useMule ? muleCards[account].balance : 0;
     const curHoldings = useGrey ? greyHoldings : useIp ? ipHoldings : useMule ? muleHoldings[account] || {} : holdings;
@@ -10043,6 +10044,36 @@ function MarketSandbox() {
                       "%"
                     ] })
                   ] }),
+                  (() => {
+                    const positions = Object.entries(muleHoldings[muleId] || {}).filter(([, h]) => h.qty > 0);
+                    if (positions.length === 0) return null;
+                    return /* @__PURE__ */ jsxs("div", { style: { margin: "8px 0", background: C.surface2, borderRadius: 10, padding: 10 }, children: [
+                      /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkDim, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }, children: "Активы на этой карте" }),
+                      positions.map(([companyId, h]) => {
+                        const comp = companies.find((c) => c.id === companyId);
+                        if (!comp) return null;
+                        const value = comp.price * h.qty;
+                        const pnlPct = h.avgCost > 0 ? (comp.price / h.avgCost - 1) * 100 : 0;
+                        return /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderTop: `1px solid ${C.border}` }, children: [
+                          /* @__PURE__ */ jsxs("div", { children: [
+                            /* @__PURE__ */ jsxs("div", { style: { fontSize: 12.5, fontWeight: 700 }, children: [
+                              comp.ticker,
+                              " ×",
+                              h.qty
+                            ] }),
+                            /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: pnlPct >= 0 ? C.green : C.red }, children: [
+                              fmt(value),
+                              " · ",
+                              pnlPct >= 0 ? "+" : "",
+                              pnlPct.toFixed(1),
+                              "%"
+                            ] })
+                          ] }),
+                          /* @__PURE__ */ jsx("button", { onClick: () => executeTrade(companyId, "sell", h.qty, muleId), style: { padding: "7px 12px", borderRadius: 8, border: "none", background: C.gold, color: "#161207", fontWeight: 700, fontSize: 11.5 }, children: "Продать" })
+                        ] }, companyId);
+                      })
+                    ] });
+                  })(),
                   /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8, marginBottom: 8 }, children: [
                     /* @__PURE__ */ jsx(
                       "input",
