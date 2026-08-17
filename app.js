@@ -1,4 +1,4 @@
-// Market Sandbox — V1.9 (КРИТИЧЕСКИЙ ФИКС: убран открытый компаундящийся дрейф банков/поставщиков/ZZONE, добавлен возврат к среднему для нефти)
+// Market Sandbox — V2.7.1 (проверка целостности: rugged-гейт для резолва рекламной кампании — если монету зарагпуллили посреди активной кампании, резолв больше не оживляет Hype/Trust мёртвой монеты)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -512,6 +512,14 @@ var TENDER_DEPOSIT_RATIO = 0.15;
 var TENDER_LOSS_FEE_RATIO = 0.1;
 var TENDER_MAINTENANCE_MS = 15e3;
 var FOUNDER_PCT = { company: 0.6, crypto: 0.2 };
+var VESTING_DURATION_MS = 20 * 60 * 1e3;
+var VESTING_UNLOCKED_PCT = 0.2;
+var AD_DURATIONS = [
+  { id: "short", label: "10 \u043C\u0438\u043D", ms: 10 * 60 * 1e3 },
+  { id: "mid", label: "20 \u043C\u0438\u043D", ms: 20 * 60 * 1e3 },
+  { id: "long", label: "40 \u043C\u0438\u043D", ms: 40 * 60 * 1e3 }
+];
+var AD_MIN_BUDGET = 500;
 var DAY_MS = 15e3;
 var RESELL_STARTUP = { registration: 500, rent: 800, equipment: 300 };
 var FACTORY_LINES = {
@@ -632,6 +640,31 @@ var WAREHOUSE_STAFF_ROLES = [
 ];
 function clamp01(v, lo, hi) {
   return Math.max(lo, Math.min(hi, v));
+}
+function poolLiquidityFactor(poolUsd, marketCap) {
+  const refLiquidity = Math.max(50, marketCap * 0.15);
+  return clamp01(Math.sqrt(refLiquidity / Math.max(1, poolUsd || 1)), 0.5, 3);
+}
+var COIN_STAGES = [
+  { id: "created", label: "Created" },
+  { id: "launched", label: "Launched" },
+  { id: "early", label: "Early" },
+  { id: "growing", label: "Growing" },
+  { id: "established", label: "Established" },
+  { id: "major", label: "Major" }
+];
+function getCoinStage(v) {
+  if (!v || v.kind !== "crypto") return COIN_STAGES[0];
+  const marketCap = v.price * v.supply;
+  const trust = v.coinTrust || 0;
+  const rounds = v.investorRounds || 0;
+  const absorbed = typeof v.initialPoolCoin === "number" && v.initialPoolCoin > 0 ? Math.max(0, (v.initialPoolCoin - (v.poolCoin || 0)) / v.initialPoolCoin) : 0;
+  if (marketCap >= 250000 && trust >= 60 && rounds >= 3) return COIN_STAGES[5];
+  if (marketCap >= 60000 && trust >= 55 && rounds >= 2) return COIN_STAGES[4];
+  if (marketCap >= 15000 && trust >= 45 && (rounds >= 1 || absorbed > 0.3)) return COIN_STAGES[3];
+  if (marketCap >= 3000 && trust >= 35) return COIN_STAGES[2];
+  if (marketCap >= 400) return COIN_STAGES[1];
+  return COIN_STAGES[0];
 }
 function zzoneDemandMult(perf) {
   return clamp01(1 + perf / 40, 0.55, 1.6);
@@ -1183,9 +1216,11 @@ function computeAdBoost(activeAds) {
   return Math.min(6, boost);
 }
 var INVESTOR_PERSONAS = [
-  { id: "hype", name: "\u0410\u043A\u0443\u043B\u0430 \u0445\u0430\u0439\u043F\u0430", icon: "\u{1F988}", likes: "growth", wants: "\u0440\u043E\u0441\u0442 \u0430\u0443\u0434\u0438\u0442\u043E\u0440\u0438\u0438 \u0438 \u0445\u0430\u0439\u043F", color: "#FF5C5C" },
-  { id: "fund", name: "\u041E\u0441\u0442\u043E\u0440\u043E\u0436\u043D\u044B\u0439 \u0444\u043E\u043D\u0434", icon: "\u{1F9E0}", likes: "rd", wants: "\u0440\u0430\u0437\u0440\u0430\u0431\u043E\u0442\u043A\u0443 \u0438 \u0441\u0442\u0430\u0431\u0438\u043B\u044C\u043D\u043E\u0441\u0442\u044C", color: "#5AA9E6" },
-  { id: "whale", name: "\u041A\u0440\u0443\u043F\u043D\u044B\u0439 \u043A\u0430\u043F\u0438\u0442\u0430\u043B", icon: "\u{1F4B0}", likes: "cap", wants: "\u043A\u0430\u043F\u0438\u0442\u0430\u043B\u0438\u0437\u0430\u0446\u0438\u044E \u0438 \u043F\u0440\u043E\u0448\u043B\u044B\u0435 \u0440\u0430\u0443\u043D\u0434\u044B", color: "#E8B14C" }
+  { id: "retail", name: "\u0420\u043E\u0437\u043D\u0438\u0447\u043D\u044B\u0439 \u0438\u043D\u0432\u0435\u0441\u0442\u043E\u0440", icon: "\u{1F9CD}", likes: "growth", wants: "\u043F\u0440\u043E\u0441\u0442\u0443\u044E \u0438\u0441\u0442\u043E\u0440\u0438\u044E \u0438 \u0440\u043E\u0441\u0442 \u0430\u0443\u0434\u0438\u0442\u043E\u0440\u0438\u0438", metric: "reputation", dilutionRange: [0.02, 0.05], hypeGain: 4, trustGain: 1, color: "#8FD19E" },
+  { id: "speculator", name: "\u0421\u043F\u0435\u043A\u0443\u043B\u044F\u043D\u0442", icon: "\u{1F4C8}", likes: "growth", wants: "\u0431\u044B\u0441\u0442\u0440\u044B\u0439 \u0440\u043E\u0441\u0442 \u0438 \u0445\u0430\u0439\u043F", metric: "hype", dilutionRange: [0.06, 0.12], hypeGain: 14, trustGain: 0, color: "#E8B14C" },
+  { id: "longterm", name: "\u0414\u043E\u043B\u0433\u043E\u0441\u0440\u043E\u0447\u043D\u044B\u0439 \u0444\u043E\u043D\u0434", icon: "\u{1F9E0}", likes: "rd", wants: "\u0440\u0430\u0437\u0440\u0430\u0431\u043E\u0442\u043A\u0443 \u0438 \u0441\u0442\u0430\u0431\u0438\u043B\u044C\u043D\u043E\u0441\u0442\u044C", metric: "trust", dilutionRange: [0.08, 0.15], hypeGain: 2, trustGain: 8, color: "#5AA9E6" },
+  { id: "whale", name: "\u041A\u0440\u0443\u043F\u043D\u044B\u0439 \u043A\u0430\u043F\u0438\u0442\u0430\u043B", icon: "\u{1F4B0}", likes: "cap", wants: "\u043A\u0430\u043F\u0438\u0442\u0430\u043B\u0438\u0437\u0430\u0446\u0438\u044E \u0438 \u043A\u0440\u0443\u043F\u043D\u044B\u0435 \u0440\u0430\u0443\u043D\u0434\u044B", metric: "both", dilutionRange: [0.15, 0.25], hypeGain: 6, trustGain: 4, color: "#C77DFF" },
+  { id: "hype", name: "\u0410\u043A\u0443\u043B\u0430 \u0445\u0430\u0439\u043F\u0430", icon: "\u{1F988}", likes: "growth", wants: "\u0432\u0438\u0440\u0443\u0441\u043D\u043E\u0441\u0442\u044C \u0438 \u043C\u043E\u043C\u0435\u043D\u0442\u0443\u043C", metric: "hype", dilutionRange: [0.05, 0.1], hypeGain: 18, trustGain: -1, color: "#FF5C5C" }
 ];
 var PITCH_ANGLES = [
   { id: "growth", label: "\u0420\u043E\u0441\u0442 \u0430\u0443\u0434\u0438\u0442\u043E\u0440\u0438\u0438", icon: "\u{1F4E3}" },
@@ -1193,7 +1228,7 @@ var PITCH_ANGLES = [
   { id: "cap", label: "\u041A\u0430\u043F\u0438\u0442\u0430\u043B\u0438\u0437\u0430\u0446\u0438\u044E", icon: "\u{1F4CA}" }
 ];
 var STORAGE_KEY = "market-sandbox-v6";
-var SAVE_VERSION = 7;
+var SAVE_VERSION = 11;
 var LocalStorageSaveAdapter = {
   async save(key, payload) {
     await window.storage.set(key, JSON.stringify(payload));
@@ -1275,6 +1310,55 @@ var SAVE_MIGRATIONS = {
       govDefaultRisk: typeof (data.macro || {}).govDefaultRisk === "number" ? data.macro.govDefaultRisk : 0,
       govDebtWarningsTriggered: Array.isArray((data.macro || {}).govDebtWarningsTriggered) ? data.macro.govDebtWarningsTriggered : []
     }
+  }),
+  // v7 -> v8: фиксированный supply у собственной криптовалюты игрока + честный пул
+  // ликвидности (poolCoin/poolUsd) вместо эмиссии новых монет при покупке/раунде
+  // инвесторов. Старые сохранения синтезируют пул из текущей цены/supply, сам supply
+  // больше не меняется.
+  8: (data) => ({
+    ...data,
+    companies: Array.isArray(data.companies) ? data.companies.map((c) => {
+      if (!c || c.kind !== "crypto" || !c.isPlayer) return c;
+      if (typeof c.poolCoin === "number" && typeof c.poolUsd === "number") return c;
+      const poolCoin = Math.max(1, Math.round((c.supply || 0) * 0.2));
+      const poolUsd = Math.round(poolCoin * (c.price || 0.2));
+      return { ...c, poolCoin, poolUsd };
+    }) : data.companies
+  }),
+  // v8 -> v9: явное распределение Total Supply у собственной монеты (Founder/Liquidity
+  // уже есть через holdings/poolCoin — добавляем Public/Marketing/Reserve как
+  // информационные поля токеномики). Для старых крипто-проектов остаток supply,
+  // не занятый founder-холдингом и poolCoin, целиком уходит в Public.
+  9: (data) => ({
+    ...data,
+    companies: Array.isArray(data.companies) ? data.companies.map((c) => {
+      if (!c || c.kind !== "crypto" || !c.isPlayer) return c;
+      if (typeof c.publicAllocation === "number") return c;
+      const founderQty = (data.holdings && data.holdings[c.id] && data.holdings[c.id].qty) || 0;
+      const publicAllocation = Math.max(0, (c.supply || 0) - founderQty - (c.poolCoin || 0));
+      return { ...c, publicAllocation, marketingAllocation: 0, reserveAllocation: 0 };
+    }) : data.companies
+  }),
+  // v9 -> v10: vesting founder-доли. У старых крипто-проектов вся founder-доля уже
+  // была в holdings изначально — задним числом ничего не запираем, просто ставим
+  // vestingLockedTotal=0 (нечего разблокировать), чтобы тик-луп не трогал их.
+  10: (data) => ({
+    ...data,
+    companies: Array.isArray(data.companies) ? data.companies.map((c) => {
+      if (!c || c.kind !== "crypto" || !c.isPlayer) return c;
+      if (typeof c.vestingLockedTotal === "number") return c;
+      return { ...c, vestingLockedTotal: 0, vestingReleased: 0, vestingStartAt: Date.now(), vestingDurationMs: VESTING_DURATION_MS };
+    }) : data.companies
+  }),
+  // v10 -> v11: раздельные Hype (краткосрочный интерес) и Trust (долгосрочное доверие)
+  // у собственной монеты вместо одного общего hypeLevel-счётчика.
+  11: (data) => ({
+    ...data,
+    companies: Array.isArray(data.companies) ? data.companies.map((c) => {
+      if (!c || c.kind !== "crypto" || !c.isPlayer) return c;
+      if (typeof c.coinHype === "number") return c;
+      return { ...c, coinHype: Math.min(100, 20 + (c.hypeLevel || 0) * 5), coinTrust: 50 };
+    }) : data.companies
   })
 };
 function migrateSaveData(data) {
@@ -1736,7 +1820,8 @@ function MarketSandbox() {
   const [netWorthHistory, setNetWorthHistory] = useState([]);
   const [tradeQty, setTradeQty] = useState(1);
   const [tradeSide, setTradeSide] = useState("buy");
-  const [form, setForm] = useState({ name: "", ticker: "", sector: SECTORS[0], kind: "company", strategy: "tech", factoryCategory: "clothes", seedAmount: "" });
+  const [form, setForm] = useState({ name: "", ticker: "", sector: SECTORS[0], kind: "company", strategy: "tech", factoryCategory: "clothes", seedAmount: "", cryptoSupply: "20000", cryptoStartPrice: "0.2", distFounder: "30", distLiquidity: "20", distPublic: "30", distMarketing: "10", distReserve: "10" });
+  const [adForm, setAdForm] = useState({ budget: "1000", headline: "", description: "", duration: "mid" });
   const [confirmReset, setConfirmReset] = useState(false);
   const [loans, setLoans] = useState([]);
   const [job, setJob] = useState(null);
@@ -2598,6 +2683,19 @@ function MarketSandbox() {
       price: c.price,
       vol: c.vol,
       supply: c.supply,
+      poolCoin: c.poolCoin,
+      poolUsd: c.poolUsd,
+      initialPoolCoin: c.initialPoolCoin,
+      publicAllocation: c.publicAllocation,
+      marketingAllocation: c.marketingAllocation,
+      reserveAllocation: c.reserveAllocation,
+      vestingLockedTotal: c.vestingLockedTotal,
+      vestingReleased: c.vestingReleased,
+      vestingStartAt: c.vestingStartAt,
+      vestingDurationMs: c.vestingDurationMs,
+      adCampaign: c.adCampaign,
+      coinHype: c.coinHype,
+      coinTrust: c.coinTrust,
       isPlayer: c.isPlayer,
       kind: c.kind,
       strategy: c.strategy,
@@ -2705,7 +2803,9 @@ function MarketSandbox() {
     scheduledEventsRef.current = [...scheduledEventsRef.current, ev];
   };
   const spawnCompanyStory = (c) => {
-    const isPos = Math.random() < 0.5;
+    const ownCrypto = c.isPlayer && c.kind === "crypto";
+    const posBias = ownCrypto ? clamp01(0.5 + (reputationRef.current - 50) / 250, 0.25, 0.8) : 0.5;
+    const isPos = Math.random() < posBias;
     const roll = Math.random();
     const importance = roll < 0.58 ? 1 : roll < 0.83 ? 2 : roll < 0.96 ? 3 : 4;
     const magBase = importance === 1 ? 3 + Math.random() * 5 : importance === 2 ? 5 + Math.random() * 7 : importance === 3 ? 8 + Math.random() * 10 : 14 + Math.random() * 14;
@@ -2747,6 +2847,11 @@ function MarketSandbox() {
       posts.push({ role: "user", kind: "chatter", text: pickFrom(USER_CHATTER, Math.floor(Math.random() * 1e6)), positive: isPos, isMacro: false, ticker: c.ticker, importance: 1 });
     }
     applyImpact(c.id, appliedPct);
+    if (ownCrypto) {
+      const hypeDelta = importance * (isPos ? 3 : 1.5);
+      const trustDelta = importance * (isPos ? 1.5 : -3);
+      setCompanies((prev) => prev.map((x) => x.id === c.id ? { ...x, coinHype: Math.max(0, Math.min(100, (x.coinHype || 30) + hypeDelta)), coinTrust: Math.max(0, Math.min(100, (x.coinTrust || 50) + trustDelta)) } : x));
+    }
     registerStory({ id: storyId, headline: cause.fact(ctx), category, personal: false, importance, status, reliability, ticker: c.ticker, marketImpactPct: appliedPct, createdAt: Date.now(), postCount: posts.length });
     pushPosts(posts.map((p) => ({ ...p, id: makeId("post"), storyId })));
   };
@@ -2977,6 +3082,36 @@ function MarketSandbox() {
       applyImpact(c.id, ev.correctionPct);
       updateStory(ev.storyId, { status: "denied", reliability: "low" });
       pushPost({ role: "insider", kind: "development", text: `\u0420\u044B\u043D\u043E\u043A \u043F\u0435\u0440\u0435\u043E\u0446\u0435\u043D\u0438\u043B \u043F\u043E\u0441\u0442 \u043F\u0440\u043E ${ev.ticker} \u2014 \u0447\u0430\u0441\u0442\u044C \u043F\u043E\u043A\u0443\u043F\u0430\u0442\u0435\u043B\u0435\u0439 \u0437\u0430\u043A\u0440\u044B\u0432\u0430\u0435\u0442 \u043F\u043E\u0437\u0438\u0446\u0438\u0438`, positive: false, isMacro: false, ticker: ev.ticker, importance: 2, storyId: ev.storyId });
+    } else if (ev.kind === "ad_campaign_resolve") {
+      if (!c) return;
+      if (c.rugged) {
+        setCompanies((prev) => prev.map((x) => x.id === c.id ? { ...x, adCampaign: null } : x));
+        return;
+      }
+      const trust = playerSocialProfileRef.current.trust;
+      const convFactor = clamp01(ev.quality * 0.65 + trust * 0.35, 0, 100) / 100;
+      const variance = 0.35 + Math.random() * 1.3;
+      const expectedUsd = ev.budget * (0.4 + convFactor * 1.6);
+      const demandUsd = Math.max(0, Math.round(expectedUsd * variance));
+      const hasPool = c.kind === "crypto" && typeof c.poolCoin === "number";
+      const hypeGain = Math.min(35, 8 + ev.budget / 300 + ev.quality / 8);
+      const trustDelta = ev.quality >= 60 ? 2 + ev.quality / 40 : ev.quality <= 30 ? -3 : 0;
+      let boughtCoins = 0;
+      if (hasPool && demandUsd > 0 && c.poolCoin > 0) {
+        boughtCoins = Math.min(c.poolCoin * 0.7, demandUsd / c.price);
+        const usdIn = boughtCoins * c.price;
+        const sizeRatio = boughtCoins / c.supply;
+        const popPct = Math.min(60, sizeRatio * 150 * poolLiquidityFactor(c.poolUsd, c.price * c.supply));
+        setCompanies((prev) => prev.map((x) => x.id === c.id ? { ...x, adCampaign: null, poolCoin: x.poolCoin - boughtCoins, poolUsd: x.poolUsd + usdIn, marketingLevel: (x.marketingLevel || 0) + 1, hypeLevel: (x.hypeLevel || 0) + (convFactor > 0.5 ? 1 : 0), coinHype: Math.min(100, (x.coinHype || 30) + hypeGain), coinTrust: Math.max(0, Math.min(100, (x.coinTrust || 50) + trustDelta)) } : x));
+        applyImpact(c.id, popPct);
+      } else {
+        setCompanies((prev) => prev.map((x) => x.id === c.id ? { ...x, adCampaign: null, marketingLevel: (x.marketingLevel || 0) + 1, coinHype: Math.min(100, (x.coinHype || 30) + hypeGain * 0.4), coinTrust: Math.max(0, Math.min(100, (x.coinTrust || 50) + trustDelta)) } : x));
+      }
+      const band = demandUsd >= ev.budget * 1.3 ? "\u043E\u0442\u043B\u0438\u0447\u043D\u044B\u0439" : demandUsd >= ev.budget * 0.6 ? "\u0441\u0440\u0435\u0434\u043D\u0438\u0439" : "\u0441\u043B\u0430\u0431\u044B\u0439";
+      pushPost({ role: "trader", kind: "development", text: `${ev.ticker}: \u0440\u0435\u043A\u043B\u0430\u043C\u043D\u0430\u044F \u043A\u0430\u043C\u043F\u0430\u043D\u0438\u044F \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043D\u0430 \u2014 \u0440\u0435\u0437\u0443\u043B\u044C\u0442\u0430\u0442 ${band}${boughtCoins > 0 ? `, \u043F\u0440\u0438\u0442\u043E\u043A \u2248${fmt(Math.round(boughtCoins * c.price))}` : ""}`, positive: demandUsd >= ev.budget * 0.8, isMacro: false, ticker: ev.ticker, importance: 2 });
+      if ((ev.scamRisk || 0) >= 55) {
+        setPlayerSocialProfile((p) => ({ ...p, trust: Math.max(0, p.trust - 3) }));
+      }
     } else if (ev.kind === "oil_confirm") {
       const bank = OIL_EVENT_BANKS[ev.bankKey];
       if (!bank) return;
@@ -3199,6 +3334,71 @@ function MarketSandbox() {
   useEffect(() => {
     if (!loaded) return;
     const id = setInterval(() => {
+      const now = Date.now();
+      const dueReleases = [];
+      companiesRef.current.forEach((c) => {
+        if (!c.isPlayer || c.kind !== "crypto" || !((c.vestingLockedTotal || 0) > (c.vestingReleased || 0))) return;
+        const elapsed = now - (c.vestingStartAt || now);
+        const frac = Math.max(0, Math.min(1, elapsed / (c.vestingDurationMs || VESTING_DURATION_MS)));
+        const targetReleased = Math.floor(c.vestingLockedTotal * frac);
+        const delta = targetReleased - (c.vestingReleased || 0);
+        if (delta > 0) dueReleases.push({ id: c.id, delta, targetReleased });
+      });
+      if (!dueReleases.length) return;
+      setCompanies((prev) => prev.map((c) => {
+        const r = dueReleases.find((x) => x.id === c.id);
+        return r ? { ...c, vestingReleased: r.targetReleased } : c;
+      }));
+      setHoldings((h) => {
+        const next = { ...h };
+        dueReleases.forEach((r) => {
+          const prevH = next[r.id] || { qty: 0, avgCost: 0 };
+          next[r.id] = { ...prevH, qty: prevH.qty + r.delta };
+        });
+        return next;
+      });
+    }, 1e4);
+    return () => clearInterval(id);
+  }, [loaded]);
+  useEffect(() => {
+    if (!loaded) return;
+    const id = setInterval(() => {
+      const impacts = [];
+      setCompanies((prev) => prev.map((c) => {
+        if (!c.isPlayer || c.kind !== "crypto" || c.rugged) return c;
+        const hype = typeof c.coinHype === "number" ? c.coinHype : 30;
+        const trust = typeof c.coinTrust === "number" ? c.coinTrust : 50;
+        const nextHype = Math.max(0, hype - 1.5);
+        if (typeof c.poolCoin !== "number" || c.poolCoin <= 0 || c.poolUsd <= 0) {
+          return { ...c, coinHype: nextHype };
+        }
+        const speculatorPressure = (hype - 50) / 50 * 0.55;
+        const longTermPressure = (trust - 50) / 50 * 0.35;
+        const noise = (Math.random() - 0.5) * 0.3;
+        const netPressure = Math.max(-1, Math.min(1, speculatorPressure + longTermPressure + noise));
+        const netUsd = netPressure * c.poolUsd * 0.025;
+        if (Math.abs(netUsd) < 1) return { ...c, coinHype: nextHype };
+        if (netUsd > 0) {
+          const coinsOut = Math.min(c.poolCoin * 0.4, netUsd / c.price);
+          const usdIn = coinsOut * c.price;
+          const sizeRatio = coinsOut / c.supply;
+          impacts.push({ id: c.id, pct: Math.min(15, sizeRatio * 150 * poolLiquidityFactor(c.poolUsd, c.price * c.supply)) });
+          return { ...c, coinHype: nextHype, poolCoin: c.poolCoin - coinsOut, poolUsd: c.poolUsd + usdIn };
+        } else {
+          const usdOut = Math.min(c.poolUsd * 0.4, -netUsd);
+          const coinsIn = usdOut / c.price;
+          const sizeRatio = coinsIn / c.supply;
+          impacts.push({ id: c.id, pct: -Math.min(15, sizeRatio * 150 * poolLiquidityFactor(c.poolUsd, c.price * c.supply)) });
+          return { ...c, coinHype: nextHype, poolCoin: c.poolCoin + coinsIn, poolUsd: c.poolUsd - usdOut };
+        }
+      }));
+      impacts.forEach((imp) => applyImpact(imp.id, imp.pct));
+    }, 2e4);
+    return () => clearInterval(id);
+  }, [loaded]);
+  useEffect(() => {
+    if (!loaded) return;
+    const id = setInterval(() => {
       if (taxOwedRef.current <= 100) {
         if (taxOverdueSinceRef.current !== null) setTaxOverdueSince(null);
         return;
@@ -3331,7 +3531,30 @@ function MarketSandbox() {
   useEffect(() => {
     const v = companies.find((c) => c.id === playerVentureId);
     if (v && !v.rugged && (v.investorCooldown || 0) === 0 && !investorPersona) {
-      setInvestorPersona(INVESTOR_PERSONAS[Math.floor(Math.random() * INVESTOR_PERSONAS.length)]);
+      if (v.kind === "crypto") {
+        const hype = v.coinHype || 30;
+        const trust = v.coinTrust || 50;
+        const marketCap = v.price * v.supply;
+        const weights = INVESTOR_PERSONAS.map((p) => {
+          if (p.metric === "hype") return 1 + hype / 35;
+          if (p.metric === "trust") return 1 + trust / 35;
+          if (p.metric === "both") return 1 + marketCap / 15000 + (hype + trust) / 140;
+          return 1 + reputationRef.current / 120;
+        });
+        const total = weights.reduce((a, b) => a + b, 0);
+        let roll = Math.random() * total;
+        let chosen = INVESTOR_PERSONAS[0];
+        for (let i = 0; i < INVESTOR_PERSONAS.length; i++) {
+          roll -= weights[i];
+          if (roll <= 0) {
+            chosen = INVESTOR_PERSONAS[i];
+            break;
+          }
+        }
+        setInvestorPersona(chosen);
+      } else {
+        setInvestorPersona(INVESTOR_PERSONAS[Math.floor(Math.random() * INVESTOR_PERSONAS.length)]);
+      }
     }
   }, [companies, playerVentureId, investorPersona]);
   useEffect(() => {
@@ -4305,11 +4528,17 @@ function MarketSandbox() {
     const setCurHoldings = useGrey ? setGreyHoldings : useIp ? setIpHoldings : useMule ? (fn) => setMuleHoldings((prev) => ({ ...prev, [account]: typeof fn === "function" ? fn(prev[account] || {}) : fn })) : useFakeIp ? (fn) => setFakeIps((prev) => prev[account] ? { ...prev, [account]: { ...prev[account], holdings: typeof fn === "function" ? fn(prev[account].holdings || {}) : fn } } : prev) : setHoldings;
     const acctTag = useGrey ? " \xB7 Meridian" : useIp ? " \xB7 \u0418\u041F" : useBankCard ? ` \xB7 ${BANK_ACCOUNTS.find((b) => b.id === account)?.name}` : useMule ? " \xB7 \u0447\u0443\u0436\u0430\u044F \u043A\u0430\u0440\u0442\u0430" : useFakeIp ? " \xB7 \u0447\u0443\u0436\u043E\u0435 \u0418\u041F" : "";
     const sizeRatio = qty / company.supply;
-    const impactPct = Math.min(92, sizeRatio * 150);
+    const isOwnCryptoPool = company.kind === "crypto" && company.isPlayer && typeof company.poolCoin === "number";
+    const liqFactor = isOwnCryptoPool ? poolLiquidityFactor(company.poolUsd, company.price * company.supply) : 1;
+    const impactPct = Math.min(92, sizeRatio * 150 * liqFactor);
     if (side === "buy") {
       const avgExecPrice = company.price * (1 + impactPct / 200);
       const cost = avgExecPrice * qty * 1.002 * (useGrey ? 1 + GREY_BANK.tradeBuyFee : 1);
       if (cost > curCash) return;
+      if (isOwnCryptoPool && qty > company.poolCoin) return;
+      if (isOwnCryptoPool) {
+        setCompanies((prev) => prev.map((c) => c.id === companyId ? { ...c, poolCoin: c.poolCoin - qty, poolUsd: c.poolUsd + cost } : c));
+      }
       setCurCash((c) => c - cost);
       if (useBankCard) {
         setBankAccounts((prev) => prev[account] ? { ...prev, [account]: { ...prev[account], turnoverUsed: prev[account].turnoverUsed + cost, lifetimeTurnover: (prev[account].lifetimeTurnover || 0) + cost } } : prev);
@@ -4332,6 +4561,10 @@ function MarketSandbox() {
       const avgExecPrice = company.price * (1 - impactPct / 200);
       const grossProceeds = avgExecPrice * qty * 0.998 * (useGrey ? 1 - GREY_BANK.tradeSellFee : 1);
       const profit = (avgExecPrice - avgCost) * qty;
+      if (isOwnCryptoPool && grossProceeds > company.poolUsd) return;
+      if (isOwnCryptoPool) {
+        setCompanies((prev) => prev.map((c) => c.id === companyId ? { ...c, poolCoin: c.poolCoin + qty, poolUsd: c.poolUsd - grossProceeds } : c));
+      }
       setCurCash((c) => c + grossProceeds);
       setCurHoldings((h) => {
         const prevH = h[companyId];
@@ -4358,6 +4591,11 @@ function MarketSandbox() {
         flagSuspicion(sizeRatio * 55 + (recentPump ? 20 : 0));
       } else if (sizeRatio > 0.08) {
         flagSuspicion(sizeRatio * 28);
+      }
+      if (company.kind === "crypto" && company.isPlayer && companyId === playerVentureId && sizeRatio > 0.08) {
+        const trustHit = Math.round(Math.min(25, sizeRatio * 90));
+        setCompanies((prev) => prev.map((c) => c.id === companyId ? { ...c, coinTrust: Math.max(0, (c.coinTrust || 50) - trustHit) } : c));
+        pushPost({ role: "insider", kind: "reaction", text: `${company.ticker}: \u043E\u0441\u043D\u043E\u0432\u0430\u0442\u0435\u043B\u044C \u043F\u0440\u043E\u0434\u0430\u043B \u043A\u0440\u0443\u043F\u043D\u044B\u0439 \u043F\u0430\u043A\u0435\u0442 \u2014 \u0434\u043E\u0432\u0435\u0440\u0438\u0435 \u0440\u044B\u043D\u043A\u0430 \u043F\u0440\u043E\u0441\u0435\u043B\u043E`, positive: false, isMacro: false, ticker: company.ticker, importance: 2 });
       }
     }
     setTimeout(saveGame, 50);
@@ -4421,17 +4659,36 @@ function MarketSandbox() {
     setTimeout(saveGame, 50);
   };
   const listingFee = form.kind === "crypto" ? 300 : 500;
+  const cryptoDistSum = Math.round((Number(form.distFounder) || 0) + (Number(form.distLiquidity) || 0) + (Number(form.distPublic) || 0) + (Number(form.distMarketing) || 0) + (Number(form.distReserve) || 0));
+  const cryptoDistValid = form.kind !== "crypto" || cryptoDistSum === 100 && (Number(form.distLiquidity) || 0) >= 5;
   const createVenture = () => {
     const src = resolvedPayFrom;
     const bal = getAccountBalance(src);
-    if (!form.name.trim() || !form.ticker.trim() || bal < listingFee) return;
+    if (!form.name.trim() || !form.ticker.trim() || bal < listingFee || !cryptoDistValid) return;
     const seedAmount = Math.max(0, Math.round(Number(form.seedAmount) || 0));
     if (seedAmount > ipCash) return;
     const id = makeId("co");
-    const startPrice = form.kind === "crypto" ? 0.2 : 2;
-    const baseSupply = form.kind === "crypto" ? 2e4 : 2e3;
-    const seedTokens = seedAmount > 0 ? Math.round(seedAmount / startPrice) : 0;
-    const supply = baseSupply + seedTokens;
+    const isCrypto = form.kind === "crypto";
+    const startPrice = isCrypto ? Math.max(1e-3, Number(form.cryptoStartPrice) || 0.2) : 2;
+    const baseSupply = isCrypto ? Math.max(1e3, Math.min(5e6, Math.round(Number(form.cryptoSupply) || 2e4))) : 2e3;
+    const supply = baseSupply;
+    let founderQty, poolCoin, publicAllocation, marketingAllocation, reserveAllocation;
+    if (isCrypto) {
+      const fPct = Number(form.distFounder) || 0;
+      const lPct = Number(form.distLiquidity) || 0;
+      const pPct = Number(form.distPublic) || 0;
+      const mPct = Number(form.distMarketing) || 0;
+      founderQty = Math.round(baseSupply * fPct / 100);
+      poolCoin = Math.round(baseSupply * lPct / 100);
+      publicAllocation = Math.round(baseSupply * pPct / 100);
+      marketingAllocation = Math.round(baseSupply * mPct / 100);
+      reserveAllocation = baseSupply - founderQty - poolCoin - publicAllocation - marketingAllocation;
+    } else {
+      founderQty = Math.round(baseSupply * FOUNDER_PCT.company);
+    }
+    const poolUsd = isCrypto ? Math.round(poolCoin * startPrice) + seedAmount : void 0;
+    const vestingLockedTotal = isCrypto ? Math.round(founderQty * (1 - VESTING_UNLOCKED_PCT)) : 0;
+    const founderUnlockedNow = isCrypto ? founderQty - vestingLockedTotal : founderQty;
     const newVenture = {
       id,
       name: form.name.trim(),
@@ -4442,6 +4699,18 @@ function MarketSandbox() {
       price: startPrice,
       vol: form.kind === "crypto" ? form.strategy === "scam" ? 1.6 : 1.1 : 1,
       supply,
+      poolCoin,
+      poolUsd,
+      initialPoolCoin: isCrypto ? poolCoin : void 0,
+      publicAllocation,
+      marketingAllocation,
+      reserveAllocation,
+      vestingLockedTotal,
+      vestingReleased: 0,
+      vestingStartAt: Date.now(),
+      vestingDurationMs: VESTING_DURATION_MS,
+      coinHype: isCrypto ? Math.round(Math.max(15, Math.min(60, 20 + reputation * 0.3))) : void 0,
+      coinTrust: isCrypto ? Math.round(Math.max(20, Math.min(90, 20 + reputation * 0.6))) : void 0,
       isPlayer: true,
       marketingLevel: 0,
       rdLevel: 0,
@@ -4452,17 +4721,16 @@ function MarketSandbox() {
       investorCooldown: 0,
       candles: Array.from({ length: 24 }, (_, i) => ({ o: startPrice, h: startPrice, l: startPrice, c: startPrice, t: Date.now() - (24 - i) * CANDLE_MS }))
     };
-    const founderQty = Math.round(baseSupply * FOUNDER_PCT[form.kind]) + seedTokens;
     adjustAccountBalance(src, -listingFee);
     if (seedAmount > 0) {
       setIpCash((c) => c - seedAmount);
       logTx(`\u0421\u0442\u0430\u0440\u0442\u043E\u0432\u0430\u044F \u043B\u0438\u043A\u0432\u0438\u0434\u043D\u043E\u0441\u0442\u044C \xB7 ${newVenture.ticker}`, seedAmount, "out");
     }
     setCompanies((prev) => [...prev, newVenture]);
-    setHoldings((h) => ({ ...h, [id]: { qty: founderQty, avgCost: 0 } }));
+    setHoldings((h) => ({ ...h, [id]: { qty: founderUnlockedNow, avgCost: 0 } }));
     setPlayerVentureId(id);
     setSelectedBizId("venture");
-    setForm({ name: "", ticker: "", sector: SECTORS[0], kind: "company", strategy: "tech", factoryCategory: "clothes", seedAmount: "" });
+    setForm({ name: "", ticker: "", sector: SECTORS[0], kind: "company", strategy: "tech", factoryCategory: "clothes", seedAmount: "", cryptoSupply: "20000", cryptoStartPrice: "0.2", distFounder: "30", distLiquidity: "20", distPublic: "30", distMarketing: "10", distReserve: "10" });
     setBizPath(null);
     setActiveTab("company");
     setTimeout(saveGame, 50);
@@ -5793,16 +6061,30 @@ function MarketSandbox() {
     const v = companies.find((c) => c.id === playerVentureId);
     if (!v || (v.investorCooldown || 0) > 0 || !investorPersona) return;
     const matched = angleId === investorPersona.likes;
+    const hype = v.coinHype || 30;
+    const trust = v.coinTrust || 50;
+    const metric = investorPersona.metric || "both";
+    const personaMod = metric === "hype" ? (hype - 50) / 200 : metric === "trust" ? (trust - 50) / 200 : metric === "reputation" ? (reputationRef.current - 50) / 250 : ((hype + trust) / 2 - 50) / 300;
     const bonus = (v.marketingLevel || 0) * 0.02 + (v.rdLevel || 0) * 0.02 + (v.investorRounds || 0) * 0.01;
-    const chance = Math.min(0.92, ((matched ? 0.7 : 0.2) + bonus) * repFactor);
+    const chance = Math.min(0.92, ((matched ? 0.7 : 0.2) + bonus) * repFactor + personaMod);
     const success = Math.random() < chance;
     if (success) {
-      const dilution = 0.12 + Math.random() * 0.13;
-      const newShares = Math.round(v.supply * dilution);
-      const pop = 8 + Math.random() * 12;
+      const hasPool = v.kind === "crypto" && typeof v.poolCoin === "number";
+      const [dMin, dMax] = investorPersona.dilutionRange || [0.12, 0.25];
+      const dilution = dMin + Math.random() * (dMax - dMin);
+      const wantCoins = Math.round(v.supply * dilution);
+      const coinsFromPool = hasPool ? Math.min(wantCoins, Math.round(v.poolCoin * 0.8)) : wantCoins;
+      const raised = Math.round(coinsFromPool * v.price);
+      const pop = hasPool ? Math.min(70, (4 + dilution * 60) * poolLiquidityFactor(v.poolUsd, v.price * v.supply)) : 4 + dilution * 60;
       applyImpact(v.id, pop);
       flagLeveragedPumpPattern(v.id, pop);
-      setCompanies((prev) => prev.map((c) => c.id === v.id ? { ...c, supply: c.supply + newShares, investorRounds: (c.investorRounds || 0) + 1, investorCooldown: 90 } : c));
+      const hypeGain = investorPersona.hypeGain != null ? investorPersona.hypeGain : 10;
+      const trustGain = investorPersona.trustGain != null ? investorPersona.trustGain : 5;
+      setCompanies((prev) => prev.map((c) => c.id === v.id ? { ...c, ...(hasPool ? { poolCoin: c.poolCoin - coinsFromPool } : {}), investorRounds: (c.investorRounds || 0) + 1, investorCooldown: 90, coinHype: v.kind === "crypto" ? Math.max(0, Math.min(100, (c.coinHype || 30) + hypeGain)) : c.coinHype, coinTrust: v.kind === "crypto" ? Math.max(0, Math.min(100, (c.coinTrust || 50) + trustGain)) : c.coinTrust } : c));
+      if (hasPool && raised > 0) {
+        adjustAccountBalance(resolvedPayFrom, raised);
+        logTx(`\u0418\u043D\u0432\u0435\u0441\u0442\u043E\u0440 \xB7 \u0440\u0430\u0443\u043D\u0434 ${v.ticker}`, raised, "in");
+      }
       pushPost({ text: `${v.ticker}: ${investorPersona.name} \u0432\u043F\u0435\u0447\u0430\u0442\u043B\u0451\u043D${matched ? " \u2014 \u043F\u043E\u043F\u0430\u0434\u0430\u043D\u0438\u0435 \u0442\u043E\u0447\u043D\u043E \u0432 \u0435\u0433\u043E \u0438\u043D\u0442\u0435\u0440\u0435\u0441\u044B" : ""} \u2014 \u0440\u0430\u0443\u043D\u0434 \u0437\u0430\u043A\u0440\u044B\u0442`, positive: true, isMacro: false, ticker: v.ticker });
     } else {
       setCompanies((prev) => prev.map((c) => c.id === v.id ? { ...c, investorCooldown: 60 } : c));
@@ -5831,8 +6113,41 @@ function MarketSandbox() {
       const pop = (1.5 + Math.random() * 2.5) * repFactor;
       applyImpact(v.id, pop);
       flagLeveragedPumpPattern(v.id, pop);
-      setCompanies((prev) => prev.map((c) => c.id === v.id ? { ...c, rdLevel: (c.rdLevel || 0) + 1, vol: Math.max(0.3, c.vol * 0.9) } : c));
+      setCompanies((prev) => prev.map((c) => c.id === v.id ? { ...c, rdLevel: (c.rdLevel || 0) + 1, vol: Math.max(0.3, c.vol * 0.9), coinTrust: c.kind === "crypto" ? Math.max(0, Math.min(100, (c.coinTrust || 50) + 4)) : c.coinTrust } : c));
     }
+    setTimeout(saveGame, 50);
+  };
+  const adCampaignCost = Math.max(AD_MIN_BUDGET, Math.round(Number(adForm.budget) || 0));
+  const adTextValid = (adForm.headline.trim() + " " + adForm.description.trim()).trim().length >= 10 && (adForm.headline.trim() + " " + adForm.description.trim()).length <= 320;
+  const launchAdCampaign = () => {
+    const v = companies.find((c) => c.id === playerVentureId);
+    if (!v || v.rugged || v.adCampaign) return;
+    const src = resolvedPayFrom;
+    const bal = getAccountBalance(src);
+    if (bal < adCampaignCost || !adTextValid) return;
+    const duration = AD_DURATIONS.find((d) => d.id === adForm.duration) || AD_DURATIONS[1];
+    const text = `${adForm.headline.trim()} ${adForm.description.trim()}`.trim();
+    const analysis = analyzeSocialPostText(text);
+    const quality = Math.round(clamp01(analysis.clarity * 0.3 + analysis.informativeness * 0.35 + analysis.interest * 0.25 - analysis.scamRisk * 0.6, 0, 100));
+    adjustAccountBalance(src, -adCampaignCost);
+    logTx(`\u0420\u0435\u043A\u043B\u0430\u043C\u043D\u0430\u044F \u043A\u0430\u043C\u043F\u0430\u043D\u0438\u044F \xB7 ${v.ticker}`, adCampaignCost, "out");
+    const dueAt = Date.now() + duration.ms;
+    setCompanies((prev) => prev.map((c) => c.id === v.id ? { ...c, adCampaign: { budget: adCampaignCost, quality, headline: adForm.headline.trim(), startAt: Date.now(), dueAt } } : c));
+    scheduleEvent({ id: makeId("sched"), kind: "ad_campaign_resolve", companyId: v.id, ticker: v.ticker, budget: adCampaignCost, quality, scamRisk: analysis.scamRisk, dueAt });
+    setAdForm({ budget: "1000", headline: "", description: "", duration: "mid" });
+    setTimeout(saveGame, 50);
+  };
+  const [liquidityTopUp, setLiquidityTopUp] = useState("500");
+  const addLiquidityFromReserve = () => {
+    const v = companies.find((c) => c.id === playerVentureId);
+    if (!v || v.kind !== "crypto" || v.rugged || !(v.reserveAllocation > 0)) return;
+    const src = resolvedPayFrom;
+    const usdAmount = Math.max(0, Math.round(Number(liquidityTopUp) || 0));
+    if (usdAmount <= 0 || getAccountBalance(src) < usdAmount) return;
+    const coinsFromReserve = Math.min(v.reserveAllocation, usdAmount / v.price);
+    adjustAccountBalance(src, -usdAmount);
+    logTx(`\u041F\u043E\u043F\u043E\u043B\u043D\u0435\u043D\u0438\u0435 \u043F\u0443\u043B\u0430 \u0438\u0437 Reserve \xB7 ${v.ticker}`, usdAmount, "out");
+    setCompanies((prev) => prev.map((c) => c.id === v.id ? { ...c, poolCoin: c.poolCoin + coinsFromReserve, poolUsd: c.poolUsd + usdAmount, reserveAllocation: c.reserveAllocation - coinsFromReserve, coinTrust: Math.max(0, Math.min(100, (c.coinTrust || 50) + 1.5)) } : c));
     setTimeout(saveGame, 50);
   };
   var SOCIAL_POST_MIN_CHARS = 12;
@@ -5879,6 +6194,11 @@ function MarketSandbox() {
     if (v) {
       applyImpact(v.id, immediatePct);
       flagLeveragedPumpPattern(v.id, immediatePct);
+      if (v.kind === "crypto") {
+        const hypeDelta = score.hype * 0.25;
+        const trustDelta = score.scamRisk >= 55 ? -2 - score.scamRisk / 40 : score.credibility >= 60 ? 1 : score.credibility <= 30 ? -1 : 0;
+        setCompanies((prev) => prev.map((c) => c.id === v.id ? { ...c, coinHype: Math.min(100, (c.coinHype || 30) + hypeDelta), coinTrust: Math.max(0, Math.min(100, (c.coinTrust || 50) + trustDelta)) } : c));
+      }
     }
     registerStory({ id: storyId, headline: text, category: v ? v.sector === "\u041A\u0440\u0438\u043F\u0442\u043E" ? "crypto" : "companies" : "personal", personal: true, importance: mainPost.importance, status: "developing", reliability: score.scamRisk >= 55 ? "low" : "official", ticker: v ? v.ticker : null, marketImpactPct: immediatePct, createdAt: now, postCount: 1 + commentPosts.length });
     pushPosts([mainPost, ...commentPosts].map((p) => ({ ...p, id: makeId("post"), storyId })));
@@ -7978,7 +8298,8 @@ function MarketSandbox() {
                 /* @__PURE__ */ jsxs("div", { children: [
                   /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.gold, letterSpacing: 1, textTransform: "uppercase" }, children: playerVenture.kind === "crypto" ? playerVenture.strategy === "scam" ? "\u041A\u0440\u0438\u043F\u0442\u043E \xB7 \u0441\u0445\u0435\u043C\u0430 \u043D\u0430 \u0445\u0430\u0439\u043F\u0435" : "\u041A\u0440\u0438\u043F\u0442\u043E \xB7 \u0442\u0435\u0445\u043D\u043E\u043B\u043E\u0433\u0438\u0447\u043D\u044B\u0439 \u043F\u0443\u0442\u044C" : playerVenture.sector }),
                   /* @__PURE__ */ jsx("div", { style: { fontSize: 18, fontWeight: 700 }, children: playerVenture.name }),
-                  /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, fontFamily: "'JetBrains Mono', monospace" }, children: playerVenture.ticker })
+                  /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, fontFamily: "'JetBrains Mono', monospace" }, children: playerVenture.ticker }),
+                  playerVenture.kind === "crypto" && /* @__PURE__ */ jsx("div", { style: { display: "inline-block", marginTop: 6, fontSize: 10, fontWeight: 700, letterSpacing: 0.5, color: C.gold, border: `1px solid ${C.gold}55`, borderRadius: 6, padding: "2px 8px" }, children: getCoinStage(playerVenture).label })
                 ] }),
                 /* @__PURE__ */ jsxs("div", { style: { textAlign: "right" }, children: [
                   /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 20, fontWeight: 700 }, children: fmt(playerVenture.price) }),
@@ -7997,6 +8318,62 @@ function MarketSandbox() {
                 " (",
                 (founderHolding.qty / playerVenture.supply * 100).toFixed(1),
                 "%) \u2014 \u044D\u0442\u0438 \u0442\u043E\u043A\u0435\u043D\u044B \u0432 \xAB\u041A\u0430\u0431\u0438\u043D\u0435\u0442\u0435\xBB"
+              ] }),
+              typeof playerVenture.poolCoin === "number" && /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkDim, marginTop: 4 }, children: [
+                "\u041F\u0443\u043B \u043B\u0438\u043A\u0432\u0438\u0434\u043D\u043E\u0441\u0442\u0438: ",
+                Math.round(playerVenture.poolCoin).toLocaleString(),
+                " ",
+                playerVenture.ticker,
+                " + ",
+                fmt(playerVenture.poolUsd)
+              ] }),
+              typeof playerVenture.poolCoin === "number" && (() => {
+                const absorbed = Math.max(0, (playerVenture.initialPoolCoin || playerVenture.poolCoin) - playerVenture.poolCoin);
+                const circulating = Math.round((founderHolding?.qty || 0) + absorbed);
+                const holdersEst = Math.max(1, Math.round(1 + (playerVenture.investorRounds || 0) * 1.5 + absorbed / Math.max(1, playerVenture.supply * 5e-4)));
+                return /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkFaint, marginTop: 4 }, children: [
+                  "Circulating ",
+                  circulating.toLocaleString(),
+                  " / ",
+                  playerVenture.supply.toLocaleString(),
+                  " \xB7 \u0434\u0435\u0440\u0436\u0430\u0442\u0435\u043B\u0435\u0439 \u2248",
+                  holdersEst.toLocaleString()
+                ] });
+              })(),
+              typeof playerVenture.publicAllocation === "number" && /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkFaint, marginTop: 4 }, children: [
+                "Public ",
+                Math.round(playerVenture.publicAllocation).toLocaleString(),
+                " \xB7 Marketing ",
+                Math.round(playerVenture.marketingAllocation || 0).toLocaleString(),
+                " \xB7 Reserve ",
+                Math.round(playerVenture.reserveAllocation || 0).toLocaleString()
+              ] }),
+              playerVenture.reserveAllocation > 0 && /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 6, marginTop: 6 }, children: [
+                /* @__PURE__ */ jsx("input", { type: "number", value: liquidityTopUp, onChange: (e) => setLiquidityTopUp(e.target.value), style: { ...inputStyle, flex: 1, padding: "6px 8px", fontSize: 12 } }),
+                /* @__PURE__ */ jsx("button", { onClick: addLiquidityFromReserve, disabled: resolvedBal < (Number(liquidityTopUp) || 0), style: { padding: "6px 10px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.surface2, color: C.ink, fontSize: 11.5, fontWeight: 600, whiteSpace: "nowrap" }, children: "\u041F\u043E\u043F\u043E\u043B\u043D\u0438\u0442\u044C \u043F\u0443\u043B \u0438\u0437 Reserve" })
+              ] }),
+              (playerVenture.vestingLockedTotal || 0) > (playerVenture.vestingReleased || 0) && /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.gold, marginTop: 4 }, children: [
+                "Vesting: \u0437\u0430\u0431\u043B\u043E\u043A\u0438\u0440\u043E\u0432\u0430\u043D\u043E ",
+                Math.round(playerVenture.vestingLockedTotal - (playerVenture.vestingReleased || 0)).toLocaleString(),
+                " ",
+                playerVenture.ticker,
+                " \xB7 \u0440\u0430\u0437\u0431\u043B\u043E\u043A\u0438\u0440\u0443\u0435\u0442\u0441\u044F \u043F\u043E\u0441\u0442\u0435\u043F\u0435\u043D\u043D\u043E \u0432 \u0442\u0435\u0447\u0435\u043D\u0438\u0435 20 \u043C\u0438\u043D"
+              ] }),
+              typeof playerVenture.coinHype === "number" && /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 10, marginTop: 8 }, children: [
+                /* @__PURE__ */ jsxs("div", { style: { flex: 1 }, children: [
+                  /* @__PURE__ */ jsxs("div", { style: { fontSize: 10, color: C.inkFaint, display: "flex", justifyContent: "space-between" }, children: [
+                    /* @__PURE__ */ jsx("span", { children: "Hype" }),
+                    /* @__PURE__ */ jsx("span", { children: Math.round(playerVenture.coinHype) })
+                  ] }),
+                  /* @__PURE__ */ jsx("div", { style: { height: 5, borderRadius: 3, background: C.surface2, marginTop: 2 }, children: /* @__PURE__ */ jsx("div", { style: { height: "100%", borderRadius: 3, width: `${Math.round(playerVenture.coinHype)}%`, background: C.red } }) })
+                ] }),
+                /* @__PURE__ */ jsxs("div", { style: { flex: 1 }, children: [
+                  /* @__PURE__ */ jsxs("div", { style: { fontSize: 10, color: C.inkFaint, display: "flex", justifyContent: "space-between" }, children: [
+                    /* @__PURE__ */ jsx("span", { children: "Trust" }),
+                    /* @__PURE__ */ jsx("span", { children: Math.round(playerVenture.coinTrust) })
+                  ] }),
+                  /* @__PURE__ */ jsx("div", { style: { height: 5, borderRadius: 3, background: C.surface2, marginTop: 2 }, children: /* @__PURE__ */ jsx("div", { style: { height: "100%", borderRadius: 3, width: `${Math.round(playerVenture.coinTrust)}%`, background: "#5AA9E6" } }) })
+                ] })
               ] })
             ] }),
             /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
@@ -8032,7 +8409,44 @@ function MarketSandbox() {
             ] }),
             playerVenture.rugged && /* @__PURE__ */ jsx("div", { style: { background: `${C.red}18`, border: `1px solid ${C.red}55`, borderRadius: 12, padding: 14, marginBottom: 12, fontSize: 13, color: C.red, textAlign: "center", fontWeight: 600 }, children: "\u041F\u0440\u043E\u0435\u043A\u0442 \u0440\u0430\u0437\u043E\u0431\u043B\u0430\u0447\u0451\u043D \u043A\u0430\u043A \u0441\u043A\u0430\u043C. \u0426\u0435\u043D\u0430 \u0440\u0443\u0445\u043D\u0443\u043B\u0430 \u2014 \u044D\u0442\u043E\u0442 \u0442\u043E\u043A\u0435\u043D \u0431\u043E\u043B\u044C\u0448\u0435 \u043D\u0435 \u0432\u043E\u0441\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C." }),
             playerVenture.kind !== "crypto" || playerVenture.strategy === "tech" ? /* @__PURE__ */ jsxs(Fragment, { children: [
-              /* @__PURE__ */ jsxs("button", { onClick: () => investInVenture("marketing"), disabled: resolvedBal < marketingCost, style: actionBtnStyle(resolvedBal >= marketingCost), children: [
+              playerVenture.kind === "crypto" ? (() => {
+                const activeCampaign = playerVenture.adCampaign;
+                if (activeCampaign) {
+                  const leftMs = Math.max(0, activeCampaign.dueAt - Date.now());
+                  const leftMin = Math.ceil(leftMs / 6e4);
+                  return /* @__PURE__ */ jsxs("div", { style: { background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 12, padding: 12, marginBottom: 10 }, children: [
+                    /* @__PURE__ */ jsxs("div", { style: { fontSize: 12.5, fontWeight: 700 }, children: [
+                      "\u041A\u0430\u043C\u043F\u0430\u043D\u0438\u044F \u0438\u0434\u0451\u0442: \xAB",
+                      activeCampaign.headline || "\u0431\u0435\u0437 \u0437\u0430\u0433\u043E\u043B\u043E\u0432\u043A\u0430",
+                      "\xBB"
+                    ] }),
+                    /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkFaint, marginTop: 4 }, children: [
+                      "\u0411\u044E\u0434\u0436\u0435\u0442 ",
+                      fmt(activeCampaign.budget),
+                      " \xB7 \u043A\u0430\u0447\u0435\u0441\u0442\u0432\u043E ",
+                      activeCampaign.quality,
+                      "/100 \xB7 \u0440\u0435\u0437\u0443\u043B\u044C\u0442\u0430\u0442 \u0447\u0435\u0440\u0435\u0437 ~",
+                      leftMin,
+                      " \u043C\u0438\u043D"
+                    ] })
+                  ] });
+                }
+                return /* @__PURE__ */ jsxs("div", { style: { background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 12, padding: 12, marginBottom: 10 }, children: [
+                  /* @__PURE__ */ jsx("div", { style: { fontSize: 12, fontWeight: 700, marginBottom: 8 }, children: "\u0420\u0435\u043A\u043B\u0430\u043C\u043D\u0430\u044F \u043A\u0430\u043C\u043F\u0430\u043D\u0438\u044F" }),
+                  /* @__PURE__ */ jsx("input", { value: adForm.headline, onChange: (e) => setAdForm((f) => ({ ...f, headline: e.target.value })), placeholder: "\u0417\u0430\u0433\u043E\u043B\u043E\u0432\u043E\u043A", style: { ...inputStyle, marginBottom: 6 } }),
+                  /* @__PURE__ */ jsx("textarea", { value: adForm.description, onChange: (e) => setAdForm((f) => ({ ...f, description: e.target.value })), placeholder: "\u041E\u043F\u0438\u0441\u0430\u043D\u0438\u0435 \u043F\u0440\u043E\u0435\u043A\u0442\u0430 \u2014 \u0447\u0435\u043C \u043E\u043D \u043F\u043E\u043B\u0435\u0437\u0435\u043D \u0438\u043D\u0432\u0435\u0441\u0442\u043E\u0440\u0430\u043C", rows: 2, style: { ...inputStyle, marginBottom: 6, resize: "vertical" } }),
+                  /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 6, marginBottom: 8 }, children: [
+                    /* @__PURE__ */ jsx("input", { type: "number", value: adForm.budget, onChange: (e) => setAdForm((f) => ({ ...f, budget: e.target.value })), style: { ...inputStyle, flex: 1 } }),
+                    /* @__PURE__ */ jsx("select", { value: adForm.duration, onChange: (e) => setAdForm((f) => ({ ...f, duration: e.target.value })), style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, color: C.ink, fontSize: 13, padding: "0 10px" }, children: AD_DURATIONS.map((d) => /* @__PURE__ */ jsx("option", { value: d.id, children: d.label }, d.id)) })
+                  ] }),
+                  /* @__PURE__ */ jsxs("button", { onClick: launchAdCampaign, disabled: resolvedBal < adCampaignCost || !adTextValid, style: actionBtnStyle(resolvedBal >= adCampaignCost && adTextValid), children: [
+                    /* @__PURE__ */ jsx(Sparkles, { size: 16 }),
+                    " \u0417\u0430\u043F\u0443\u0441\u0442\u0438\u0442\u044C \u043A\u0430\u043C\u043F\u0430\u043D\u0438\u044E \u2014 ",
+                    fmt(adCampaignCost)
+                  ] }),
+                  !adTextValid && (adForm.headline || adForm.description) && /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.red, marginTop: 4 }, children: "\u0422\u0435\u043A\u0441\u0442 \u043E\u0442 10 \u0434\u043E 320 \u0441\u0438\u043C\u0432\u043E\u043B\u043E\u0432" })
+                ] });
+              })() : /* @__PURE__ */ jsxs("button", { onClick: () => investInVenture("marketing"), disabled: resolvedBal < marketingCost, style: actionBtnStyle(resolvedBal >= marketingCost), children: [
                 /* @__PURE__ */ jsx(Sparkles, { size: 16 }),
                 " Маркетинг — ",
                 fmt(marketingCost)
@@ -8042,7 +8456,7 @@ function MarketSandbox() {
                 " Разработка — ",
                 fmt(rdCost)
               ] }),
-              /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkFaint, lineHeight: 1.5, textAlign: "center", padding: "4px 8px" }, children: "Маркетинг разгоняет спрос и цену. Разработка снижает волатильность и укрепляет доверие к проекту." })
+              /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkFaint, lineHeight: 1.5, textAlign: "center", padding: "4px 8px" }, children: playerVenture.kind === "crypto" ? "Кампания даёт вероятностный результат: бюджет и качество текста поднимают шансы, но не гарантируют покупки." : "Маркетинг разгоняет спрос и цену. Разработка снижает волатильность и укрепляет доверие к проекту." })
             ] }) : null,
             /* @__PURE__ */ jsx("button", { onClick: () => setConfirmCloseVenture(true), style: { width: "100%", padding: 12, borderRadius: 10, border: `1px solid ${C.red}55`, background: "transparent", color: C.red, fontSize: 13, fontWeight: 600, marginTop: 14 }, children: "\u0417\u0430\u043A\u0440\u044B\u0442\u044C \u0431\u0438\u0437\u043D\u0435\u0441" })
           ] }),
@@ -9548,20 +9962,47 @@ function MarketSandbox() {
                 /* @__PURE__ */ jsx("select", { value: resolvedPayFrom, onChange: (e) => setPayFromAccount(e.target.value), style: { width: "100%", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, color: C.ink, fontSize: 13, padding: "10px 10px" }, children: payOptions.map((o) => /* @__PURE__ */ jsx("option", { value: o.id, children: o.label }, o.id)) })
               ] });
             })(),
+            form.kind === "crypto" && /* @__PURE__ */ jsxs("div", { style: { marginBottom: 14, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 12 }, children: [
+              /* @__PURE__ */ jsx("div", { style: { fontSize: 12, fontWeight: 700, marginBottom: 8 }, children: "TOKENOMICS" }),
+              /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8, marginBottom: 10 }, children: [
+                /* @__PURE__ */ jsxs("div", { style: { flex: 1 }, children: [
+                  /* @__PURE__ */ jsx("label", { style: { fontSize: 10.5, color: C.inkDim }, children: "Total Supply" }),
+                  /* @__PURE__ */ jsx("input", { type: "number", value: form.cryptoSupply, onChange: (e) => setForm((f) => ({ ...f, cryptoSupply: e.target.value })), inputMode: "numeric", style: inputStyle })
+                ] }),
+                /* @__PURE__ */ jsxs("div", { style: { flex: 1 }, children: [
+                  /* @__PURE__ */ jsx("label", { style: { fontSize: 10.5, color: C.inkDim }, children: "\u0421\u0442\u0430\u0440\u0442\u043E\u0432\u0430\u044F \u0446\u0435\u043D\u0430, $" }),
+                  /* @__PURE__ */ jsx("input", { type: "number", step: "0.01", value: form.cryptoStartPrice, onChange: (e) => setForm((f) => ({ ...f, cryptoStartPrice: e.target.value })), inputMode: "decimal", style: inputStyle })
+                ] })
+              ] }),
+              /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkDim, marginBottom: 6 }, children: "\u0420\u0430\u0441\u043F\u0440\u0435\u0434\u0435\u043B\u0435\u043D\u0438\u0435, % (\u0441\u0443\u043C\u043C\u0430 = 100)" }),
+              /* @__PURE__ */ jsx("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, marginBottom: 6 }, children: [
+                ["distFounder", "Founder"],
+                ["distLiquidity", "Liquidity"],
+                ["distPublic", "Public"],
+                ["distMarketing", "Marketing"],
+                ["distReserve", "Reserve"]
+              ].map(([key, label]) => /* @__PURE__ */ jsxs("div", { children: [
+                /* @__PURE__ */ jsx("label", { style: { fontSize: 9.5, color: C.inkFaint }, children: label }),
+                /* @__PURE__ */ jsx("input", { type: "number", value: form[key], onChange: (e) => setForm((f) => ({ ...f, [key]: e.target.value })), inputMode: "numeric", style: { ...inputStyle, padding: "8px 8px", fontSize: 12.5 } })
+              ] }, key)) }),
+              /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: cryptoDistValid ? C.inkFaint : C.red, marginTop: 2 }, children: [
+                "\u0421\u0443\u043C\u043C\u0430: ",
+                cryptoDistSum,
+                "% ",
+                cryptoDistSum !== 100 ? "\u2014 \u0434\u043E\u043B\u0436\u043D\u043E \u0431\u044B\u0442\u044C \u0440\u043E\u0432\u043D\u043E 100%" : (Number(form.distLiquidity) || 0) < 5 ? "\u2014 Liquidity \u043C\u0438\u043D\u0438\u043C\u0443\u043C 5%, \u0438\u043D\u0430\u0447\u0435 \u043D\u0435\u0447\u0435\u043C \u0431\u0443\u0434\u0435\u0442 \u0442\u043E\u0440\u0433\u043E\u0432\u0430\u0442\u044C" : "\u2705"
+              ] })
+            ] }),
             (() => {
-              const startPrice = form.kind === "crypto" ? 0.2 : 2;
               const seedNum = Math.max(0, Number(form.seedAmount) || 0);
-              const seedTokens = seedNum > 0 ? Math.round(seedNum / startPrice) : 0;
               return /* @__PURE__ */ jsxs("div", { style: { marginBottom: 14 }, children: [
                 /* @__PURE__ */ jsx("label", { style: { fontSize: 11, color: C.inkDim, textTransform: "uppercase", letterSpacing: 1 }, children: "\u0421\u0442\u0430\u0440\u0442\u043E\u0432\u0430\u044F \u043B\u0438\u043A\u0432\u0438\u0434\u043D\u043E\u0441\u0442\u044C \u0441\u043E \u0441\u0447\u0451\u0442\u0430 \u0418\u041F (\u043D\u0435\u043E\u0431\u044F\u0437\u0430\u0442\u0435\u043B\u044C\u043D\u043E)" }),
                 /* @__PURE__ */ jsx("input", { type: "number", value: form.seedAmount, onChange: (e) => setForm((f) => ({ ...f, seedAmount: e.target.value })), placeholder: "0", inputMode: "numeric", style: inputStyle }),
                 /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: seedNum > ipCash ? C.red : C.inkFaint, marginTop: 4 }, children: [
                   "\u0414\u043E\u0441\u0442\u0443\u043F\u043D\u043E \u043D\u0430 \u0418\u041F: ",
                   fmt(ipCash),
-                  seedNum > 0 && seedNum <= ipCash ? ` \xB7 \u0434\u043E\u043F. \u044D\u043C\u0438\u0441\u0441\u0438\u044F \u2248${fmt(seedTokens)} \u0442\u043E\u043A\u0435\u043D\u043E\u0432, \u0432\u0441\u0435 \u0443\u0439\u0434\u0443\u0442 \u043E\u0441\u043D\u043E\u0432\u0430\u0442\u0435\u043B\u044E` : "",
                   seedNum > ipCash ? " \u2014 \u043D\u0435 \u0445\u0432\u0430\u0442\u0430\u0435\u0442 \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u043D\u0430 \u0418\u041F" : ""
                 ] }),
-                /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginTop: 4 }, children: "\u0412\u0432\u043E\u0434\u0438\u0442\u0441\u044F \u043F\u0440\u0438 \u0437\u0430\u043F\u0443\u0441\u043A\u0435 \u043D\u0430\u043F\u0440\u044F\u043C\u0443\u044E \u0432 \u043F\u0443\u043B, \u0431\u0435\u0437 \u0432\u043E\u0437\u0434\u0435\u0439\u0441\u0442\u0432\u0438\u044F \u043D\u0430 \u0446\u0435\u043D\u0443 \u0438 \u0431\u0435\u0437 \u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0438 \u0444\u0438\u043D\u043C\u043E\u043D\u0438\u0442\u043E\u0440\u0438\u043D\u0433\u0430 \u2014 \u044D\u0442\u043E \u0441\u0442\u0430\u0440\u0442\u043E\u0432\u044B\u0439 \u043A\u0430\u043F\u0438\u0442\u0430\u043B, \u0430 \u043D\u0435 \u0442\u043E\u0440\u0433\u043E\u0432\u0430\u044F \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u044F." })
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginTop: 4 }, children: "\u0423\u0432\u0435\u043B\u0438\u0447\u0438\u0432\u0430\u0435\u0442 \u043F\u0443\u043B \u043B\u0438\u043A\u0432\u0438\u0434\u043D\u043E\u0441\u0442\u0438 (USD-\u0441\u0442\u043E\u0440\u043E\u043D\u0430), \u041D\u041E\u0412\u042B\u0425 \u0422\u041E\u041A\u0415\u041D\u041E\u0412 \u041D\u0415 \u0421\u041E\u0417\u0414\u0410\u0451\u0422. Total Supply \u0432\u0441\u0435\u0433\u0434\u0430 \u0444\u0438\u043A\u0441\u0438\u0440\u043E\u0432\u0430\u043D \u0441 \u043C\u043E\u043C\u0435\u043D\u0442\u0430 \u0437\u0430\u043F\u0443\u0441\u043A\u0430." })
               ] });
             })(),
             /* @__PURE__ */ jsxs("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 10 }, children: [
@@ -9573,8 +10014,8 @@ function MarketSandbox() {
               "button",
               {
                 onClick: createVenture,
-                disabled: !form.name.trim() || !form.ticker.trim() || resolvedBal < listingFee || (Number(form.seedAmount) || 0) > ipCash,
-                style: { width: "100%", padding: 14, borderRadius: 12, border: "none", background: !form.name.trim() || !form.ticker.trim() || resolvedBal < listingFee || (Number(form.seedAmount) || 0) > ipCash ? C.surface2 : C.gold, color: !form.name.trim() || !form.ticker.trim() || resolvedBal < listingFee || (Number(form.seedAmount) || 0) > ipCash ? C.inkDim : "#161207", fontWeight: 700 },
+                disabled: !form.name.trim() || !form.ticker.trim() || resolvedBal < listingFee || (Number(form.seedAmount) || 0) > ipCash || !cryptoDistValid,
+                style: { width: "100%", padding: 14, borderRadius: 12, border: "none", background: !form.name.trim() || !form.ticker.trim() || resolvedBal < listingFee || (Number(form.seedAmount) || 0) > ipCash || !cryptoDistValid ? C.surface2 : C.gold, color: !form.name.trim() || !form.ticker.trim() || resolvedBal < listingFee || (Number(form.seedAmount) || 0) > ipCash || !cryptoDistValid ? C.inkDim : "#161207", fontWeight: 700 },
                 children: "\u0417\u0430\u043F\u0443\u0441\u0442\u0438\u0442\u044C \u0442\u043E\u043A\u0435\u043D"
               }
             )
