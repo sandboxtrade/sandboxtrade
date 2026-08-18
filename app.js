@@ -1,4 +1,4 @@
-// Market Sandbox — V2.15.0 (лимит продажи собственной крипты теперь также растёт вместе с капитализацией: sellCapUsd(poolUsd, marketCap) = max(poolUsd×15%, marketCap×1%) — при капе 200М можно вывести ≈2М за раз, а не копейки от крошечного poolUsd. Раз лимит может превышать физический poolUsd, добавлена защита: после крупной продажи poolUsd не уходит в минус (клампится в 0 и ниже), а после applyImpact для isOwnCryptoPool сделок (и buy, и sell) poolUsd пересинхронизируется под уже сдвинутую цену (poolUsd = freshPrice × poolCoin), иначе гравитация в RAF-цикле утащила бы цену к устаревшему/нулевому соотношению после крупной сделки. Rug pull и пополнение пула из резерва не трогали — они и так двигают пул правильно)
+// Market Sandbox — V2.16.0 (два бага по фидбеку: 1) клик по кнопке уже открытого банка кидал на экран монеты — эффект-валидатор selectedBizId не знал про "bank" и сбрасывал выбор на первый valid id (venture). Добавлен bank в список validIds. 2) Экстремальные скачки цены ("треш"): подняв в прошлый раз лимит вывода вместе с капой (sellCapUsd), я не обновил формулу ценового удара сделки (poolLiquidityFactor) — она смотрела только на крошечный физический poolUsd, поэтому крупная продажа у потолка нового (большого) лимита получала почти максимальный импакт ±92%, отсюда 4-кратные свечи. poolLiquidityFactor теперь использует ту же эффективную ликвидность, что и sellCapUsd (пол от капитализации), и верхний потолок множителя срезан с 3x до 1.5x. Для примера с капой 200М: сделка на максимум нового лимита (2М) двигает цену теперь на ~2% вместо десятков процентов)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -652,8 +652,12 @@ function clamp01(v, lo, hi) {
   return Math.max(lo, Math.min(hi, v));
 }
 function poolLiquidityFactor(poolUsd, marketCap) {
+  // Эффективная ликвидность не может быть меньше того, что уже разрешено выводить одной
+  // сделкой (см. sellCapUsd) — иначе крупная продажа у потолка нового лимита получает
+  // почти максимальный ценовой удар, хотя формально она "укладывается" в лимит вывода.
+  const effectiveUsd = Math.max(poolUsd || 0, (marketCap || 0) * (SELL_MAX_MCAP_FRACTION / SELL_MAX_POOL_FRACTION));
   const refLiquidity = Math.max(50, marketCap * 0.15);
-  return clamp01(Math.sqrt(refLiquidity / Math.max(1, poolUsd || 1)), 0.5, 3);
+  return clamp01(Math.sqrt(refLiquidity / Math.max(1, effectiveUsd || 1)), 0.5, 1.5);
 }
 var COIN_STAGES = [
   { id: "created", label: "\u0421\u043E\u0437\u0434\u0430\u043D\u0430" },
@@ -3668,11 +3672,11 @@ function MarketSandbox() {
     if (candidate && Math.random() < 0.08) setMarketplaceInvestorOffer(candidate);
   }, [marketplace, marketplaceInvestorOffer]);
   useEffect(() => {
-    const validIds = [...playerVentureId ? ["venture"] : [], ...marketplace ? ["marketplace"] : [], ...resellShops.filter((s) => !s.mergedIntoMarketplace).map((s) => s.id), ...factories.map((f) => f.id), ...warehouses.filter((w) => !w.assignedToMarketplace).map((w) => w.id)];
+    const validIds = [...playerVentureId ? ["venture"] : [], ...marketplace ? ["marketplace"] : [], ...bank ? ["bank"] : [], ...resellShops.filter((s) => !s.mergedIntoMarketplace).map((s) => s.id), ...factories.map((f) => f.id), ...warehouses.filter((w) => !w.assignedToMarketplace).map((w) => w.id)];
     if (selectedBizId !== null && !validIds.includes(selectedBizId)) {
       setSelectedBizId(validIds[0] || null);
     }
-  }, [playerVentureId, marketplace, resellShops, factories, warehouses, selectedBizId]);
+  }, [playerVentureId, marketplace, bank, resellShops, factories, warehouses, selectedBizId]);
   useEffect(() => {
     if (!loaded) return;
     const id = setInterval(() => {
