@@ -1,4 +1,4 @@
-// Market Sandbox — V2.14.0 (обе правки крипто-пампа сразу, по запросу: 1) для собственных крипто-венчуров с пулом (isOwnPool) цена в основном RAF-цикле больше не блуждает свободным гауссовским шумом — она гравитирует к честной цене пула (poolUsd/poolCoin) с постоянным подтягиванием (~95% отката за 60 сек) и вдвое более слабым шумом (0.035→0.02). Разовые пампы через applyImpact (посты, новости, маркетинг/R&D-инвестиции, реакции инвесторов) по-прежнему дают мгновенный скачок, но без реального притока в poolUsd (покупки через пул, рекламные кампании, инвест-раунды) он затухает за 30-60 сек — капитализация больше не может оторваться от реальной ликвидности без реальных денег в пуле. Rug pull и инвест-раунды уже и так двигают пул правильно, конфликтов нет. 2) SELL_MAX_POOL_FRACTION поднят с 8% до 15% — лимит продажи за раз вырос почти вдвое. Побочный эффект: маркетинг/R&D теперь дают временный хайп, а не постоянный прирост цены — постоянный рост требует реальных покупок через пул)
+// Market Sandbox — V2.15.0 (лимит продажи собственной крипты теперь также растёт вместе с капитализацией: sellCapUsd(poolUsd, marketCap) = max(poolUsd×15%, marketCap×1%) — при капе 200М можно вывести ≈2М за раз, а не копейки от крошечного poolUsd. Раз лимит может превышать физический poolUsd, добавлена защита: после крупной продажи poolUsd не уходит в минус (клампится в 0 и ниже), а после applyImpact для isOwnCryptoPool сделок (и buy, и sell) poolUsd пересинхронизируется под уже сдвинутую цену (poolUsd = freshPrice × poolCoin), иначе гравитация в RAF-цикле утащила бы цену к устаревшему/нулевому соотношению после крупной сделки. Rug pull и пополнение пула из резерва не трогали — они и так двигают пул правильно)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -520,6 +520,10 @@ var FOUNDER_PCT = { company: 0.6, crypto: 0.2 };
 var VESTING_DURATION_MS = 20 * 60 * 1e3;
 var VESTING_UNLOCKED_PCT = 0.2;
 var SELL_MAX_POOL_FRACTION = 0.15;
+var SELL_MAX_MCAP_FRACTION = 0.01;
+function sellCapUsd(poolUsd, marketCap) {
+  return Math.max((poolUsd || 0) * SELL_MAX_POOL_FRACTION, (marketCap || 0) * SELL_MAX_MCAP_FRACTION);
+}
 var AD_DURATIONS = [
   { id: "short", label: "10 \u043C\u0438\u043D", ms: 10 * 60 * 1e3 },
   { id: "mid", label: "20 \u043C\u0438\u043D", ms: 20 * 60 * 1e3 },
@@ -4746,9 +4750,6 @@ function MarketSandbox() {
         notify(`\u0412 \u043F\u0443\u043B\u0435 \u043D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u043C\u043E\u043D\u0435\u0442 \u0434\u043B\u044F \u0432\u044B\u043A\u0443\u043F\u0430 \u2014 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E \u043C\u0430\u043A\u0441\u0438\u043C\u0443\u043C ${Math.floor(company.poolCoin).toLocaleString()} ${company.ticker}`, false);
         return;
       }
-      if (isOwnCryptoPool) {
-        setCompanies((prev) => prev.map((c) => c.id === companyId ? { ...c, poolCoin: c.poolCoin - qty, poolUsd: c.poolUsd + cost } : c));
-      }
       setCurCash((c) => c - cost);
       if (useBankCard) {
         setBankAccounts((prev) => prev[account] ? { ...prev, [account]: { ...prev[account], turnoverUsed: prev[account].turnoverUsed + cost, lifetimeTurnover: (prev[account].lifetimeTurnover || 0) + cost } } : prev);
@@ -4762,6 +4763,12 @@ function MarketSandbox() {
         return { ...h, [companyId]: { qty: newQty, avgCost: newAvg } };
       });
       applyImpact(companyId, impactPct);
+      if (isOwnCryptoPool) {
+        // Цена уже сдвинута applyImpact выше — пересинхронизируем poolUsd под неё, чтобы
+        // гравитация в RAF-цикле не тянула к устаревшему соотношению.
+        const freshPrice = engineRef.current[companyId]?.price ?? avgExecPrice;
+        setCompanies((prev) => prev.map((c) => c.id === companyId ? { ...c, poolCoin: c.poolCoin - qty, poolUsd: Math.max(0, freshPrice * (c.poolCoin - qty)) } : c));
+      }
       if (!useMule && !useFakeIp && sizeRatio > 0.08) flagSuspicion(sizeRatio * 35);
       logTx(`\u041F\u043E\u043A\u0443\u043F\u043A\u0430 ${company.ticker} \xD7${qty}${acctTag}`, cost, "out");
       notify(`\u041A\u0443\u043F\u043B\u0435\u043D\u043E ${qty.toLocaleString()} ${company.ticker} \u0437\u0430 ${fmt(cost)}`, true);
@@ -4775,14 +4782,11 @@ function MarketSandbox() {
       const avgExecPrice = company.price * (1 - impactPct / 200);
       const grossProceeds = avgExecPrice * qty * 0.998 * (useGrey ? 1 - GREY_BANK.tradeSellFee : 1);
       const profit = (avgExecPrice - avgCost) * qty;
-      if (isOwnCryptoPool && grossProceeds > company.poolUsd * SELL_MAX_POOL_FRACTION) {
-        const maxProceeds = company.poolUsd * SELL_MAX_POOL_FRACTION;
-        const maxSellable = Math.floor(maxProceeds * 0.99 / (avgExecPrice * 0.998));
-        notify(`\u041C\u0430\u043A\u0441\u0438\u043C\u0430\u043B\u044C\u043D\u043E \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E \u0437\u0430 \u043E\u0434\u0438\u043D \u0440\u0430\u0437: ${fmt(maxProceeds)} (~${Math.max(0, maxSellable).toLocaleString()} ${company.ticker}). \u041F\u0440\u043E\u0434\u0430\u0432\u0430\u0439\u0442\u0435 \u0447\u0430\u0441\u0442\u044F\u043C\u0438 \u2014 \u043F\u043E\u0441\u043B\u0435 \u043A\u0430\u0436\u0434\u043E\u0439 \u0441\u0434\u0435\u043B\u043A\u0438 \u043B\u0438\u043C\u0438\u0442 \u043F\u0435\u0440\u0435\u0441\u0447\u0438\u0442\u044B\u0432\u0430\u0435\u0442\u0441\u044F`, false);
+      const ownPoolMaxProceeds = isOwnCryptoPool ? sellCapUsd(company.poolUsd, company.price * company.supply) : 0;
+      if (isOwnCryptoPool && grossProceeds > ownPoolMaxProceeds) {
+        const maxSellable = Math.floor(ownPoolMaxProceeds * 0.99 / (avgExecPrice * 0.998));
+        notify(`\u041C\u0430\u043A\u0441\u0438\u043C\u0430\u043B\u044C\u043D\u043E \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E \u0437\u0430 \u043E\u0434\u0438\u043D \u0440\u0430\u0437: ${fmt(ownPoolMaxProceeds)} (~${Math.max(0, maxSellable).toLocaleString()} ${company.ticker}). \u041F\u0440\u043E\u0434\u0430\u0432\u0430\u0439\u0442\u0435 \u0447\u0430\u0441\u0442\u044F\u043C\u0438 \u2014 \u043F\u043E\u0441\u043B\u0435 \u043A\u0430\u0436\u0434\u043E\u0439 \u0441\u0434\u0435\u043B\u043A\u0438 \u043B\u0438\u043C\u0438\u0442 \u043F\u0435\u0440\u0435\u0441\u0447\u0438\u0442\u044B\u0432\u0430\u0435\u0442\u0441\u044F`, false);
         return;
-      }
-      if (isOwnCryptoPool) {
-        setCompanies((prev) => prev.map((c) => c.id === companyId ? { ...c, poolCoin: c.poolCoin + qty, poolUsd: c.poolUsd - grossProceeds } : c));
       }
       setCurCash((c) => c + grossProceeds);
       setCurHoldings((h) => {
@@ -4796,6 +4800,13 @@ function MarketSandbox() {
         return { ...h, [companyId]: { ...prevH, qty: newQty } };
       });
       applyImpact(companyId, -impactPct);
+      if (isOwnCryptoPool) {
+        // Цена уже сдвинута applyImpact выше — пересинхронизируем poolUsd под неё, чтобы
+        // крупная продажа (выше физического poolUsd, покрытая внешней ликвидностью) не
+        // обрушила гравитацию в RAF-цикле к нулю.
+        const freshPrice = engineRef.current[companyId]?.price ?? avgExecPrice;
+        setCompanies((prev) => prev.map((c) => c.id === companyId ? { ...c, poolCoin: c.poolCoin + qty, poolUsd: Math.max(0, freshPrice * (c.poolCoin + qty)) } : c));
+      }
       if (useIp) {
         setQuarterRevenue((r) => r + grossProceeds);
       } else if (useFakeIp) {
@@ -8836,7 +8847,7 @@ function MarketSandbox() {
               /* @__PURE__ */ jsx("div", { style: { marginTop: 12 }, children: /* @__PURE__ */ jsx(CandleChart, { companyId: playerVenture.id, engineRef, candles: playerVenture.candles, height: 190 }) }),
               typeof playerVenture.poolCoin === "number" ? (() => {
                 const liquidityUsd = Math.round((playerVenture.poolUsd || 0) + (playerVenture.poolCoin || 0) * playerVenture.price);
-                const maxSellUsd = Math.round((playerVenture.poolUsd || 0) * SELL_MAX_POOL_FRACTION);
+                const maxSellUsd = Math.round(sellCapUsd(playerVenture.poolUsd, playerVenture.price * playerVenture.supply));
                 return /* @__PURE__ */ jsxs("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 10, fontSize: 12 }, children: [
                   /* @__PURE__ */ jsxs("div", { children: [
                     /* @__PURE__ */ jsx("div", { style: { color: C.inkFaint, fontSize: 10.5 }, children: "\u041B\u0438\u043A\u0432\u0438\u0434\u043D\u043E\u0441\u0442\u044C" }),
@@ -12164,7 +12175,7 @@ function MarketSandbox() {
         ] }),
         tradeSide === "sell" && tradeIsOwnPool && /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint, marginBottom: 8, textAlign: "right" }, children: [
           "\u041C\u0430\u043A\u0441\u0438\u043C\u0430\u043B\u044C\u043D\u043E \u0437\u0430 \u0440\u0430\u0437 \u2248 ",
-          fmt((selectedCompany.poolUsd || 0) * SELL_MAX_POOL_FRACTION)
+          fmt(sellCapUsd(selectedCompany.poolUsd, selectedCompany.price * selectedCompany.supply))
         ] }),
         tradeSide === "sell" && !tradeIsIp && !tradeIsGrey && !tradeIsBankCard && !tradeIsMule && !tradeIsBank && (selectedCompany.price - (holdings[selectedCompany.id]?.avgCost || 0)) * tradeQty > 0 && /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkFaint, marginBottom: 10 }, children: [
           "\u041D\u0430\u0447\u0438\u0441\u043B\u0438\u0442\u0441\u044F \u043D\u0430\u043B\u043E\u0433 \u2248 ",
