@@ -1,4 +1,4 @@
-// Market Sandbox — V2.13.0 (перенос активов при открытии банка: все позиции в акциях/крипте с личного счёта (holdings) переходят в собственный портфель банка (bank.holdings) и обнуляются на личных картах — единоразово в момент открытия, отдельной строкой в истории операций. На рынке в селекторе счёта оплаты (модалка покупки/продажи акции) добавлен новый вариант "{имя банка} · капитал" наравне с ИП/картами/офшором/чужой картой — исполняется через executeTrade(useBank), деньги списываются/зачисляются в bank.capital, бумаги хранятся в bank.holdings. Для покупок с банка отключено плечо (леверидж) и не показывается персональная налоговая подсказка при продаже (банк — отдельная бизнес-сущность). В панели банка добавлена строка "Портфель банка" с текущей стоимостью и числом позиций)
+// Market Sandbox — V2.14.0 (обе правки крипто-пампа сразу, по запросу: 1) для собственных крипто-венчуров с пулом (isOwnPool) цена в основном RAF-цикле больше не блуждает свободным гауссовским шумом — она гравитирует к честной цене пула (poolUsd/poolCoin) с постоянным подтягиванием (~95% отката за 60 сек) и вдвое более слабым шумом (0.035→0.02). Разовые пампы через applyImpact (посты, новости, маркетинг/R&D-инвестиции, реакции инвесторов) по-прежнему дают мгновенный скачок, но без реального притока в poolUsd (покупки через пул, рекламные кампании, инвест-раунды) он затухает за 30-60 сек — капитализация больше не может оторваться от реальной ликвидности без реальных денег в пуле. Rug pull и инвест-раунды уже и так двигают пул правильно, конфликтов нет. 2) SELL_MAX_POOL_FRACTION поднят с 8% до 15% — лимит продажи за раз вырос почти вдвое. Побочный эффект: маркетинг/R&D теперь дают временный хайп, а не постоянный прирост цены — постоянный рост требует реальных покупок через пул)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -519,7 +519,7 @@ var TENDER_MAINTENANCE_MS = 15e3;
 var FOUNDER_PCT = { company: 0.6, crypto: 0.2 };
 var VESTING_DURATION_MS = 20 * 60 * 1e3;
 var VESTING_UNLOCKED_PCT = 0.2;
-var SELL_MAX_POOL_FRACTION = 0.08;
+var SELL_MAX_POOL_FRACTION = 0.15;
 var AD_DURATIONS = [
   { id: "short", label: "10 \u043C\u0438\u043D", ms: 10 * 60 * 1e3 },
   { id: "mid", label: "20 \u043C\u0438\u043D", ms: 20 * 60 * 1e3 },
@@ -2841,18 +2841,31 @@ function MarketSandbox() {
       companiesRef.current.forEach((c) => {
         let e = engine[c.id];
         if (!e) e = engine[c.id] = { price: c.price, cOpen: c.price, cHigh: c.price, cLow: c.price, candleStart: ts };
-        let step;
-        if (c.ticker === "OIL") {
-          step = oilFrameStep(macroRef.current, gauss, Math.sqrt(dt / 16.67), e.price);
+        const isOwnPool = c.kind === "crypto" && c.isPlayer && typeof c.poolCoin === "number" && c.poolCoin > 0;
+        if (isOwnPool) {
+          // AMM-привязка: цена гравитирует к реальному соотношению пула (poolUsd/poolCoin),
+          // а не блуждает свободно. Шум слабее и постоянно подтягивается к честной цене —
+          // разовый хайп (посты/новости через applyImpact) даёт всплеск, но затухает за
+          // ~30-60 сек, если не подкреплён реальным притоком в пул (покупками/рекламой/инвестициями).
+          const fairPrice = Math.max(1e-6, c.poolUsd / c.poolCoin);
+          const dtLin = dt / 16.67;
+          const noise = gauss() * (c.vol || 1) * 0.02 * Math.sqrt(dtLin);
+          const revert = Math.min(0.25, 8e-4 * dtLin);
+          e.price = Math.max(1e-6, e.price * (1 + noise) * (1 - revert) + fairPrice * revert);
         } else {
-          const dtFactor = Math.sqrt(dt / 16.67);
-          step = gauss() * (c.vol || 1) * 0.035 * dtFactor;
-          if (c.ticker === "TEHER") {
-            const pegDeviationPct = (1 - e.price) / e.price * 100;
-            step += pegDeviationPct * 0.05;
+          let step;
+          if (c.ticker === "OIL") {
+            step = oilFrameStep(macroRef.current, gauss, Math.sqrt(dt / 16.67), e.price);
+          } else {
+            const dtFactor = Math.sqrt(dt / 16.67);
+            step = gauss() * (c.vol || 1) * 0.035 * dtFactor;
+            if (c.ticker === "TEHER") {
+              const pegDeviationPct = (1 - e.price) / e.price * 100;
+              step += pegDeviationPct * 0.05;
+            }
           }
+          e.price = Math.max(0.01, e.price * (1 + step / 100));
         }
-        e.price = Math.max(0.01, e.price * (1 + step / 100));
         e.cHigh = Math.max(e.cHigh, e.price);
         e.cLow = Math.min(e.cLow, e.price);
         if (ts - e.candleStart >= CANDLE_MS) {
