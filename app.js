@@ -1,4 +1,4 @@
-// Market Sandbox — V2.9.4 (полный проход по тихим отказам платежей: добавлен единый toast-компонент notify() и подключён ко всем денежным действиям без фидбека — мул-карты, чужие ИП, кредиты ИП/бизнес, декларации, зарплаты, открытие бизнеса/фабрики/склада/офлайн-магазина/банковских счетов, реклама, маркетинг/R&D венчура, переговоры с крупными продавцами, наём в маркетплейс, кризисы маркетплейса, пополнение пула ликвидности монеты, чёрный рынок, штрафы, облигации, имущество, все судебные платежи)
+// Market Sandbox — V2.9.5 (фикс: кнопка сделки блокировалась (disabled) при нехватке средств/ликвидности пула — клик вообще не доходил до обработчика, поэтому уведомление не появлялось; убраны "мягкие" блокировки, кнопка кликабельна всегда, причина отказа показывается через toast. Фикс: уведомление об успешной продаже/покупке не исчезало — переведено с отдельного локального стейта на единый toast с автоисчезновением через 3.2с. То же для открытия маржи)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -1829,7 +1829,6 @@ function MarketSandbox() {
   const [netWorthHistory, setNetWorthHistory] = useState([]);
   const [tradeQty, setTradeQty] = useState(1);
   const [tradeSide, setTradeSide] = useState("buy");
-  const [tradeFeedback, setTradeFeedback] = useState(null);
   const [globalToast, setGlobalToast] = useState(null);
   const notify = (msg, ok = false) => setGlobalToast({ msg, ok, id: Math.random() });
   useEffect(() => {
@@ -4551,11 +4550,11 @@ function MarketSandbox() {
     const useMule = !useIp && !useGrey && !useBankCard && muleCards[account] && !muleCards[account].frozen;
     const useFakeIp = !useIp && !useGrey && !useBankCard && !useMule && fakeIps[account] && company.sector === "\u041A\u0440\u0438\u043F\u0442\u043E";
     if (!useIp && !useGrey && !useBankCard && !useMule && muleCards[account] && muleCards[account].frozen) {
-      setTradeFeedback({ ok: false, msg: "\u041A\u0430\u0440\u0442\u0430 \u0437\u0430\u043C\u043E\u0440\u043E\u0436\u0435\u043D\u0430 \u2014 \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u044F \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u043D\u0430" });
+      notify("\u041A\u0430\u0440\u0442\u0430 \u0437\u0430\u043C\u043E\u0440\u043E\u0436\u0435\u043D\u0430 \u2014 \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u044F \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u043D\u0430", false);
       return;
     }
     if (side === "sell" && !useIp && !useGrey && !useBankCard && !useMule && loans.some((l) => l.frozen)) {
-      setTradeFeedback({ ok: false, msg: "\u0410\u043A\u0442\u0438\u0432\u044B \u043F\u043E\u0434 \u0430\u0440\u0435\u0441\u0442\u043E\u043C \u0431\u0430\u043D\u043A\u0430 \u0438\u0437-\u0437\u0430 \u0434\u043E\u043B\u0433\u0430" });
+      notify("\u0410\u043A\u0442\u0438\u0432\u044B \u043F\u043E\u0434 \u0430\u0440\u0435\u0441\u0442\u043E\u043C \u0431\u0430\u043D\u043A\u0430 \u0438\u0437-\u0437\u0430 \u0434\u043E\u043B\u0433\u0430", false);
       return;
     }
     const curCash = useGrey ? greyAccount.balance : useIp ? ipCash : useBankCard ? bankAccounts[account].balance : useMule ? muleCards[account].balance : useFakeIp ? fakeIps[account].cash : 0;
@@ -4572,14 +4571,13 @@ function MarketSandbox() {
       const avgExecPrice = company.price * (1 + impactPct / 200);
       const cost = avgExecPrice * qty * 1.002 * (useGrey ? 1 + GREY_BANK.tradeBuyFee : 1);
       if (cost > curCash) {
-        setTradeFeedback({ ok: false, msg: `\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u2014 \u0441 \u0443\u0447\u0451\u0442\u043E\u043C \u043F\u0440\u043E\u0441\u0430\u0434\u043A\u0438 \u0446\u0435\u043D\u044B \u0438 \u043A\u043E\u043C\u0438\u0441\u0441\u0438\u0438 \u043D\u0443\u0436\u043D\u043E ${fmt(cost)}, \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E ${fmt(curCash)}` });
+        notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u2014 \u0441 \u0443\u0447\u0451\u0442\u043E\u043C \u043F\u0440\u043E\u0441\u0430\u0434\u043A\u0438 \u0446\u0435\u043D\u044B \u0438 \u043A\u043E\u043C\u0438\u0441\u0441\u0438\u0438 \u043D\u0443\u0436\u043D\u043E ${fmt(cost)}, \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E ${fmt(curCash)}`, false);
         return;
       }
       if (isOwnCryptoPool && qty > company.poolCoin) {
-        setTradeFeedback({ ok: false, msg: `\u0412 \u043F\u0443\u043B\u0435 \u043D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u043C\u043E\u043D\u0435\u0442 \u0434\u043B\u044F \u0432\u044B\u043A\u0443\u043F\u0430 \u2014 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E \u043C\u0430\u043A\u0441\u0438\u043C\u0443\u043C ${Math.floor(company.poolCoin).toLocaleString()} ${company.ticker}` });
+        notify(`\u0412 \u043F\u0443\u043B\u0435 \u043D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u043C\u043E\u043D\u0435\u0442 \u0434\u043B\u044F \u0432\u044B\u043A\u0443\u043F\u0430 \u2014 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E \u043C\u0430\u043A\u0441\u0438\u043C\u0443\u043C ${Math.floor(company.poolCoin).toLocaleString()} ${company.ticker}`, false);
         return;
       }
-      setTradeFeedback(null);
       if (isOwnCryptoPool) {
         setCompanies((prev) => prev.map((c) => c.id === companyId ? { ...c, poolCoin: c.poolCoin - qty, poolUsd: c.poolUsd + cost } : c));
       }
@@ -4598,11 +4596,11 @@ function MarketSandbox() {
       applyImpact(companyId, impactPct);
       if (!useMule && !useFakeIp && sizeRatio > 0.08) flagSuspicion(sizeRatio * 35);
       logTx(`\u041F\u043E\u043A\u0443\u043F\u043A\u0430 ${company.ticker} \xD7${qty}${acctTag}`, cost, "out");
-      setTradeFeedback({ ok: true, msg: `\u041A\u0443\u043F\u043B\u0435\u043D\u043E ${qty.toLocaleString()} ${company.ticker} \u0437\u0430 ${fmt(cost)}` });
+      notify(`\u041A\u0443\u043F\u043B\u0435\u043D\u043E ${qty.toLocaleString()} ${company.ticker} \u0437\u0430 ${fmt(cost)}`, true);
     } else {
       const held = curHoldings[companyId]?.qty || 0;
       if (qty > held) {
-        setTradeFeedback({ ok: false, msg: `\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u043C\u043E\u043D\u0435\u0442 \u0432 \u043F\u043E\u0440\u0442\u0444\u0435\u043B\u0435 \u2014 \u0432 \u043D\u0430\u043B\u0438\u0447\u0438\u0438 ${held.toLocaleString()}` });
+        notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u043C\u043E\u043D\u0435\u0442 \u0432 \u043F\u043E\u0440\u0442\u0444\u0435\u043B\u0435 \u2014 \u0432 \u043D\u0430\u043B\u0438\u0447\u0438\u0438 ${held.toLocaleString()}`, false);
         return;
       }
       const avgCost = curHoldings[companyId].avgCost;
@@ -4611,10 +4609,9 @@ function MarketSandbox() {
       const profit = (avgExecPrice - avgCost) * qty;
       if (isOwnCryptoPool && grossProceeds > company.poolUsd) {
         const maxSellable = Math.floor(company.poolUsd * 0.99 / (avgExecPrice * 0.998) * 0.97);
-        setTradeFeedback({ ok: false, msg: `\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u043B\u0438\u043A\u0432\u0438\u0434\u043D\u043E\u0441\u0442\u0438 \u0432 \u043F\u0443\u043B\u0435 \u043C\u043E\u043D\u0435\u0442\u044B \u2014 \u0437\u0430 \u043E\u0434\u0438\u043D \u0440\u0430\u0437 \u043C\u043E\u0436\u043D\u043E \u043F\u0440\u043E\u0434\u0430\u0442\u044C \u043F\u0440\u0438\u043C\u0435\u0440\u043D\u043E \u0434\u043E ${Math.max(0, maxSellable).toLocaleString()} ${company.ticker}. \u041F\u0440\u043E\u0434\u0430\u0432\u0430\u0439\u0442\u0435 \u0447\u0430\u0441\u0442\u044F\u043C\u0438` });
+        notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u043B\u0438\u043A\u0432\u0438\u0434\u043D\u043E\u0441\u0442\u0438 \u0432 \u043F\u0443\u043B\u0435 \u043C\u043E\u043D\u0435\u0442\u044B \u2014 \u0437\u0430 \u043E\u0434\u0438\u043D \u0440\u0430\u0437 \u043C\u043E\u0436\u043D\u043E \u043F\u0440\u043E\u0434\u0430\u0442\u044C \u043F\u0440\u0438\u043C\u0435\u0440\u043D\u043E \u0434\u043E ${Math.max(0, maxSellable).toLocaleString()} ${company.ticker}. \u041F\u0440\u043E\u0434\u0430\u0432\u0430\u0439\u0442\u0435 \u0447\u0430\u0441\u0442\u044F\u043C\u0438`, false);
         return;
       }
-      setTradeFeedback(null);
       if (isOwnCryptoPool) {
         setCompanies((prev) => prev.map((c) => c.id === companyId ? { ...c, poolCoin: c.poolCoin + qty, poolUsd: c.poolUsd - grossProceeds } : c));
       }
@@ -4638,7 +4635,7 @@ function MarketSandbox() {
         accrueTax(`\u041D\u0430\u043B\u043E\u0433 \u0441 \u043F\u0440\u0438\u0431\u044B\u043B\u0438 (${company.ticker})`, Math.round(profit * 0.13));
       }
       logTx(`\u041F\u0440\u043E\u0434\u0430\u0436\u0430 ${company.ticker} \xD7${qty}${acctTag}`, grossProceeds, "in");
-      setTradeFeedback({ ok: true, msg: `\u041F\u0440\u043E\u0434\u0430\u043D\u043E ${qty.toLocaleString()} ${company.ticker} \u043D\u0430 ${fmt(grossProceeds)}` });
+      notify(`\u041F\u0440\u043E\u0434\u0430\u043D\u043E ${qty.toLocaleString()} ${company.ticker} \u043D\u0430 ${fmt(grossProceeds)}`, true);
       if (useMule) {
       } else if (companyId === playerVentureId && sizeRatio > 0.05) {
         const recentPump = Date.now() - lastPumpAtRef.current < 12e4;
@@ -4665,7 +4662,10 @@ function MarketSandbox() {
     const notional = avgExecPrice * qty;
     const margin = notional / leverage;
     const curCash = useBankCard ? bankAccounts[account].balance : useMule ? muleCards[account].balance : 0;
-    if (margin > curCash) return;
+    if (margin > curCash) {
+      notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u0434\u043B\u044F \u043C\u0430\u0440\u0436\u0438 \u2014 \u043D\u0443\u0436\u043D\u043E ${fmt(margin)}, \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E ${fmt(curCash)}`);
+      return;
+    }
     const liquidationPrice = avgExecPrice * (1 - 0.9 / leverage);
     adjustAccountBalance(account, -margin);
     setLeveragedPositions((prev) => [...prev, {
@@ -11713,7 +11713,7 @@ function MarketSandbox() {
               else executeTrade(selectedCompany.id, tradeSide, tradeQty, tradeAccountResolved);
               setTradeQty(1);
             },
-            disabled: tradeQty < 1 || tradeSide === "sell" && assetsFrozen || (tradeSide === "buy" ? tradeLeverage > 1 && !tradeIsIp && !tradeIsGrey ? selectedCompany.price * tradeQty / tradeLeverage > tradeAvailableCash : tradeAvailableCash < tradeRealCost || tradeIsOwnPool && tradeQty > selectedCompany.poolCoin : selectedHeld < tradeQty || tradeIsOwnPool && tradeRealProceeds > selectedCompany.poolUsd),
+            disabled: tradeQty < 1 || tradeSide === "sell" && assetsFrozen || (tradeSide === "buy" ? false : selectedHeld < tradeQty),
             style: { width: "100%", padding: 14, borderRadius: 12, border: "none", fontWeight: 700, background: tradeSide === "buy" ? C.green : C.red, color: "#0B0E14" },
             children: [
               tradeSide === "buy" ? tradeLeverage > 1 && !tradeIsIp && !tradeIsGrey ? `\u041E\u0442\u043A\u0440\u044B\u0442\u044C \u043F\u043E\u0437\u0438\u0446\u0438\u044E \xD7${tradeLeverage}` : "\u041A\u0443\u043F\u0438\u0442\u044C" : "\u041F\u0440\u043E\u0434\u0430\u0442\u044C",
@@ -11722,7 +11722,7 @@ function MarketSandbox() {
             ]
           }
         ),
-        tradeFeedback && /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: tradeFeedback.ok ? C.green : C.red, marginTop: 8, textAlign: "center" }, children: tradeFeedback.msg }),
+
         /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkFaint, marginTop: 10, textAlign: "center" }, children: [
           "\u0414\u043E\u0441\u0442\u0443\u043F\u043D\u043E",
           tradeIsGrey ? " \u043D\u0430 Meridian" : tradeIsIp ? " \u043D\u0430 \u0441\u0447\u0451\u0442\u0435 \u0418\u041F" : tradeIsBankCard ? ` \u043D\u0430 \u043A\u0430\u0440\u0442\u0435 ${BANK_ACCOUNTS.find((b) => b.id === tradeAccountResolved)?.name}` : tradeIsMule ? " \u043D\u0430 \u0447\u0443\u0436\u043E\u0439 \u043A\u0430\u0440\u0442\u0435" : "",
