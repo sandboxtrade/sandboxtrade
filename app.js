@@ -1,4 +1,4 @@
-// Market Sandbox — V2.9.5 (фикс: кнопка сделки блокировалась (disabled) при нехватке средств/ликвидности пула — клик вообще не доходил до обработчика, поэтому уведомление не появлялось; убраны "мягкие" блокировки, кнопка кликабельна всегда, причина отказа показывается через toast. Фикс: уведомление об успешной продаже/покупке не исчезало — переведено с отдельного локального стейта на единый toast с автоисчезновением через 3.2с. То же для открытия маржи)
+// Market Sandbox — V2.13.0 (перенос активов при открытии банка: все позиции в акциях/крипте с личного счёта (holdings) переходят в собственный портфель банка (bank.holdings) и обнуляются на личных картах — единоразово в момент открытия, отдельной строкой в истории операций. На рынке в селекторе счёта оплаты (модалка покупки/продажи акции) добавлен новый вариант "{имя банка} · капитал" наравне с ИП/картами/офшором/чужой картой — исполняется через executeTrade(useBank), деньги списываются/зачисляются в bank.capital, бумаги хранятся в bank.holdings. Для покупок с банка отключено плечо (леверидж) и не показывается персональная налоговая подсказка при продаже (банк — отдельная бизнес-сущность). В панели банка добавлена строка "Портфель банка" с текущей стоимостью и числом позиций)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -519,6 +519,7 @@ var TENDER_MAINTENANCE_MS = 15e3;
 var FOUNDER_PCT = { company: 0.6, crypto: 0.2 };
 var VESTING_DURATION_MS = 20 * 60 * 1e3;
 var VESTING_UNLOCKED_PCT = 0.2;
+var SELL_MAX_POOL_FRACTION = 0.08;
 var AD_DURATIONS = [
   { id: "short", label: "10 \u043C\u0438\u043D", ms: 10 * 60 * 1e3 },
   { id: "mid", label: "20 \u043C\u0438\u043D", ms: 20 * 60 * 1e3 },
@@ -901,6 +902,56 @@ var IP_OVER_LIMIT_FINE = 2e4;
 var OOO_TAX_RATE = 0.135;
 var OOO_FIXED_FEE = 35e3;
 var OOO_CONVERSION_FEE = 5e3;
+// ---- Собственный банк игрока (V1.5, MVP) ----
+var BANK_OPEN_COST = 1e6;
+var BANK_MIN_MARKET_ASSETS = 5e5;
+var BANK_MIN_CAPITAL = 5e5;
+var BANK_STAFF_COUNT = 50;
+var BANK_SALARY_PER_CYCLE = 5e4;
+var BANK_CYCLE_MS = 30 * 60 * 1e3;
+var BANK_CREDIT_RATE_MIN = 0.005;
+var BANK_CREDIT_RATE_MAX = 0.12;
+var BANK_CREDIT_BASE_DEMAND = 3.5e6;
+var BANK_CREDIT_CAP_FRACTION = 4;
+var BANK_CARD_FEE_MIN = 0.005;
+var BANK_CARD_FEE_MAX = 0.04;
+var BANK_CARD_BASE_TRANSFER_VOL = 2600;
+var BANK_CLIENTS_PER_AD_BUDGET = 0.02;
+var BANK_IPO_CAPITAL_THRESHOLD = 8e6;
+var BANK_IPO_SUPPLY = 1e7;
+var BANK_TRADERS_POOL = [
+  { id: "t_junior", name: "\u0410\u043D\u0442\u043E\u043D \u041A\u043E\u043D\u044C\u043A\u043E\u0432", tier: "\u0421\u0442\u0430\u0436\u0451\u0440", winRate: 0.5, risk: 0.03, allocation: 2e5 },
+  { id: "t_mid", name: "\u0418\u0440\u0438\u043D\u0430 \u0421\u043E\u043A\u043E\u043B\u043E\u0432\u0430", tier: "\u0422\u0440\u0435\u0439\u0434\u0435\u0440", winRate: 0.55, risk: 0.05, allocation: 5e5 },
+  { id: "t_senior", name: "\u041E\u043B\u0435\u0433 \u0412\u043E\u0440\u043E\u043D\u0446\u043E\u0432", tier: "\u0421\u0442\u0430\u0440\u0448\u0438\u0439 \u0442\u0440\u0435\u0439\u0434\u0435\u0440", winRate: 0.58, risk: 0.08, allocation: 1e6 },
+  { id: "t_shark", name: "\u041C\u0430\u043A\u0441\u0438\u043C \u0410\u043A\u0443\u043B\u043E\u0432", tier: "\u0410\u0433\u0440\u0435\u0441\u0441\u0438\u0432\u043D\u044B\u0439", winRate: 0.5, risk: 0.14, allocation: 2e6 }
+];
+function bankTraderCommission() { return 0.05; }
+var BANK_NPC_AVG_CREDIT_RATE = 0.09;
+var BANK_NPC_AVG_CARD_FEE = 0.025;
+var BANK_ORGANIC_GROWTH_BASE = 18;
+var BANK_CHURN_BASE = 0.02;
+var BANK_SHARK_UNLOCK_CAPITAL = 1e7;
+var BANK_RANKS = [
+  { min: 0, label: "\u0421\u0442\u0430\u0440\u0442\u0430\u043F", color: "#8FA0B3" },
+  { min: 2e6, label: "\u0420\u0435\u0433\u0438\u043E\u043D\u0430\u043B\u044C\u043D\u044B\u0439 \u0431\u0430\u043D\u043A", color: "#5AA9E6" },
+  { min: 1e7, label: "\u0424\u0435\u0434\u0435\u0440\u0430\u043B\u044C\u043D\u044B\u0439 \u0431\u0430\u043D\u043A", color: "#C77DFF" },
+  { min: 3e7, label: "\u0411\u0430\u043D\u043A \u0438\u0437 \u0442\u043E\u043F-5", color: "#E8B14C" }
+];
+function bankRank(capital) {
+  let r = BANK_RANKS[0];
+  for (const x of BANK_RANKS) if (capital >= x.min) r = x;
+  return r;
+}
+var BANK_EVENTS = [
+  { id: "vip", positive: true, clientsDelta: 40, trustDelta: 2, text: "\u041A\u0440\u0443\u043F\u043D\u044B\u0439 \u043A\u043E\u0440\u043F\u043E\u0440\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u043A\u043B\u0438\u0435\u043D\u0442 \u043E\u0442\u043A\u0440\u044B\u043B \u0440\u0430\u0441\u0447\u0451\u0442\u043D\u044B\u0439 \u0441\u0447\u0451\u0442" },
+  { id: "review", positive: true, clientsDelta: 22, trustDelta: 3, text: "\u0411\u0430\u043D\u043A \u043F\u043E\u043B\u0443\u0447\u0438\u043B \u0432\u044B\u0441\u043E\u043A\u0438\u0439 \u0440\u0435\u0439\u0442\u0438\u043D\u0433 \u0432 \u043E\u0442\u0440\u0430\u0441\u043B\u0435\u0432\u043E\u043C \u043E\u0431\u0437\u043E\u0440\u0435" },
+  { id: "complaint", positive: false, clientsDelta: -25, trustDelta: -4, text: "\u041A\u043B\u0438\u0435\u043D\u0442\u044B \u043F\u043E\u0436\u0430\u043B\u043E\u0432\u0430\u043B\u0438\u0441\u044C \u043D\u0430 \u0441\u043A\u0440\u044B\u0442\u044B\u0435 \u043A\u043E\u043C\u0438\u0441\u0441\u0438\u0438 \u2014 \u043E\u0442\u0442\u043E\u043A \u043A\u043B\u0438\u0435\u043D\u0442\u043E\u0432" },
+  { id: "fraud", positive: false, capitalDelta: -0.015, trustDelta: -3, text: "\u041C\u043E\u0448\u0435\u043D\u043D\u0438\u0447\u0435\u0441\u043A\u0430\u044F \u0441\u0445\u0435\u043C\u0430 \u0441 \u043A\u0430\u0440\u0442\u0430\u043C\u0438 \u0431\u0430\u043D\u043A\u0430 \u2014 \u0447\u0430\u0441\u0442\u044C \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u043F\u0440\u0438\u0448\u043B\u043E\u0441\u044C \u0441\u043F\u0438\u0441\u0430\u0442\u044C" },
+  { id: "badloan", positive: false, capitalDelta: -0.02, trustDelta: -1, text: "\u041A\u0440\u0443\u043F\u043D\u044B\u0439 \u0437\u0430\u0451\u043C\u0449\u0438\u043A \u0434\u043E\u043F\u0443\u0441\u0442\u0438\u043B \u0434\u0435\u0444\u043E\u043B\u0442 \u043F\u043E \u043A\u0440\u0435\u0434\u0438\u0442\u0443" },
+  { id: "partner", positive: true, capitalDelta: 0.01, trustDelta: 1, text: "\u0423\u0434\u0430\u0447\u043D\u043E\u0435 \u043F\u0430\u0440\u0442\u043D\u0451\u0440\u0441\u0442\u0432\u043E \u0441 \u043F\u0440\u043E\u0446\u0435\u0441\u0441\u0438\u043D\u0433\u043E\u043C \u2014 \u0434\u043E\u043F\u043E\u043B\u043D\u0438\u0442\u0435\u043B\u044C\u043D\u0430\u044F \u043F\u0440\u0438\u0431\u044B\u043B\u044C" }
+];
+
+
 var FAKE_IP_PRICE = 18e3;
 function computeIpTax(turnover) {
   if (turnover <= 0) return 0;
@@ -1856,6 +1907,9 @@ function MarketSandbox() {
   const [ipBankRating, setIpBankRating] = useState(50);
   const [playerSocialProfile, setPlayerSocialProfile] = useState({ trust: 50, postLog: [], lastPostAt: 0 });
   const [marketplace, setMarketplace] = useState(null);
+  const [bank, setBank] = useState(null);
+  const [bankAdBudget, setBankAdBudget] = useState("500");
+  const [bankAdDuration, setBankAdDuration] = useState("mid");
   const [zzoneBiz, setZzoneBiz] = useState({ marketShare: ZZONE_MARKET_SHARE_START, commissionRate: MARKETPLACE_FEE, baseCommission: MARKETPLACE_FEE, aggressionLevel: 0, reactionsTriggered: [] });
   const [bigSellers, setBigSellers] = useState([]);
   const [marketplaceInvestorOffer, setMarketplaceInvestorOffer] = useState(null);
@@ -1976,6 +2030,7 @@ function MarketSandbox() {
   const reputationRef = useRef(100);
   const playerSocialProfileRef = useRef({ trust: 50, postLog: [], lastPostAt: 0 });
   const marketplaceRef = useRef(null);
+  const bankRef = useRef(null);
   const zzoneBizRef = useRef({ marketShare: ZZONE_MARKET_SHARE_START, commissionRate: MARKETPLACE_FEE, baseCommission: MARKETPLACE_FEE, aggressionLevel: 0, reactionsTriggered: [] });
   const bigSellersRef = useRef([]);
   const onboardedRef = useRef(onboarded);
@@ -2215,6 +2270,7 @@ function MarketSandbox() {
   }, [playerSocialProfile]);
   useEffect(() => {
     marketplaceRef.current = marketplace;
+    bankRef.current = bank;
   }, [marketplace]);
   useEffect(() => {
     zzoneBizRef.current = zzoneBiz;
@@ -2521,6 +2577,7 @@ function MarketSandbox() {
     setIpBankRating(typeof data.ipBankRating === "number" ? data.ipBankRating : 50);
     setReputation(typeof data.reputation === "number" ? data.reputation : 100);
     setPlayerSocialProfile(data.playerSocialProfile && typeof data.playerSocialProfile === "object" ? { trust: typeof data.playerSocialProfile.trust === "number" ? data.playerSocialProfile.trust : 50, postLog: Array.isArray(data.playerSocialProfile.postLog) ? data.playerSocialProfile.postLog : [], lastPostAt: data.playerSocialProfile.lastPostAt || 0 } : { trust: 50, postLog: [], lastPostAt: 0 });
+    setBank(data.bank && typeof data.bank === "object" ? { trust: 50, maxCapitalReached: data.bank.capital || BANK_MIN_CAPITAL, holdings: {}, ...data.bank } : null);
     setMarketplace(data.marketplace && typeof data.marketplace === "object" ? (() => {
       const saved = data.marketplace;
       return {
@@ -2667,6 +2724,7 @@ function MarketSandbox() {
     reputation: reputationRef.current,
     playerSocialProfile: playerSocialProfileRef.current,
     marketplace: marketplaceRef.current,
+    bank: bankRef.current,
     zzoneBiz: zzoneBizRef.current,
     bigSellers: bigSellersRef.current,
     bankAccounts: bankAccountsRef.current,
@@ -4443,6 +4501,101 @@ function MarketSandbox() {
   useEffect(() => {
     if (!loaded) return;
     const id = setInterval(() => {
+      const b = bankRef.current;
+      if (!b || Date.now() < b.nextCycleAt) return;
+      const normalized = (b.creditRate - BANK_CREDIT_RATE_MIN) / (BANK_CREDIT_RATE_MAX - BANK_CREDIT_RATE_MIN || 1);
+      const demandFactor = 1 - normalized * 0.8;
+      const creditVolume = Math.min(BANK_CREDIT_BASE_DEMAND * demandFactor, Math.max(0, b.capital) * BANK_CREDIT_CAP_FRACTION);
+      const creditIncome = Math.round(creditVolume * b.creditRate);
+      let tradingPnl = 0;
+      const newTraders = b.traders.map((t) => {
+        const win = Math.random() < t.winRate;
+        const pnlPct = win ? t.risk * (0.8 + Math.random() * 1.4) : -t.risk * (0.3 + Math.random() * 0.6);
+        const raw = t.allocation * pnlPct;
+        const gain = win ? Math.round(raw * (1 - bankTraderCommission())) : Math.round(raw);
+        tradingPnl += gain;
+        return { ...t, pnlTotal: (t.pnlTotal || 0) + gain };
+      });
+      const cardIncome = Math.round(b.clients * BANK_CARD_BASE_TRANSFER_VOL * b.cardFeeRate);
+      // ---- конкуренция с существующими банками рынка: чем ставка/комиссия ниже среднерыночной, тем сильнее органический приток и слабее отток ----
+      const rateScore = (BANK_NPC_AVG_CREDIT_RATE - b.creditRate) / BANK_NPC_AVG_CREDIT_RATE;
+      const feeScore = (BANK_NPC_AVG_CARD_FEE - b.cardFeeRate) / BANK_NPC_AVG_CARD_FEE;
+      const competitiveness = Math.max(-1, Math.min(1, (rateScore + feeScore) / 2));
+      const trustMult = 0.5 + (b.trust || 50) / 100;
+      const organicGrowth = Math.max(0, Math.round(BANK_ORGANIC_GROWTH_BASE * (1 + competitiveness) * trustMult));
+      const churn = Math.max(0, Math.round(b.clients * BANK_CHURN_BASE * (1 - competitiveness * 0.5)));
+      const newClients = Math.max(0, b.clients + organicGrowth - churn);
+      let eventCapitalDelta = 0;
+      let eventTrustDelta = 0;
+      let eventClientsDelta = 0;
+      let eventPost = null;
+      if (Math.random() < 0.08) {
+        const ev = BANK_EVENTS[Math.floor(Math.random() * BANK_EVENTS.length)];
+        eventCapitalDelta = Math.round((ev.capitalDelta || 0) * Math.max(0, b.capital));
+        eventTrustDelta = ev.trustDelta || 0;
+        eventClientsDelta = ev.clientsDelta || 0;
+        eventPost = ev;
+      }
+      const newCapital = b.capital - BANK_SALARY_PER_CYCLE + creditIncome + tradingPnl + cardIncome + eventCapitalDelta;
+      const cycleProfitable = newCapital - eventCapitalDelta >= b.capital;
+      const newTrust = Math.max(0, Math.min(100, (b.trust || 50) + (cycleProfitable ? 0.3 : -0.5) + eventTrustDelta));
+      const finalClients = Math.max(0, newClients + eventClientsDelta);
+      let isPublic = b.isPublic;
+      let stockCompanyId = b.stockCompanyId;
+      let stockTicker = b.stockTicker;
+      if (!isPublic && newCapital >= BANK_IPO_CAPITAL_THRESHOLD) {
+        const price = Math.max(0.5, Number((newCapital / BANK_IPO_SUPPLY).toFixed(2)));
+        const id2 = makeId("co");
+        stockTicker = "MBNK";
+        stockCompanyId = id2;
+        isPublic = true;
+        setCompanies((prev) => [...prev, {
+          id: id2,
+          name: b.name,
+          ticker: stockTicker,
+          sector: "\u0424\u0438\u043D\u0430\u043D\u0441\u044B",
+          price,
+          vol: 0.3,
+          supply: BANK_IPO_SUPPLY,
+          isPlayer: false,
+          marketingLevel: 0,
+          rdLevel: 0,
+          hypeLevel: 0,
+          scamHeat: 0,
+          rugged: false,
+          candles: Array.from({ length: 24 }, (_, i) => ({ o: price, h: price, l: price, c: price, t: Date.now() - (24 - i) * CANDLE_MS }))
+        }]);
+        pushPost({ text: `\xAB${b.name}\xBB \u0432\u044B\u0448\u0435\u043B \u043D\u0430 IPO \u043F\u043E\u0434 \u0442\u0438\u043A\u0435\u0440\u043E\u043C ${stockTicker} \u043F\u043E \u0446\u0435\u043D\u0435 ${fmt(price)}`, positive: true, isMacro: false, importance: 4, ticker: stockTicker });
+      } else if (isPublic && stockCompanyId) {
+        const price = Math.max(0.5, Number((newCapital / BANK_IPO_SUPPLY).toFixed(2)));
+        setCompanies((prev) => prev.map((c) => c.id === stockCompanyId ? { ...c, price } : c));
+      }
+      setBank((prev) => prev ? {
+        ...prev,
+        capital: newCapital,
+        clients: finalClients,
+        trust: newTrust,
+        maxCapitalReached: Math.max(prev.maxCapitalReached || 0, newCapital),
+        traders: newTraders,
+        totalInterestEarned: prev.totalInterestEarned + creditIncome,
+        totalTradingPnl: prev.totalTradingPnl + tradingPnl,
+        totalCardFees: prev.totalCardFees + cardIncome,
+        totalSalaryPaid: prev.totalSalaryPaid + BANK_SALARY_PER_CYCLE,
+        cyclesRun: prev.cyclesRun + 1,
+        isPublic,
+        stockCompanyId,
+        stockTicker,
+        nextCycleAt: Date.now() + BANK_CYCLE_MS
+      } : prev);
+      if (eventPost) pushPost({ text: `\u0411\u0430\u043D\u043A \xAB${b.name}\xBB: ${eventPost.text}`, positive: eventPost.positive, isMacro: false, importance: 2 });
+      logTx("\u0411\u0430\u043D\u043A \xB7 \u0446\u0438\u043A\u043B (\u0417\u041F+\u043A\u0440\u0435\u0434\u0438\u0442\u044B+\u0442\u0440\u0435\u0439\u0434\u0435\u0440\u044B+\u043A\u0430\u0440\u0442\u044B)", Math.round(newCapital - b.capital), newCapital >= b.capital ? "in" : "out");
+      setTimeout(saveGame, 50);
+    }, 3e4);
+    return () => clearInterval(id);
+  }, [loaded]);
+  useEffect(() => {
+    if (!loaded) return;
+    const id = setInterval(() => {
       const list = factoriesRef.current;
       const due = list.filter((f) => Date.now() >= f.nextTickAt);
       if (!due.length) return;
@@ -4545,10 +4698,12 @@ function MarketSandbox() {
     const company = companies.find((c) => c.id === companyId);
     if (!company || qty <= 0) return;
     const useIp = account === "ip" && company.sector === "\u041A\u0440\u0438\u043F\u0442\u043E";
+    const isOwnCoin = !!(company.isPlayer && company.kind === "crypto");
     const useGrey = account === "grey" && greyAccount && !greyAccount.frozen;
     const useBankCard = !useIp && !useGrey && BANK_ACCOUNTS.some((b) => b.id === account) && bankAccounts[account] && !bankAccounts[account].frozen;
     const useMule = !useIp && !useGrey && !useBankCard && muleCards[account] && !muleCards[account].frozen;
     const useFakeIp = !useIp && !useGrey && !useBankCard && !useMule && fakeIps[account] && company.sector === "\u041A\u0440\u0438\u043F\u0442\u043E";
+    const useBank = !useIp && !useGrey && !useBankCard && !useMule && !useFakeIp && account === "bank" && !!bankRef.current;
     if (!useIp && !useGrey && !useBankCard && !useMule && muleCards[account] && muleCards[account].frozen) {
       notify("\u041A\u0430\u0440\u0442\u0430 \u0437\u0430\u043C\u043E\u0440\u043E\u0436\u0435\u043D\u0430 \u2014 \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u044F \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u043D\u0430", false);
       return;
@@ -4557,12 +4712,12 @@ function MarketSandbox() {
       notify("\u0410\u043A\u0442\u0438\u0432\u044B \u043F\u043E\u0434 \u0430\u0440\u0435\u0441\u0442\u043E\u043C \u0431\u0430\u043D\u043A\u0430 \u0438\u0437-\u0437\u0430 \u0434\u043E\u043B\u0433\u0430", false);
       return;
     }
-    const curCash = useGrey ? greyAccount.balance : useIp ? ipCash : useBankCard ? bankAccounts[account].balance : useMule ? muleCards[account].balance : useFakeIp ? fakeIps[account].cash : 0;
-    const curHoldings = useGrey ? greyHoldings : useIp ? ipHoldings : useMule ? muleHoldings[account] || {} : useFakeIp ? fakeIps[account].holdings || {} : holdings;
-    const setCurCash = useGrey ? (fn) => setGreyAccount((a) => a ? { ...a, balance: typeof fn === "function" ? fn(a.balance) : fn } : a) : useIp ? setIpCash : useBankCard ? (fn) => setBankAccounts((prev) => prev[account] ? { ...prev, [account]: { ...prev[account], balance: typeof fn === "function" ? fn(prev[account].balance) : fn } } : prev) : useMule ? (fn) => setMuleCards((prev) => prev[account] ? { ...prev, [account]: { ...prev[account], balance: typeof fn === "function" ? fn(prev[account].balance) : fn } } : prev) : useFakeIp ? (fn) => setFakeIps((prev) => prev[account] ? { ...prev, [account]: { ...prev[account], cash: typeof fn === "function" ? fn(prev[account].cash) : fn } } : prev) : () => {
+    const curCash = useGrey ? greyAccount.balance : useIp ? ipCash : useBankCard ? bankAccounts[account].balance : useMule ? muleCards[account].balance : useFakeIp ? fakeIps[account].cash : useBank ? bankRef.current.capital : 0;
+    const curHoldings = useGrey ? greyHoldings : useIp && !isOwnCoin ? ipHoldings : useMule ? muleHoldings[account] || {} : useFakeIp ? fakeIps[account].holdings || {} : useBank ? bankRef.current.holdings || {} : holdings;
+    const setCurCash = useGrey ? (fn) => setGreyAccount((a) => a ? { ...a, balance: typeof fn === "function" ? fn(a.balance) : fn } : a) : useIp ? setIpCash : useBankCard ? (fn) => setBankAccounts((prev) => prev[account] ? { ...prev, [account]: { ...prev[account], balance: typeof fn === "function" ? fn(prev[account].balance) : fn } } : prev) : useMule ? (fn) => setMuleCards((prev) => prev[account] ? { ...prev, [account]: { ...prev[account], balance: typeof fn === "function" ? fn(prev[account].balance) : fn } } : prev) : useFakeIp ? (fn) => setFakeIps((prev) => prev[account] ? { ...prev, [account]: { ...prev[account], cash: typeof fn === "function" ? fn(prev[account].cash) : fn } } : prev) : useBank ? (fn) => setBank((prev) => prev ? { ...prev, capital: typeof fn === "function" ? fn(prev.capital) : fn } : prev) : () => {
     };
-    const setCurHoldings = useGrey ? setGreyHoldings : useIp ? setIpHoldings : useMule ? (fn) => setMuleHoldings((prev) => ({ ...prev, [account]: typeof fn === "function" ? fn(prev[account] || {}) : fn })) : useFakeIp ? (fn) => setFakeIps((prev) => prev[account] ? { ...prev, [account]: { ...prev[account], holdings: typeof fn === "function" ? fn(prev[account].holdings || {}) : fn } } : prev) : setHoldings;
-    const acctTag = useGrey ? " \xB7 Meridian" : useIp ? " \xB7 \u0418\u041F" : useBankCard ? ` \xB7 ${BANK_ACCOUNTS.find((b) => b.id === account)?.name}` : useMule ? " \xB7 \u0447\u0443\u0436\u0430\u044F \u043A\u0430\u0440\u0442\u0430" : useFakeIp ? " \xB7 \u0447\u0443\u0436\u043E\u0435 \u0418\u041F" : "";
+    const setCurHoldings = useGrey ? setGreyHoldings : useIp && !isOwnCoin ? setIpHoldings : useMule ? (fn) => setMuleHoldings((prev) => ({ ...prev, [account]: typeof fn === "function" ? fn(prev[account] || {}) : fn })) : useFakeIp ? (fn) => setFakeIps((prev) => prev[account] ? { ...prev, [account]: { ...prev[account], holdings: typeof fn === "function" ? fn(prev[account].holdings || {}) : fn } } : prev) : useBank ? (fn) => setBank((prev) => prev ? { ...prev, holdings: typeof fn === "function" ? fn(prev.holdings || {}) : fn } : prev) : setHoldings;
+    const acctTag = useGrey ? " \xB7 Meridian" : useIp ? " \xB7 \u0418\u041F" : useBankCard ? ` \xB7 ${BANK_ACCOUNTS.find((b) => b.id === account)?.name}` : useMule ? " \xB7 \u0447\u0443\u0436\u0430\u044F \u043A\u0430\u0440\u0442\u0430" : useFakeIp ? " \xB7 \u0447\u0443\u0436\u043E\u0435 \u0418\u041F" : useBank ? " \xB7 \u0431\u0430\u043D\u043A" : "";
     const sizeRatio = qty / company.supply;
     const isOwnCryptoPool = company.kind === "crypto" && company.isPlayer && typeof company.poolCoin === "number";
     const liqFactor = isOwnCryptoPool ? poolLiquidityFactor(company.poolUsd, company.price * company.supply) : 1;
@@ -4607,9 +4762,10 @@ function MarketSandbox() {
       const avgExecPrice = company.price * (1 - impactPct / 200);
       const grossProceeds = avgExecPrice * qty * 0.998 * (useGrey ? 1 - GREY_BANK.tradeSellFee : 1);
       const profit = (avgExecPrice - avgCost) * qty;
-      if (isOwnCryptoPool && grossProceeds > company.poolUsd) {
-        const maxSellable = Math.floor(company.poolUsd * 0.99 / (avgExecPrice * 0.998) * 0.97);
-        notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u043B\u0438\u043A\u0432\u0438\u0434\u043D\u043E\u0441\u0442\u0438 \u0432 \u043F\u0443\u043B\u0435 \u043C\u043E\u043D\u0435\u0442\u044B \u2014 \u0437\u0430 \u043E\u0434\u0438\u043D \u0440\u0430\u0437 \u043C\u043E\u0436\u043D\u043E \u043F\u0440\u043E\u0434\u0430\u0442\u044C \u043F\u0440\u0438\u043C\u0435\u0440\u043D\u043E \u0434\u043E ${Math.max(0, maxSellable).toLocaleString()} ${company.ticker}. \u041F\u0440\u043E\u0434\u0430\u0432\u0430\u0439\u0442\u0435 \u0447\u0430\u0441\u0442\u044F\u043C\u0438`, false);
+      if (isOwnCryptoPool && grossProceeds > company.poolUsd * SELL_MAX_POOL_FRACTION) {
+        const maxProceeds = company.poolUsd * SELL_MAX_POOL_FRACTION;
+        const maxSellable = Math.floor(maxProceeds * 0.99 / (avgExecPrice * 0.998));
+        notify(`\u041C\u0430\u043A\u0441\u0438\u043C\u0430\u043B\u044C\u043D\u043E \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E \u0437\u0430 \u043E\u0434\u0438\u043D \u0440\u0430\u0437: ${fmt(maxProceeds)} (~${Math.max(0, maxSellable).toLocaleString()} ${company.ticker}). \u041F\u0440\u043E\u0434\u0430\u0432\u0430\u0439\u0442\u0435 \u0447\u0430\u0441\u0442\u044F\u043C\u0438 \u2014 \u043F\u043E\u0441\u043B\u0435 \u043A\u0430\u0436\u0434\u043E\u0439 \u0441\u0434\u0435\u043B\u043A\u0438 \u043B\u0438\u043C\u0438\u0442 \u043F\u0435\u0440\u0435\u0441\u0447\u0438\u0442\u044B\u0432\u0430\u0435\u0442\u0441\u044F`, false);
         return;
       }
       if (isOwnCryptoPool) {
@@ -5871,9 +6027,10 @@ function MarketSandbox() {
     if (!round || round.stage !== "received") return;
     const { amount, accountId } = round;
     const forward = Math.round(amount * (1 - blackMarketCutRate(amount)));
+    const isOwnCoinAsset = companyId === playerVentureId;
     const poolType = accountId === "ip" ? "ip" : accountId === "grey" ? "grey" : muleCards[accountId] ? "mule" : fakeIps[accountId] ? "fakeip" : "personal";
-    const pool = poolType === "ip" ? ipHoldings : poolType === "grey" ? greyHoldings : poolType === "mule" ? muleHoldings[accountId] || {} : poolType === "fakeip" ? fakeIps[accountId].holdings || {} : holdings;
-    const setPool = poolType === "ip" ? setIpHoldings : poolType === "grey" ? setGreyHoldings : poolType === "mule" ? (fn) => setMuleHoldings((prev) => ({ ...prev, [accountId]: typeof fn === "function" ? fn(prev[accountId] || {}) : fn })) : poolType === "fakeip" ? (fn) => setFakeIps((prev) => prev[accountId] ? { ...prev, [accountId]: { ...prev[accountId], holdings: typeof fn === "function" ? fn(prev[accountId].holdings || {}) : fn } } : prev) : setHoldings;
+    const pool = poolType === "grey" ? greyHoldings : poolType === "mule" ? muleHoldings[accountId] || {} : poolType === "fakeip" ? fakeIps[accountId].holdings || {} : poolType === "ip" && !isOwnCoinAsset ? ipHoldings : holdings;
+    const setPool = poolType === "grey" ? setGreyHoldings : poolType === "mule" ? (fn) => setMuleHoldings((prev) => ({ ...prev, [accountId]: typeof fn === "function" ? fn(prev[accountId] || {}) : fn })) : poolType === "fakeip" ? (fn) => setFakeIps((prev) => prev[accountId] ? { ...prev, [accountId]: { ...prev[accountId], holdings: typeof fn === "function" ? fn(prev[accountId].holdings || {}) : fn } } : prev) : poolType === "ip" && !isOwnCoinAsset ? setIpHoldings : setHoldings;
     const company = companies.find((c) => c.id === companyId);
     if (!company) return;
     const held = pool[companyId]?.qty || 0;
@@ -5895,7 +6052,7 @@ function MarketSandbox() {
       }
       return { ...h, [companyId]: { ...prevH, qty: newQty } };
     });
-    const isOwnCoin = companyId === playerVentureId;
+    const isOwnCoin = isOwnCoinAsset;
     const isMuleReceiving = !!muleCards[accountId] || !!fakeIps[accountId];
     logTx(`\u0427\u0451\u0440\u043D\u044B\u0439 \u0440\u044B\u043D\u043E\u043A: \u043E\u0442\u043F\u0440\u0430\u0432\u043A\u0430 ${company.ticker} \u043F\u043E\u043B\u0443\u0447\u0430\u0442\u0435\u043B\u044E${isTeher ? " (\u043A\u043E\u043C\u0438\u0441\u0441\u0438\u044F TEHER 1%)" : ""}`, forward, "out");
     setBlackMarketVolume((v) => v + amount);
@@ -6319,6 +6476,34 @@ function MarketSandbox() {
     setCompanies((prev) => prev.map((c) => c.id === v.id ? { ...c, poolCoin: c.poolCoin + coinsFromReserve, poolUsd: c.poolUsd + usdAmount, reserveAllocation: c.reserveAllocation - coinsFromReserve, coinTrust: Math.max(0, Math.min(100, (c.coinTrust || 50) + 1.5)) } : c));
     setTimeout(saveGame, 50);
   };
+  const [confirmRug, setConfirmRug] = useState(false);
+  const rugPullLiquidity = () => {
+    const v = companies.find((c) => c.id === playerVentureId);
+    if (!v || v.kind !== "crypto" || v.rugged) return;
+    const extracted = Math.round((v.poolUsd || 0) * 0.9);
+    if (extracted <= 0) {
+      notify("\u0412 \u043F\u0443\u043B\u0435 \u043D\u0435\u0442 \u043B\u0438\u043A\u0432\u0438\u0434\u043D\u043E\u0441\u0442\u0438 \u0434\u043B\u044F \u0438\u0437\u044A\u044F\u0442\u0438\u044F", false);
+      setConfirmRug(false);
+      return;
+    }
+    setIpCash((c) => c + extracted);
+    setQuarterRevenue((r) => r + extracted);
+    setCompanies((prev) => prev.map((c) => c.id === v.id ? { ...c, poolUsd: Math.max(0, (c.poolUsd || 0) - extracted), rugged: true } : c));
+    applyImpact(v.id, -85 - Math.random() * 10);
+    adjustReputation(-25);
+    logTx(`\u0418\u0437\u044A\u044F\u0442\u0438\u0435 \u043B\u0438\u043A\u0432\u0438\u0434\u043D\u043E\u0441\u0442\u0438 \xB7 ${v.ticker}`, extracted, "in");
+    const storyId = makeId("story");
+    const posts = [
+      { role: "official", kind: "fact", text: `${v.ticker} \u0440\u0430\u0437\u043E\u0431\u043B\u0430\u0447\u0451\u043D \u043A\u0430\u043A \u0441\u043A\u0430\u043C \u2014 \u0438\u043D\u0432\u0435\u0441\u0442\u043E\u0440\u044B \u0440\u0430\u0437\u043E\u0440\u0435\u043D\u044B`, positive: false, isMacro: false, ticker: v.ticker, importance: 3 },
+      { role: "trader", kind: "reaction", text: `\u041B\u0438\u043A\u0432\u0438\u0434\u043D\u043E\u0441\u0442\u044C \u043F\u043E ${v.ticker} \u0438\u0441\u0447\u0435\u0437\u043B\u0430 \u0437\u0430 \u0441\u0447\u0438\u0442\u0430\u043D\u043D\u044B\u0435 \u0441\u0435\u043A\u0443\u043D\u0434\u044B \u2014 \u043F\u0440\u043E\u0434\u0430\u0442\u044C \u043F\u043E\u0447\u0442\u0438 \u043D\u0435\u0432\u043E\u0437\u043C\u043E\u0436\u043D\u043E.`, positive: false, isMacro: false, ticker: v.ticker, importance: 3 }
+    ];
+    registerStory({ id: storyId, headline: posts[0].text, category: "crypto", personal: true, importance: 3, status: "confirmed", reliability: "official", ticker: v.ticker, marketImpactPct: -85, createdAt: Date.now(), postCount: posts.length });
+    pushPosts(posts.map((p) => ({ ...p, id: makeId("post"), storyId })));
+    flagSuspicion(40);
+    notify(`\u0418\u0437\u044A\u044F\u0442\u043E ${fmt(extracted)} \u2014 \u043F\u0440\u043E\u0435\u043A\u0442 \u043F\u0440\u0438\u0437\u043D\u0430\u043D \u0441\u043A\u0430\u043C\u043E\u043C`, true);
+    setConfirmRug(false);
+    setTimeout(saveGame, 50);
+  };
   var SOCIAL_POST_MIN_CHARS = 12;
   var SOCIAL_POST_MAX_CHARS = 240;
   var SOCIAL_POST_COOLDOWN_MS = 20e3;
@@ -6446,6 +6631,109 @@ function MarketSandbox() {
     setSelectedBizId("marketplace");
     spawnBigSellerCandidates();
     pushPost({ role: "official", kind: "fact", text: `\u0417\u0430\u043F\u0443\u0449\u0435\u043D \u0441\u043E\u0431\u0441\u0442\u0432\u0435\u043D\u043D\u044B\u0439 \u043C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441 \xAB${mp.name}\xBB \u2014 \u043F\u0435\u0440\u0432\u044B\u0435 \u043F\u0440\u043E\u0434\u0430\u0432\u0446\u044B \u0443\u0436\u0435 \u043D\u0430 \u043F\u043B\u043E\u0449\u0430\u0434\u043A\u0435`, positive: true, isMacro: false, importance: 3 });
+    setTimeout(saveGame, 50);
+  };
+  const bankEligibility = () => {
+    const totalMarketAssets = ipHoldingsValue + Object.entries(holdings).reduce((sum, [cid, h]) => {
+      const c = companies.find((x) => x.id === cid);
+      return sum + (c ? c.price * h.qty : 0);
+    }, 0);
+    const totalCost = BANK_OPEN_COST + BANK_MIN_CAPITAL;
+    const checks = [
+      { id: "entity", label: "Юридическая форма ООО", met: entityType === "ooo" },
+      { id: "office", label: "Коммерческое помещение куплено", met: (ownedItems.commercial1 || 0) > 0 },
+      { id: "assets", label: `Активы в акциях и крипте от ${fmt(BANK_MIN_MARKET_ASSETS)}`, met: totalMarketAssets >= BANK_MIN_MARKET_ASSETS },
+      { id: "cash", label: `${fmt(totalCost)} на счёте ИП (открытие + капитал банка)`, met: ipCash >= totalCost }
+    ];
+    return { checks, eligible: checks.every((c) => c.met), totalCost, totalMarketAssets };
+  };
+  const openBank = () => {
+    if (bankRef.current) return;
+    const { eligible, totalCost } = bankEligibility();
+    if (!eligible) return;
+    const transferredHoldings = { ...holdings };
+    const transferredValue = Object.entries(transferredHoldings).reduce((s, [cid, h]) => {
+      const c = companies.find((x) => x.id === cid);
+      return s + (c ? c.price * h.qty : 0);
+    }, 0);
+    setIpCash((c) => c - totalCost);
+    logTx("Открытие банка", BANK_OPEN_COST, "out");
+    logTx("Капитал банка", BANK_MIN_CAPITAL, "out");
+    if (Object.keys(transferredHoldings).length > 0) {
+      setHoldings({});
+      logTx("Активы личного счёта · переданы банку", transferredValue, "out");
+    }
+    const b = {
+      id: makeId("bank"),
+      name: "Свой банк",
+      createdAt: Date.now(),
+      capital: BANK_MIN_CAPITAL,
+      creditRate: BANK_CREDIT_RATE_MIN,
+      cardFeeRate: BANK_CARD_FEE_MAX,
+      clients: 0,
+      trust: 50,
+      maxCapitalReached: BANK_MIN_CAPITAL,
+      holdings: transferredHoldings,
+      traders: [],
+      totalInterestEarned: 0,
+      totalTradingPnl: 0,
+      totalCardFees: 0,
+      totalSalaryPaid: 0,
+      cyclesRun: 0,
+      isPublic: false,
+      stockCompanyId: null,
+      stockTicker: null,
+      nextCycleAt: Date.now() + BANK_CYCLE_MS
+    };
+    setBank(b);
+    setSelectedBizId("bank");
+    logTx("Банк открыт", 0, "in");
+    setTimeout(saveGame, 50);
+  };
+  const setBankCreditRate = (rate) => {
+    setBank((prev) => prev ? { ...prev, creditRate: Math.max(BANK_CREDIT_RATE_MIN, Math.min(BANK_CREDIT_RATE_MAX, rate)) } : prev);
+  };
+  const setBankCardFeeRate = (rate) => {
+    setBank((prev) => prev ? { ...prev, cardFeeRate: Math.max(BANK_CARD_FEE_MIN, Math.min(BANK_CARD_FEE_MAX, rate)) } : prev);
+  };
+  const hireBankTrader = (traderId) => {
+    const b = bankRef.current;
+    const t = BANK_TRADERS_POOL.find((x) => x.id === traderId);
+    if (!b || !t || b.traders.some((h) => h.id === traderId)) return;
+    if (t.id === "t_shark" && (b.maxCapitalReached || b.capital) < BANK_SHARK_UNLOCK_CAPITAL) {
+      notify(`Трейдер доступен с капитала банка от ${fmt(BANK_SHARK_UNLOCK_CAPITAL)}`);
+      return;
+    }
+    setBank((prev) => prev ? { ...prev, traders: [...prev.traders, { ...t, hiredAt: Date.now(), pnlTotal: 0 }] } : prev);
+    setTimeout(saveGame, 50);
+  };
+  const fireBankTrader = (traderId) => {
+    setBank((prev) => prev ? { ...prev, traders: prev.traders.filter((t) => t.id !== traderId) } : prev);
+    setTimeout(saveGame, 50);
+  };
+  const withdrawBankCapital = (amount) => {
+    const b = bankRef.current;
+    const amt = Math.round(Number(amount) || 0);
+    if (!b || amt <= 0 || amt > b.capital) return;
+    setBank((prev) => prev ? { ...prev, capital: prev.capital - amt } : prev);
+    setIpCash((c) => c + amt);
+    logTx("Вывод из банка \xB7 капитал", amt, "in");
+    setTimeout(saveGame, 50);
+  };
+  const runBankAdCampaign = (budgetRaw, durationId) => {
+    const budget = Math.max(100, Math.round(Number(budgetRaw) || 0));
+    if (!bankRef.current) return;
+    if (ipCash < budget) {
+      notify(`Недостаточно средств на ИП \xB7 нужно ${fmt(budget)}`);
+      return;
+    }
+    const duration = AD_DURATIONS.find((d) => d.id === durationId) || AD_DURATIONS[1];
+    const feeAttract = 1 + (BANK_CARD_FEE_MAX - bankRef.current.cardFeeRate) / (BANK_CARD_FEE_MAX - BANK_CARD_FEE_MIN);
+    const newClients = Math.round(budget * BANK_CLIENTS_PER_AD_BUDGET * feeAttract * (duration.ms / (30 * 60 * 1e3)));
+    setIpCash((c) => c - budget);
+    setBank((prev) => prev ? { ...prev, clients: prev.clients + newClients } : prev);
+    logTx("Реклама банка", budget, "out");
+    notify(`+${newClients} клиентов`, true);
     setTimeout(saveGame, 50);
   };
   const withdrawMarketplacePayout = () => {
@@ -7295,8 +7583,10 @@ function MarketSandbox() {
   const tradeIsGrey = tradeAccountResolved === "grey" && !!greyAccount && !greyAccount.frozen;
   const tradeIsBankCard = !tradeIsIp && !tradeIsGrey && BANK_ACCOUNTS.some((b) => b.id === tradeAccountResolved) && !!bankAccounts[tradeAccountResolved] && !bankAccounts[tradeAccountResolved].frozen;
   const tradeIsMule = !tradeIsIp && !tradeIsGrey && !tradeIsBankCard && !!muleCards[tradeAccountResolved] && !muleCards[tradeAccountResolved].frozen;
-  const selectedHeld = selectedCompany ? (tradeIsGrey ? greyHoldings : tradeIsIp ? ipHoldings : holdings)[selectedCompany.id]?.qty || 0 : 0;
-  const tradeAvailableCash = tradeIsGrey ? greyAccount.balance : tradeIsIp ? ipCash : tradeIsBankCard ? bankAccounts[tradeAccountResolved].balance : tradeIsMule ? muleCards[tradeAccountResolved].balance : 0;
+  const tradeIsBank = !tradeIsIp && !tradeIsGrey && !tradeIsBankCard && !tradeIsMule && tradeAccountResolved === "bank" && !!bank;
+  const selectedIsOwnCoin = !!(selectedCompany && selectedCompany.isPlayer && selectedCompany.kind === "crypto");
+  const selectedHeld = selectedCompany ? (tradeIsGrey ? greyHoldings : tradeIsIp && !selectedIsOwnCoin ? ipHoldings : tradeIsBank ? bank.holdings || {} : holdings)[selectedCompany.id]?.qty || 0 : 0;
+  const tradeAvailableCash = tradeIsGrey ? greyAccount.balance : tradeIsIp ? ipCash : tradeIsBankCard ? bankAccounts[tradeAccountResolved].balance : tradeIsMule ? muleCards[tradeAccountResolved].balance : tradeIsBank ? bank.capital : 0;
   const assetsFrozen = !tradeIsIp && !tradeIsGrey && loans.some((l) => l.frozen);
   const tradeIsOwnPool = !!(selectedCompany && selectedCompany.kind === "crypto" && selectedCompany.isPlayer && typeof selectedCompany.poolCoin === "number");
   const tradeSizeRatio = selectedCompany ? tradeQty / selectedCompany.supply : 0;
@@ -8531,40 +8821,55 @@ function MarketSandbox() {
                 ] })
               ] }),
               /* @__PURE__ */ jsx("div", { style: { marginTop: 12 }, children: /* @__PURE__ */ jsx(CandleChart, { companyId: playerVenture.id, engineRef, candles: playerVenture.candles, height: 190 }) }),
-              founderHolding && /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkDim, marginTop: 10 }, children: [
+              typeof playerVenture.poolCoin === "number" ? (() => {
+                const liquidityUsd = Math.round((playerVenture.poolUsd || 0) + (playerVenture.poolCoin || 0) * playerVenture.price);
+                const maxSellUsd = Math.round((playerVenture.poolUsd || 0) * SELL_MAX_POOL_FRACTION);
+                return /* @__PURE__ */ jsxs("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 10, fontSize: 12 }, children: [
+                  /* @__PURE__ */ jsxs("div", { children: [
+                    /* @__PURE__ */ jsx("div", { style: { color: C.inkFaint, fontSize: 10.5 }, children: "\u041B\u0438\u043A\u0432\u0438\u0434\u043D\u043E\u0441\u0442\u044C" }),
+                    /* @__PURE__ */ jsx("div", { style: { fontWeight: 700, fontFamily: "'JetBrains Mono', monospace" }, children: fmt(liquidityUsd) })
+                  ] }),
+                  founderHolding && /* @__PURE__ */ jsxs("div", { children: [
+                    /* @__PURE__ */ jsx("div", { style: { color: C.inkFaint, fontSize: 10.5 }, children: "\u0422\u0432\u043E\u0438 \u0442\u043E\u043A\u0435\u043D\u044B" }),
+                    /* @__PURE__ */ jsx("div", { style: { fontWeight: 700, fontFamily: "'JetBrains Mono', monospace" }, children: founderHolding.qty.toLocaleString() })
+                  ] }),
+                  (() => {
+                    const absorbed = Math.max(0, (playerVenture.initialPoolCoin || playerVenture.poolCoin) - playerVenture.poolCoin);
+                    const circulating = Math.round((founderHolding?.qty || 0) + absorbed);
+                    return /* @__PURE__ */ jsxs("div", { children: [
+                      /* @__PURE__ */ jsx("div", { style: { color: C.inkFaint, fontSize: 10.5 }, children: "\u0412 \u043E\u0431\u0440\u0430\u0449\u0435\u043D\u0438\u0438" }),
+                      /* @__PURE__ */ jsxs("div", { style: { fontWeight: 700, fontFamily: "'JetBrains Mono', monospace" }, children: [
+                        circulating.toLocaleString(),
+                        " / ",
+                        playerVenture.supply.toLocaleString()
+                      ] })
+                    ] });
+                  })(),
+                  founderHolding && /* @__PURE__ */ jsxs("div", { children: [
+                    /* @__PURE__ */ jsx("div", { style: { color: C.inkFaint, fontSize: 10.5 }, children: "\u0414\u043E\u0441\u0442\u0443\u043F\u043D\u043E \u043A \u043F\u0440\u043E\u0434\u0430\u0436\u0435" }),
+                    /* @__PURE__ */ jsx("div", { style: { fontWeight: 700, fontFamily: "'JetBrains Mono', monospace" }, children: founderHolding.qty.toLocaleString() })
+                  ] }),
+                  /* @__PURE__ */ jsxs("div", { style: { gridColumn: "1 / -1" }, children: [
+                    /* @__PURE__ */ jsx("div", { style: { color: C.inkFaint, fontSize: 10.5 }, children: "\u041C\u0430\u043A\u0441\u0438\u043C\u0430\u043B\u044C\u043D\u0430\u044F \u043F\u0440\u043E\u0434\u0430\u0436\u0430 \u0441\u0435\u0439\u0447\u0430\u0441" }),
+                    /* @__PURE__ */ jsxs("div", { style: { fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", color: C.gold }, children: [
+                      "\u2248 ",
+                      fmt(maxSellUsd)
+                    ] })
+                  ] })
+                ] });
+              })() : founderHolding && /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkDim, marginTop: 10 }, children: [
                 "\u0422\u0435\u0431\u0435 \u043F\u0440\u0438\u043D\u0430\u0434\u043B\u0435\u0436\u0438\u0442 ",
                 founderHolding.qty.toLocaleString(),
                 " \u0438\u0437 ",
                 playerVenture.supply.toLocaleString(),
                 " (",
                 (founderHolding.qty / playerVenture.supply * 100).toFixed(1),
-                "%) \u2014 \u044D\u0442\u0438 \u0442\u043E\u043A\u0435\u043D\u044B \u0432 \xAB\u041A\u0430\u0431\u0438\u043D\u0435\u0442\u0435\xBB"
+                "%)"
               ] }),
-              typeof playerVenture.poolCoin === "number" && /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkDim, marginTop: 4 }, children: [
-                "\u041F\u0443\u043B \u043B\u0438\u043A\u0432\u0438\u0434\u043D\u043E\u0441\u0442\u0438: ",
-                Math.round(playerVenture.poolCoin).toLocaleString(),
-                " ",
-                playerVenture.ticker,
-                " + ",
-                fmt(playerVenture.poolUsd)
-              ] }),
-              typeof playerVenture.poolCoin === "number" && (() => {
-                const absorbed = Math.max(0, (playerVenture.initialPoolCoin || playerVenture.poolCoin) - playerVenture.poolCoin);
-                const circulating = Math.round((founderHolding?.qty || 0) + absorbed);
-                const holdersEst = Math.max(1, Math.round(1 + (playerVenture.investorRounds || 0) * 1.5 + absorbed / Math.max(1, playerVenture.supply * 5e-4)));
-                return /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkFaint, marginTop: 4 }, children: [
-                  "\u0412 \u043E\u0431\u0440\u0430\u0449\u0435\u043D\u0438\u0438 ",
-                  circulating.toLocaleString(),
-                  " / ",
-                  playerVenture.supply.toLocaleString(),
-                  " \xB7 \u0434\u0435\u0440\u0436\u0430\u0442\u0435\u043B\u0435\u0439 \u2248",
-                  holdersEst.toLocaleString()
-                ] });
-              })(),
-              typeof playerVenture.publicAllocation === "number" && /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkFaint, marginTop: 4 }, children: [
+              typeof playerVenture.publicAllocation === "number" && /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkFaint, marginTop: 10 }, children: [
                 "\u041E\u0442\u043A\u0440\u044B\u0442\u044B\u0439 (\u043D\u0435\u0440\u0430\u0441\u043F\u0440\u0435\u0434\u0435\u043B\u0451\u043D\u043D\u043E) ",
                 Math.round(playerVenture.publicAllocation).toLocaleString(),
-                " \xB7 \u0420\u0435\u043A\u043B\u0430\u043C\u0430 (\u0440\u0435\u0437\u0435\u0440\u0432) ",
+                " \xB7 \u0420\u0435\u043A\u043B\u0430\u043C\u0430 ",
                 Math.round(playerVenture.marketingAllocation || 0).toLocaleString(),
                 " \xB7 \u0420\u0435\u0437\u0435\u0440\u0432 ",
                 Math.round(playerVenture.reserveAllocation || 0).toLocaleString()
@@ -8628,6 +8933,17 @@ function MarketSandbox() {
                 ] }, a.id)) })
               ] }) : /* @__PURE__ */ jsx("div", { style: { textAlign: "center", padding: "10px 0", color: C.inkFaint, fontSize: 12.5 }, children: "\u0418\u0449\u0435\u043C \u0438\u043D\u0432\u0435\u0441\u0442\u043E\u0440\u0430 \u0434\u043B\u044F \u0432\u0441\u0442\u0440\u0435\u0447\u0438\u2026" })
             ] }),
+            playerVenture.kind === "crypto" && !playerVenture.rugged && (playerVenture.poolUsd || 0) > 0 && /* @__PURE__ */ jsx("div", { style: { marginBottom: 12 }, children: confirmRug ? /* @__PURE__ */ jsxs("div", { style: { background: `${C.red}14`, border: `1px solid ${C.red}55`, borderRadius: 12, padding: 12 }, children: [
+              /* @__PURE__ */ jsxs("div", { style: { fontSize: 12, color: C.red, marginBottom: 8, lineHeight: 1.5 }, children: [
+                "\u0422\u044B \u0437\u0430\u0431\u0435\u0440\u0451\u0448\u044C \u2248",
+                fmt(Math.round((playerVenture.poolUsd || 0) * 0.9)),
+                " \u0438\u0437 \u043F\u0443\u043B\u0430. \u0426\u0435\u043D\u0430 \u043E\u0431\u0432\u0430\u043B\u0438\u0442\u0441\u044F, \u0434\u043E\u0432\u0435\u0440\u0438\u0435 \u0438 \u0440\u0435\u043F\u0443\u0442\u0430\u0446\u0438\u044F \u0440\u0443\u0445\u043D\u0443\u0442, \u043F\u0440\u043E\u0435\u043A\u0442 \u043D\u0435\u043B\u044C\u0437\u044F \u0431\u0443\u0434\u0435\u0442 \u0432\u043E\u0441\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C. \u0414\u0435\u0439\u0441\u0442\u0432\u0438\u0435 \u043D\u0435\u043E\u0431\u0440\u0430\u0442\u0438\u043C\u043E."
+              ] }),
+              /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8 }, children: [
+                /* @__PURE__ */ jsx("button", { onClick: () => setConfirmRug(false), style: { flex: 1, padding: 9, borderRadius: 9, border: `1px solid ${C.border}`, background: "none", color: C.inkDim, fontSize: 12 }, children: "\u041E\u0442\u043C\u0435\u043D\u0430" }),
+                /* @__PURE__ */ jsx("button", { onClick: rugPullLiquidity, style: { flex: 1, padding: 9, borderRadius: 9, border: "none", background: C.red, color: "#fff", fontWeight: 700, fontSize: 12 }, children: "\u041F\u043E\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u044C \u0438\u0437\u044A\u044F\u0442\u0438\u0435" })
+              ] })
+            ] }) : /* @__PURE__ */ jsx("button", { onClick: () => setConfirmRug(true), style: { width: "100%", padding: 9, borderRadius: 10, border: `1px solid ${C.red}55`, background: "none", color: C.red, fontSize: 12, fontWeight: 600 }, children: "\u0418\u0437\u044A\u044F\u0442\u044C \u043B\u0438\u043A\u0432\u0438\u0434\u043D\u043E\u0441\u0442\u044C" }) }),
             playerVenture.rugged && /* @__PURE__ */ jsx("div", { style: { background: `${C.red}18`, border: `1px solid ${C.red}55`, borderRadius: 12, padding: 14, marginBottom: 12, fontSize: 13, color: C.red, textAlign: "center", fontWeight: 600 }, children: "\u041F\u0440\u043E\u0435\u043A\u0442 \u0440\u0430\u0437\u043E\u0431\u043B\u0430\u0447\u0451\u043D \u043A\u0430\u043A \u0441\u043A\u0430\u043C. \u0426\u0435\u043D\u0430 \u0440\u0443\u0445\u043D\u0443\u043B\u0430 \u2014 \u044D\u0442\u043E\u0442 \u0442\u043E\u043A\u0435\u043D \u0431\u043E\u043B\u044C\u0448\u0435 \u043D\u0435 \u0432\u043E\u0441\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C." }),
             playerVenture.kind !== "crypto" || playerVenture.strategy === "tech" ? /* @__PURE__ */ jsxs(Fragment, { children: [
               playerVenture.kind === "crypto" ? (() => {
@@ -8741,7 +9057,7 @@ function MarketSandbox() {
               ] })
             ] });
           })(),
-          (playerVenture || marketplace || resellShops.length > 0 || factories.length > 0 || warehouses.length > 0) && /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8, overflowX: "auto", paddingBottom: 4, marginBottom: 18 }, children: [
+          (playerVenture || marketplace || resellShops.length > 0 || factories.length > 0 || warehouses.length > 0 || bank) && /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8, overflowX: "auto", paddingBottom: 4, marginBottom: 18 }, children: [
             playerVenture && /* @__PURE__ */ jsxs("button", { onClick: () => setSelectedBizId("venture"), style: { flexShrink: 0, display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", borderRadius: 20, border: `1px solid ${selectedBizId === "venture" ? C.gold : C.border}`, background: selectedBizId === "venture" ? `${C.gold}22` : C.surface, color: selectedBizId === "venture" ? C.gold : C.inkDim, fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap" }, children: [
               playerVenture.kind === "crypto" ? "\u{1FA99}" : "\u{1F3E2}",
               " ",
@@ -8750,6 +9066,10 @@ function MarketSandbox() {
             marketplace && /* @__PURE__ */ jsxs("button", { onClick: () => setSelectedBizId("marketplace"), style: { flexShrink: 0, display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", borderRadius: 20, border: `1px solid ${selectedBizId === "marketplace" ? C.gold : C.border}`, background: selectedBizId === "marketplace" ? `${C.gold}22` : C.surface, color: selectedBizId === "marketplace" ? C.gold : C.inkDim, fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap" }, children: [
               "\u{1F3EC} ",
               marketplace.name
+            ] }),
+            bank && /* @__PURE__ */ jsxs("button", { onClick: () => setSelectedBizId("bank"), style: { flexShrink: 0, display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", borderRadius: 20, border: `1px solid ${selectedBizId === "bank" ? C.gold : C.border}`, background: selectedBizId === "bank" ? `${C.gold}22` : C.surface, color: selectedBizId === "bank" ? C.gold : C.inkDim, fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap" }, children: [
+              "\u{1F3E6} ",
+              bank.name
             ] }),
             resellShops.filter((s) => !s.mergedIntoMarketplace).map((s) => /* @__PURE__ */ jsxs("button", { onClick: () => setSelectedBizId(s.id), style: { flexShrink: 0, display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", borderRadius: 20, border: `1px solid ${selectedBizId === s.id ? C.gold : C.border}`, background: selectedBizId === s.id ? `${C.gold}22` : C.surface, color: selectedBizId === s.id ? C.gold : C.inkDim, fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap" }, children: [
               "\u{1F6CD}\uFE0F ",
@@ -8770,7 +9090,112 @@ function MarketSandbox() {
               " \u0415\u0449\u0451 \u0431\u0438\u0437\u043D\u0435\u0441"
             ] })
           ] }),
-          marketplace && selectedBizId === "marketplace" && (() => {
+          bank && selectedBizId === "bank" && (() => {
+            const secLeft = Math.max(0, Math.ceil((bank.nextCycleAt - Date.now()) / 1e3));
+            const availableTraders = BANK_TRADERS_POOL.filter((t) => !bank.traders.some((h) => h.id === t.id));
+            const rank = bankRank(bank.capital);
+            const bankPortfolioValue = Object.entries(bank.holdings || {}).reduce((s, [cid, h]) => {
+              const c = companies.find((x) => x.id === cid);
+              return s + (c ? c.price * h.qty : 0);
+            }, 0);
+            const bankPortfolioCount = Object.keys(bank.holdings || {}).length;
+            const rateScore = (BANK_NPC_AVG_CREDIT_RATE - bank.creditRate) / BANK_NPC_AVG_CREDIT_RATE;
+            const feeScore = (BANK_NPC_AVG_CARD_FEE - bank.cardFeeRate) / BANK_NPC_AVG_CARD_FEE;
+            const competitiveness = Math.max(-1, Math.min(1, (rateScore + feeScore) / 2));
+            return /* @__PURE__ */ jsxs("div", { style: { marginBottom: 22 }, children: [
+              /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.gold}55`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
+                /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start" }, children: [
+                  /* @__PURE__ */ jsxs("div", { children: [
+                    /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.gold, letterSpacing: 1, textTransform: "uppercase" }, children: "Собственный банк" }),
+                    /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "center", gap: 8 }, children: [
+                      /* @__PURE__ */ jsx("div", { style: { fontSize: 18, fontWeight: 700 }, children: bank.name }),
+                      /* @__PURE__ */ jsx("span", { style: { fontSize: 10, color: rank.color, border: `1px solid ${rank.color}55`, borderRadius: 6, padding: "2px 6px", fontWeight: 700 }, children: rank.label })
+                    ] }),
+                    bank.isPublic && /* @__PURE__ */ jsxs("div", { style: { fontSize: 12, color: C.inkDim, fontFamily: "'JetBrains Mono', monospace" }, children: ["\u0442\u0438\u043A\u0435\u0440 ", bank.stockTicker] })
+                  ] }),
+                  /* @__PURE__ */ jsxs("div", { style: { textAlign: "right" }, children: [
+                    /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 20, fontWeight: 700, color: bank.capital >= 0 ? C.ink : C.red }, children: fmt(bank.capital) }),
+                    /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkDim }, children: "\u043A\u0430\u043F\u0438\u0442\u0430\u043B \u0431\u0430\u043D\u043A\u0430" })
+                  ] })
+                ] }),
+                /* @__PURE__ */ jsxs("div", { style: { fontSize: 11.5, color: C.inkFaint, marginTop: 10 }, children: [
+                  "\u0421\u043B\u0435\u0434\u0443\u044E\u0449\u0438\u0439 \u0446\u0438\u043A\u043B \u0447\u0435\u0440\u0435\u0437 ", secLeft, " \u0441\u0435\u043A \xB7 \u0448\u0442\u0430\u0442 ", BANK_STAFF_COUNT, " \u0447\u0435\u043B \xB7 \u0417\u041F ", fmt(BANK_SALARY_PER_CYCLE), "/\u0446\u0438\u043A\u043B"
+                ] }),
+                bankPortfolioCount > 0 && /* @__PURE__ */ jsxs("div", { style: { fontSize: 11.5, color: C.inkFaint, marginTop: 4 }, children: [
+                  "\u041F\u043E\u0440\u0442\u0444\u0435\u043B\u044C \u0431\u0430\u043D\u043A\u0430: ", fmt(bankPortfolioValue), " (", bankPortfolioCount, " \u0430\u043A\u0442\u0438\u0432\u043E\u0432)"
+                ] }),
+                /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 11, color: C.inkDim, marginTop: 12 }, children: [
+                  /* @__PURE__ */ jsxs("span", { children: ["\u0414\u043E\u0432\u0435\u0440\u0438\u0435 \u043A\u043B\u0438\u0435\u043D\u0442\u043E\u0432: ", Math.round(bank.trust || 50), "%"] }),
+                  /* @__PURE__ */ jsx("span", { style: { color: competitiveness >= 0 ? C.green : C.red }, children: competitiveness >= 0 ? "\u0412\u044B\u0433\u043E\u0434\u043D\u0435\u0435 \u0440\u044B\u043D\u043A\u0430" : "\u0414\u043E\u0440\u043E\u0436\u0435 \u0440\u044B\u043D\u043A\u0430" })
+                ] }),
+                /* @__PURE__ */ jsx("div", { style: { height: 5, background: C.surface2, borderRadius: 3, marginTop: 4, overflow: "hidden" }, children: /* @__PURE__ */ jsx("div", { style: { width: `${Math.round(bank.trust || 50)}%`, height: "100%", background: C.gold } }) })
+              ] }),
+              /* @__PURE__ */ jsxs("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 14 }, children: [
+                /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 12 }, children: [
+                  /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkDim }, children: "\u041A\u0440\u0435\u0434\u0438\u0442\u044B \u0432\u0441\u0435\u0433\u043E" }),
+                  /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 14, fontWeight: 700, color: C.green }, children: fmt(bank.totalInterestEarned) })
+                ] }),
+                /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 12 }, children: [
+                  /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkDim }, children: "\u0422\u0440\u0435\u0439\u0434\u0438\u043D\u0433 \u0432\u0441\u0435\u0433\u043E" }),
+                  /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 14, fontWeight: 700, color: bank.totalTradingPnl >= 0 ? C.green : C.red }, children: fmt(bank.totalTradingPnl) })
+                ] }),
+                /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 12 }, children: [
+                  /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkDim }, children: "\u041A\u043E\u043C\u0438\u0441\u0441\u0438\u0438 \u0441 \u043A\u0430\u0440\u0442" }),
+                  /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 14, fontWeight: 700, color: C.green }, children: fmt(bank.totalCardFees) })
+                ] }),
+                /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 12 }, children: [
+                  /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkDim }, children: "\u041A\u043B\u0438\u0435\u043D\u0442\u043E\u0432 \u043F\u043E \u043A\u0430\u0440\u0442\u0430\u043C" }),
+                  /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 14, fontWeight: 700 }, children: bank.clients })
+                ] })
+              ] }),
+              /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
+                /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, color: C.inkDim, marginBottom: 6 }, children: [
+                  /* @__PURE__ */ jsx("span", { children: "\u0421\u0442\u0430\u0432\u043A\u0430 \u043F\u043E \u043A\u0440\u0435\u0434\u0438\u0442\u0430\u043C" }),
+                  /* @__PURE__ */ jsxs("span", { style: { color: C.ink, fontWeight: 700 }, children: [(bank.creditRate * 100).toFixed(1), "%"] })
+                ] }),
+                /* @__PURE__ */ jsx("input", { type: "range", min: BANK_CREDIT_RATE_MIN, max: BANK_CREDIT_RATE_MAX, step: 0.001, value: bank.creditRate, onChange: (e) => setBankCreditRate(Number(e.target.value)), style: { width: "100%" } }),
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginTop: 4 }, children: "\u041D\u0438\u0436\u0435 \u0441\u0442\u0430\u0432\u043A\u0430 \u2014 \u0431\u043E\u043B\u044C\u0448\u0435 \u043E\u0431\u044A\u0451\u043C \u043A\u0440\u0435\u0434\u0438\u0442\u043E\u0432, \u043D\u043E \u043C\u0435\u043D\u044C\u0448\u0435 \u0434\u043E\u0445\u043E\u0434 \u0441 \u043A\u0430\u0436\u0434\u043E\u0433\u043E" }),
+                /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint }, children: ["\u0421\u0440\u0435\u0434\u043D\u044F\u044F \u043F\u043E \u0440\u044B\u043D\u043A\u0443 \u2248 ", Math.round(BANK_NPC_AVG_CREDIT_RATE * 100), "%"] }),
+                /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, color: C.inkDim, marginTop: 14, marginBottom: 6 }, children: [
+                  /* @__PURE__ */ jsx("span", { children: "\u041A\u043E\u043C\u0438\u0441\u0441\u0438\u044F \u043F\u043E \u043A\u0430\u0440\u0442\u0430\u043C" }),
+                  /* @__PURE__ */ jsxs("span", { style: { color: C.ink, fontWeight: 700 }, children: [(bank.cardFeeRate * 100).toFixed(2), "%"] })
+                ] }),
+                /* @__PURE__ */ jsx("input", { type: "range", min: BANK_CARD_FEE_MIN, max: BANK_CARD_FEE_MAX, step: 0.001, value: bank.cardFeeRate, onChange: (e) => setBankCardFeeRate(Number(e.target.value)), style: { width: "100%" } }),
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginTop: 4 }, children: "\u041D\u0438\u0436\u0435 \u043A\u043E\u043C\u0438\u0441\u0441\u0438\u044F \u2014 \u0431\u043E\u043B\u044C\u0448\u0435 \u043A\u043B\u0438\u0435\u043D\u0442\u043E\u0432 \u043F\u0440\u0438\u0432\u043B\u0435\u043A\u0430\u0435\u0442 \u0440\u0435\u043A\u043B\u0430\u043C\u0430, \u043D\u043E \u043C\u0435\u043D\u044C\u0448\u0435 \u0434\u043E\u0445\u043E\u0434 \u0441 \u043A\u0430\u0436\u0434\u043E\u0433\u043E" }),
+                /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint }, children: ["\u0421\u0440\u0435\u0434\u043D\u044F\u044F \u043F\u043E \u0440\u044B\u043D\u043A\u0443 \u2248 ", (BANK_NPC_AVG_CARD_FEE * 100).toFixed(1), "%. \u041D\u0438\u0436\u0435 \u0440\u044B\u043D\u043A\u0430 \u2014 \u043A\u043B\u0438\u0435\u043D\u0442\u044B \u0443\u0445\u043E\u0434\u044F\u0442 \u043A \u0432\u0430\u043C \u0441\u0430\u043C\u0438, \u0432\u044B\u0448\u0435 \u2014 \u043A \u043A\u043E\u043D\u043A\u0443\u0440\u0435\u043D\u0442\u0430\u043C"] })
+              ] }),
+              /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 8 }, children: "\u0420\u0435\u043A\u043B\u0430\u043C\u0430 \u0431\u0430\u043D\u043A\u0430 \xB7 \u043F\u0440\u0438\u0432\u043B\u0435\u0447\u0435\u043D\u0438\u0435 \u043A\u043B\u0438\u0435\u043D\u0442\u043E\u0432" }),
+                /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8, marginBottom: 8 }, children: [
+                  /* @__PURE__ */ jsx("input", { type: "number", value: bankAdBudget, onChange: (e) => setBankAdBudget(e.target.value), style: { ...inputStyle, flex: 1, marginBottom: 0 } }),
+                  /* @__PURE__ */ jsx("select", { value: bankAdDuration, onChange: (e) => setBankAdDuration(e.target.value), style: { background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, color: C.ink, fontSize: 13, padding: "0 10px" }, children: AD_DURATIONS.map((d) => /* @__PURE__ */ jsx("option", { value: d.id, children: d.label }, d.id)) })
+                ] }),
+                /* @__PURE__ */ jsx("button", { onClick: () => runBankAdCampaign(bankAdBudget, bankAdDuration), disabled: ipCash < (Number(bankAdBudget) || 0) || (Number(bankAdBudget) || 0) < 100, style: actionBtnStyle(ipCash >= (Number(bankAdBudget) || 0) && (Number(bankAdBudget) || 0) >= 100), children: "\u0417\u0430\u043F\u0443\u0441\u0442\u0438\u0442\u044C \u043A\u0430\u043C\u043F\u0430\u043D\u0438\u044E" })
+              ] }),
+              /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }, children: "\u0422\u0440\u0435\u0439\u0434\u0435\u0440\u044B \xB7 \u043A\u043E\u043C\u0438\u0441\u0441\u0438\u044F 5% \u0441 \u043F\u0440\u0438\u0431\u044B\u043B\u0438" }),
+                bank.traders.map((t) => /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: `1px solid ${C.border}` }, children: [
+                  /* @__PURE__ */ jsxs("div", { children: [
+                    /* @__PURE__ */ jsx("div", { style: { fontSize: 13, fontWeight: 600 }, children: t.name }),
+                    /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint }, children: [t.tier, " \xB7 \u0432\u044B\u0434\u0435\u043B\u0435\u043D\u043E ", fmt(t.allocation), " \xB7 P&L ", fmt(t.pnlTotal || 0)] })
+                  ] }),
+                  /* @__PURE__ */ jsx("button", { onClick: () => fireBankTrader(t.id), style: { padding: "6px 10px", borderRadius: 8, border: `1px solid ${C.border}`, background: "transparent", color: C.red, fontSize: 11.5 }, children: "\u0423\u0432\u043E\u043B\u0438\u0442\u044C" })
+                ] }, t.id)),
+                availableTraders.map((t) => {
+                  const locked = t.id === "t_shark" && (bank.maxCapitalReached || bank.capital) < BANK_SHARK_UNLOCK_CAPITAL;
+                  return /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: `1px solid ${C.border}`, opacity: locked ? 0.5 : 1 }, children: [
+                    /* @__PURE__ */ jsxs("div", { children: [
+                      /* @__PURE__ */ jsx("div", { style: { fontSize: 13, fontWeight: 600, color: C.inkDim }, children: t.name }),
+                      /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint }, children: [t.tier, " \xB7 winrate ", Math.round(t.winRate * 100), "% \xB7 \u0440\u0438\u0441\u043A ", Math.round(t.risk * 100), "% \xB7 \u0432\u044B\u0434\u0435\u043B\u0435\u043D\u0438\u0435 ", fmt(t.allocation), locked ? ` \xB7 \u043E\u0442\u043A\u0440\u043E\u0435\u0442\u0441\u044F \u043F\u0440\u0438 \u043A\u0430\u043F\u0438\u0442\u0430\u043B\u0435 ${fmt(BANK_SHARK_UNLOCK_CAPITAL)}` : ""] })
+                    ] }),
+                    /* @__PURE__ */ jsx("button", { onClick: () => hireBankTrader(t.id), disabled: locked, style: { padding: "6px 10px", borderRadius: 8, border: "none", background: locked ? C.surface2 : C.gold, color: locked ? C.inkFaint : "#161207", fontSize: 11.5, fontWeight: 700 }, children: "\u041D\u0430\u043D\u044F\u0442\u044C" })
+                  ] }, t.id);
+                })
+              ] }),
+              bank.capital > 0 && /* @__PURE__ */ jsx("button", { onClick: () => withdrawBankCapital(Math.round(bank.capital * 0.1)), style: { ...actionBtnStyle(true, C.violet) }, children: `\u0412\u044B\u0432\u0435\u0441\u0442\u0438 10% \u043A\u0430\u043F\u0438\u0442\u0430\u043B\u0430 \xB7 ${fmt(Math.round(bank.capital * 0.1))}` })
+            ] });
+          })(),
+                    marketplace && selectedBizId === "marketplace" && (() => {
             const est = marketplaceCycleEstimate(marketplace, marketIndex, bigSellers);
             const stats = marketplace.lastCycleStats;
             const secLeft = Math.max(0, Math.ceil((marketplace.nextCycleAt - Date.now()) / 1e3));
@@ -9941,6 +10366,10 @@ function MarketSandbox() {
               ] }),
               /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginTop: 4 }, children: "Объедини склады, магазин и ООО в собственную площадку — конкурента ZZONE" })
             ] }),
+            !bank && /* @__PURE__ */ jsxs("button", { onClick: () => setBizPath("bank-setup"), style: { ...choiceCardStyle(false), width: "100%", marginBottom: 10, display: "block", borderColor: C.violet + "66" }, children: [
+              /* @__PURE__ */ jsx("div", { style: { fontWeight: 700, fontSize: 15 }, children: "Свой банк" }),
+              /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginTop: 4 }, children: "Кредиты, трейдеры, дебетовые карты — и выход на IPO" })
+            ] }),
             [
               { name: "\u041F\u0435\u0440\u0435\u043A\u0443\u043F \u0430\u0432\u0442\u043E", desc: "\u0421\u043A\u0443\u043F\u043A\u0430 \u0438 \u043F\u0435\u0440\u0435\u043F\u0440\u043E\u0434\u0430\u0436\u0430 \u043C\u0430\u0448\u0438\u043D" },
               { name: "\u041F\u0440\u0438\u0432\u043E\u0437 \u0430\u0432\u0442\u043E \u0438\u0437-\u0437\u0430 \u0433\u0440\u0430\u043D\u0438\u0446\u044B", desc: "\u0418\u043C\u043F\u043E\u0440\u0442 \u0438 \u0440\u0430\u0441\u0442\u0430\u043C\u043E\u0436\u043A\u0430 \u043C\u0430\u0448\u0438\u043D" }
@@ -9970,6 +10399,26 @@ function MarketSandbox() {
                 createMarketplace();
                 setBizPath(null);
               }, disabled: !eligible, style: actionBtnStyle(eligible), children: eligible ? "Создать маркетплейс" : "Условия ещё не выполнены" })
+            ] });
+          })() : bizPath === "bank-setup" ? (() => {
+            const { checks, eligible, totalCost } = bankEligibility();
+            return /* @__PURE__ */ jsxs("div", { children: [
+              /* @__PURE__ */ jsx("button", { onClick: () => setBizPath("real"), style: { background: "none", border: "none", color: C.inkDim, fontSize: 12.5, marginBottom: 12, padding: 0 }, children: "\u2190 \u041D\u0430\u0437\u0430\u0434" }),
+              /* @__PURE__ */ jsxs("div", { style: { textAlign: "center", padding: "8px 0 16px" }, children: [
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 18, fontWeight: 700 }, children: "\u0421\u0432\u043E\u0439 \u0431\u0430\u043D\u043A" }),
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 13, color: C.inkDim, marginTop: 4 }, children: "\u041A\u0440\u0435\u0434\u0438\u0442\u044B, \u0442\u0440\u0435\u0439\u0434\u0435\u0440\u044B, \u043A\u0430\u0440\u0442\u044B \u2014 \u0438 \u0430\u0432\u0442\u043E\u043C\u0430\u0442\u0438\u0447\u0435\u0441\u043A\u043E\u0435 IPO \u043F\u0440\u0438 \u0440\u043E\u0441\u0442\u0435 \u043A\u0430\u043F\u0438\u0442\u0430\u043B\u0430" })
+              ] }),
+              /* @__PURE__ */ jsx("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: checks.map((c) => /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: `1px solid ${C.border}` }, children: [
+                /* @__PURE__ */ jsx("div", { style: { width: 20, height: 20, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", background: c.met ? `${C.green}22` : C.surface2, color: c.met ? C.green : C.inkFaint, fontSize: 12, flexShrink: 0 }, children: c.met ? "\u2713" : "\u25CB" }),
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 13, color: c.met ? C.ink : C.inkDim }, children: c.label })
+              ] }, c.id)) }),
+              /* @__PURE__ */ jsxs("div", { style: { fontSize: 12, color: C.inkFaint, lineHeight: 1.5, marginBottom: 14, textAlign: "center" }, children: [
+                "\u0421\u043F\u0438\u0441\u044B\u0432\u0430\u0435\u0442\u0441\u044F \u0441 \u0441\u0447\u0451\u0442\u0430 \u0418\u041F: ", fmt(BANK_OPEN_COST), " \u043E\u0442\u043A\u0440\u044B\u0442\u0438\u0435 + ", fmt(BANK_MIN_CAPITAL), " \u043A\u0430\u043F\u0438\u0442\u0430\u043B \u0431\u0430\u043D\u043A\u0430 \u043D\u0430 \u043A\u0440\u0435\u0434\u0438\u0442\u044B \u0438 \u0442\u0440\u0435\u0439\u0434\u0438\u043D\u0433"
+              ] }),
+              /* @__PURE__ */ jsx("button", { onClick: () => {
+                openBank();
+                setBizPath(null);
+              }, disabled: !eligible, style: actionBtnStyle(eligible), children: eligible ? `\u041E\u0442\u043A\u0440\u044B\u0442\u044C \u0431\u0430\u043D\u043A \xB7 ${fmt(totalCost)}` : "\u0423\u0441\u043B\u043E\u0432\u0438\u044F \u0435\u0449\u0451 \u043D\u0435 \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D\u044B" })
             ] });
           })() : bizPath === "resell-setup" ? /* @__PURE__ */ jsxs("div", { children: [
             /* @__PURE__ */ jsx("button", { onClick: () => setBizPath("real"), style: { background: "none", border: "none", color: C.inkDim, fontSize: 12.5, marginBottom: 12, padding: 0 }, children: "\u2190 \u041D\u0430\u0437\u0430\u0434" }),
@@ -10332,14 +10781,16 @@ function MarketSandbox() {
                   const acctLabel = round.accountId === "ip" ? "\u0418\u041F" : round.accountId === "grey" ? GREY_BANK.name : round.accountId in muleCards ? `\u0447\u0443\u0436\u0430\u044F \u2022\u2022\u2022\u2022 ${muleCards[round.accountId]?.cardLast4}` : round.accountId in fakeIps ? "\u0447\u0443\u0436\u043E\u0435 \u0418\u041F" : BANK_ACCOUNTS.find((b) => b.id === round.accountId)?.name;
                   const secLeft = Math.max(0, Math.ceil((round.deadlineAt - Date.now()) / 1e3));
                   const poolType = round.accountId === "ip" ? "ip" : round.accountId === "grey" ? "grey" : muleCards[round.accountId] ? "mule" : fakeIps[round.accountId] ? "fakeip" : "personal";
-                  const pool = poolType === "ip" ? ipHoldings : poolType === "grey" ? greyHoldings : poolType === "mule" ? muleHoldings[round.accountId] || {} : poolType === "fakeip" ? fakeIps[round.accountId].holdings || {} : holdings;
+                  const pool = poolType === "grey" ? greyHoldings : poolType === "mule" ? muleHoldings[round.accountId] || {} : poolType === "fakeip" ? fakeIps[round.accountId].holdings || {} : holdings;
+                  const ipPool = ipHoldings;
                   const cryptoOptions = [
                     ...companies.filter((c) => c.sector === "\u041A\u0440\u0438\u043F\u0442\u043E" && !c.isPlayer),
                     ...playerVenture && playerVenture.kind === "crypto" ? [playerVenture] : []
                   ].map((c) => {
                     const isTeher = c.ticker === TEHER_TICKER;
                     const requiredValue = forward * (isTeher ? 1 + TEHER_TRANSFER_FEE : 1);
-                    return { ...c, isTeher, requiredValue, heldQty: pool[c.id]?.qty || 0, heldValue: (pool[c.id]?.qty || 0) * c.price };
+                    const srcPool = poolType === "ip" && !c.isPlayer ? ipPool : pool;
+                    return { ...c, isTeher, requiredValue, heldQty: srcPool[c.id]?.qty || 0, heldValue: (srcPool[c.id]?.qty || 0) * c.price };
                   });
                   const anyEligible = cryptoOptions.some((c) => c.heldValue >= c.requiredValue);
                   return /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.gold}55`, borderRadius: 14, padding: 16, marginBottom: 12 }, children: [
@@ -11607,10 +12058,11 @@ function MarketSandbox() {
             setTradeLeverage(1);
           }, style: { flex: 1, padding: 10, borderRadius: 10, border: "none", background: tradeSide === "sell" ? C.red : C.surface2, color: tradeSide === "sell" ? "#2b0808" : C.inkDim, fontWeight: 700 }, children: "\u041F\u0440\u043E\u0434\u0430\u0442\u044C" })
         ] }),
-        (BANK_ACCOUNTS.some((b) => bankAccounts[b.id]) || ipCash > 0 || greyAccount || Object.keys(muleCards).length > 0) && (() => {
+        (BANK_ACCOUNTS.some((b) => bankAccounts[b.id]) || ipCash > 0 || greyAccount || Object.keys(muleCards).length > 0 || bank) && (() => {
           const options = [
             ...BANK_ACCOUNTS.filter((b) => bankAccounts[b.id] && !bankAccounts[b.id].frozen).map((b) => ({ id: b.id, label: `${b.name} \xB7 \u043A\u0430\u0440\u0442\u0430` })),
             ...ipCash > 0 ? [{ id: "ip", label: "\u0418\u041F" }] : [],
+            ...bank ? [{ id: "bank", label: `${bank.name} \xB7 \u043A\u0430\u043F\u0438\u0442\u0430\u043B` }] : [],
             ...greyAccount && !greyAccount.frozen ? [{ id: "grey", label: `${GREY_BANK.name}` }] : [],
             ...Object.entries(muleCards).filter(([, c]) => !c.frozen).map(([mid, c]) => ({ id: mid, label: `${BANK_ACCOUNTS.find((b) => b.id === c.bankId)?.name} \xB7 \u0447\u0443\u0436\u0430\u044F \u043A\u0430\u0440\u0442\u0430` }))
           ];
@@ -11619,10 +12071,10 @@ function MarketSandbox() {
               setTradeAccount(e.target.value);
               setTradeLeverage(1);
             }, style: { width: "100%", background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, color: C.ink, fontSize: 13, padding: "10px 10px" }, children: options.map((o) => /* @__PURE__ */ jsx("option", { value: o.id, children: o.label }, o.id)) }),
-            /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginTop: 6, textAlign: "center" }, children: tradeIsGrey ? `\u041E\u0444\u0448\u043E\u0440\u043D\u044B\u0439 \u0441\u0447\u0451\u0442: \u043A\u043E\u043C\u0438\u0441\u0441\u0438\u044F \u043F\u043E\u043A\u0443\u043F\u043A\u0430 ${Math.round(GREY_BANK.tradeBuyFee * 100)}% / \u043F\u0440\u043E\u0434\u0430\u0436\u0430 ${Math.round(GREY_BANK.tradeSellFee * 100)}%, \u0431\u0435\u0437 \u043D\u0430\u043B\u043E\u0433\u043E\u0432\u043E\u0439 \u043E\u0442\u0447\u0451\u0442\u043D\u043E\u0441\u0442\u0438.` : tradeAccountResolved === "ip" ? "\u0414\u0435\u043D\u044C\u0433\u0438 \u0438 \u0430\u043A\u0442\u0438\u0432\u044B \u2014 \u043D\u0430 \u0441\u0447\u0451\u0442\u0435 \u0418\u041F. \u041F\u0440\u0438\u0431\u044B\u043B\u044C \u0431\u0435\u0437 \u043E\u0442\u0434\u0435\u043B\u044C\u043D\u043E\u0433\u043E \u043D\u0430\u043B\u043E\u0433\u0430, \u043D\u043E \u0438\u0434\u0451\u0442 \u0432 \u043E\u0431\u043E\u0440\u043E\u0442 \u0438 \u043E\u0431\u043B\u0430\u0433\u0430\u0435\u0442\u0441\u044F \u043A\u0432\u0430\u0440\u0442\u0430\u043B\u044C\u043D\u043E\u0439 \u0434\u0435\u043A\u043B\u0430\u0440\u0430\u0446\u0438\u0435\u0439." : tradeIsBankCard ? "\u041E\u043F\u043B\u0430\u0442\u0430 \u043A\u0430\u0440\u0442\u043E\u0439 \u044D\u0442\u043E\u0433\u043E \u0431\u0430\u043D\u043A\u0430 \u2014 \u0430\u043A\u0442\u0438\u0432\u044B \u043F\u043E\u043F\u0430\u0434\u0443\u0442 \u0432 \u0442\u0432\u043E\u0439 \u043E\u0431\u044B\u0447\u043D\u044B\u0439 \u043B\u0438\u0447\u043D\u044B\u0439 \u043F\u043E\u0440\u0442\u0444\u0435\u043B\u044C." : tradeIsMule ? "\u041E\u043F\u043B\u0430\u0442\u0430 \u0447\u0443\u0436\u043E\u0439 \u043A\u0430\u0440\u0442\u043E\u0439 \u2014 \u043F\u043E\u043A\u0443\u043F\u043A\u0430 \u043D\u0435 \u043F\u0440\u0438\u0432\u044F\u0437\u0430\u043D\u0430 \u043A \u0442\u0432\u043E\u0435\u0439 \u043B\u0438\u0447\u043D\u043E\u0441\u0442\u0438, \u0440\u0438\u0441\u043A\u0430 \u0434\u043B\u044F \u0440\u0435\u043F\u0443\u0442\u0430\u0446\u0438\u0438 \u043D\u0435\u0442." : "\u0414\u0435\u043D\u044C\u0433\u0438 \u0438 \u0430\u043A\u0442\u0438\u0432\u044B \u2014 \u043B\u0438\u0447\u043D\u044B\u0435. \u041F\u0440\u0438\u0431\u044B\u043B\u044C \u043E\u0431\u043B\u0430\u0433\u0430\u0435\u0442\u0441\u044F \u043D\u0430\u043B\u043E\u0433\u043E\u043C 13% \u043F\u0440\u0438 \u043F\u0440\u043E\u0434\u0430\u0436\u0435." })
+            /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginTop: 6, textAlign: "center" }, children: tradeIsGrey ? `\u041E\u0444\u0448\u043E\u0440\u043D\u044B\u0439 \u0441\u0447\u0451\u0442: \u043A\u043E\u043C\u0438\u0441\u0441\u0438\u044F \u043F\u043E\u043A\u0443\u043F\u043A\u0430 ${Math.round(GREY_BANK.tradeBuyFee * 100)}% / \u043F\u0440\u043E\u0434\u0430\u0436\u0430 ${Math.round(GREY_BANK.tradeSellFee * 100)}%, \u0431\u0435\u0437 \u043D\u0430\u043B\u043E\u0433\u043E\u0432\u043E\u0439 \u043E\u0442\u0447\u0451\u0442\u043D\u043E\u0441\u0442\u0438.` : tradeAccountResolved === "ip" ? "\u0414\u0435\u043D\u044C\u0433\u0438 \u0438 \u0430\u043A\u0442\u0438\u0432\u044B \u2014 \u043D\u0430 \u0441\u0447\u0451\u0442\u0435 \u0418\u041F. \u041F\u0440\u0438\u0431\u044B\u043B\u044C \u0431\u0435\u0437 \u043E\u0442\u0434\u0435\u043B\u044C\u043D\u043E\u0433\u043E \u043D\u0430\u043B\u043E\u0433\u0430, \u043D\u043E \u0438\u0434\u0451\u0442 \u0432 \u043E\u0431\u043E\u0440\u043E\u0442 \u0438 \u043E\u0431\u043B\u0430\u0433\u0430\u0435\u0442\u0441\u044F \u043A\u0432\u0430\u0440\u0442\u0430\u043B\u044C\u043D\u043E\u0439 \u0434\u0435\u043A\u043B\u0430\u0440\u0430\u0446\u0438\u0435\u0439." : tradeIsBankCard ? "\u041E\u043F\u043B\u0430\u0442\u0430 \u043A\u0430\u0440\u0442\u043E\u0439 \u044D\u0442\u043E\u0433\u043E \u0431\u0430\u043D\u043A\u0430 \u2014 \u0430\u043A\u0442\u0438\u0432\u044B \u043F\u043E\u043F\u0430\u0434\u0443\u0442 \u0432 \u0442\u0432\u043E\u0439 \u043E\u0431\u044B\u0447\u043D\u044B\u0439 \u043B\u0438\u0447\u043D\u044B\u0439 \u043F\u043E\u0440\u0442\u0444\u0435\u043B\u044C." : tradeIsMule ? "\u041E\u043F\u043B\u0430\u0442\u0430 \u0447\u0443\u0436\u043E\u0439 \u043A\u0430\u0440\u0442\u043E\u0439 \u2014 \u043F\u043E\u043A\u0443\u043F\u043A\u0430 \u043D\u0435 \u043F\u0440\u0438\u0432\u044F\u0437\u0430\u043D\u0430 \u043A \u0442\u0432\u043E\u0435\u0439 \u043B\u0438\u0447\u043D\u043E\u0441\u0442\u0438, \u0440\u0438\u0441\u043A\u0430 \u0434\u043B\u044F \u0440\u0435\u043F\u0443\u0442\u0430\u0446\u0438\u0438 \u043D\u0435\u0442." : tradeIsBank ? "\u041E\u043F\u043B\u0430\u0442\u0430 \u0441 \u043A\u0430\u043F\u0438\u0442\u0430\u043B\u0430 \u0431\u0430\u043D\u043A\u0430 \u2014 \u0430\u043A\u0442\u0438\u0432\u044B \u043F\u043E\u043F\u0430\u0434\u0443\u0442 \u0432 \u043F\u043E\u0440\u0442\u0444\u0435\u043B\u044C \u0431\u0430\u043D\u043A\u0430, \u043E\u0442\u0434\u0435\u043B\u044C\u043D\u043E \u043E\u0442 \u043B\u0438\u0447\u043D\u044B\u0445." : "\u0414\u0435\u043D\u044C\u0433\u0438 \u0438 \u0430\u043A\u0442\u0438\u0432\u044B \u2014 \u043B\u0438\u0447\u043D\u044B\u0435. \u041F\u0440\u0438\u0431\u044B\u043B\u044C \u043E\u0431\u043B\u0430\u0433\u0430\u0435\u0442\u0441\u044F \u043D\u0430\u043B\u043E\u0433\u043E\u043C 13% \u043F\u0440\u0438 \u043F\u0440\u043E\u0434\u0430\u0436\u0435." })
           ] });
         })(),
-        tradeSide === "buy" && !tradeIsIp && !tradeIsGrey && /* @__PURE__ */ jsx("div", { style: { display: "flex", gap: 6, marginBottom: 10 }, children: [1, 5, 10, 20].map((lev) => /* @__PURE__ */ jsx("button", { onClick: () => setTradeLeverage(lev), style: { flex: 1, padding: "8px 0", borderRadius: 9, border: `1px solid ${tradeLeverage === lev ? C.gold : C.border}`, background: tradeLeverage === lev ? `${C.gold}22` : C.surface2, color: tradeLeverage === lev ? C.gold : C.inkDim, fontWeight: 700, fontSize: 12.5 }, children: lev === 1 ? "\u0411\u0435\u0437 \u043F\u043B\u0435\u0447\u0430" : `\xD7${lev}` }, lev)) }),
+        tradeSide === "buy" && !tradeIsIp && !tradeIsGrey && !tradeIsBank && /* @__PURE__ */ jsx("div", { style: { display: "flex", gap: 6, marginBottom: 10 }, children: [1, 5, 10, 20].map((lev) => /* @__PURE__ */ jsx("button", { onClick: () => setTradeLeverage(lev), style: { flex: 1, padding: "8px 0", borderRadius: 9, border: `1px solid ${tradeLeverage === lev ? C.gold : C.border}`, background: tradeLeverage === lev ? `${C.gold}22` : C.surface2, color: tradeLeverage === lev ? C.gold : C.inkDim, fontWeight: 700, fontSize: 12.5 }, children: lev === 1 ? "\u0411\u0435\u0437 \u043F\u043B\u0435\u0447\u0430" : `\xD7${lev}` }, lev)) }),
         /* @__PURE__ */ jsx("div", { style: { display: "flex", justifyContent: "flex-end", marginBottom: 6 }, children: /* @__PURE__ */ jsx("button", { onClick: () => {
           setTradeQtyMode((m) => m === "qty" ? "amount" : "qty");
           setTradeAmountInput("");
@@ -11674,7 +12126,7 @@ function MarketSandbox() {
           pct,
           "%"
         ] }, pct)) }),
-        tradeSide === "buy" && tradeLeverage > 1 && !tradeIsIp && !tradeIsGrey ? /* @__PURE__ */ jsxs(Fragment, { children: [
+        tradeSide === "buy" && tradeLeverage > 1 && !tradeIsIp && !tradeIsGrey && !tradeIsBank ? /* @__PURE__ */ jsxs(Fragment, { children: [
           /* @__PURE__ */ jsxs("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 6, display: "flex", justifyContent: "space-between" }, children: [
             /* @__PURE__ */ jsxs("span", { children: [
               "\u041C\u0430\u0440\u0436\u0430 (\xD7",
@@ -11697,7 +12149,11 @@ function MarketSandbox() {
           tradeImpactPct.toFixed(1),
           "%"
         ] }),
-        tradeSide === "sell" && !tradeIsIp && !tradeIsGrey && !tradeIsBankCard && !tradeIsMule && (selectedCompany.price - (holdings[selectedCompany.id]?.avgCost || 0)) * tradeQty > 0 && /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkFaint, marginBottom: 10 }, children: [
+        tradeSide === "sell" && tradeIsOwnPool && /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint, marginBottom: 8, textAlign: "right" }, children: [
+          "\u041C\u0430\u043A\u0441\u0438\u043C\u0430\u043B\u044C\u043D\u043E \u0437\u0430 \u0440\u0430\u0437 \u2248 ",
+          fmt((selectedCompany.poolUsd || 0) * SELL_MAX_POOL_FRACTION)
+        ] }),
+        tradeSide === "sell" && !tradeIsIp && !tradeIsGrey && !tradeIsBankCard && !tradeIsMule && !tradeIsBank && (selectedCompany.price - (holdings[selectedCompany.id]?.avgCost || 0)) * tradeQty > 0 && /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkFaint, marginBottom: 10 }, children: [
           "\u041D\u0430\u0447\u0438\u0441\u043B\u0438\u0442\u0441\u044F \u043D\u0430\u043B\u043E\u0433 \u2248 ",
           fmt((selectedCompany.price - (holdings[selectedCompany.id]?.avgCost || 0)) * tradeQty * 0.13),
           " \u2014 \u043E\u043F\u043B\u0430\u0442\u0438\u0442\u044C \u043C\u043E\u0436\u043D\u043E \u0432 \xAB\u041A\u0430\u0431\u0438\u043D\u0435\u0442 \u2192 \u041D\u0430\u043B\u043E\u0433\u0438\xBB"
@@ -11709,14 +12165,14 @@ function MarketSandbox() {
           "button",
           {
             onClick: () => {
-              if (tradeSide === "buy" && tradeLeverage > 1 && !tradeIsIp && !tradeIsGrey) openLeveragedPosition(selectedCompany.id, tradeQty, tradeLeverage, tradeAccountResolved);
+              if (tradeSide === "buy" && tradeLeverage > 1 && !tradeIsIp && !tradeIsGrey && !tradeIsBank) openLeveragedPosition(selectedCompany.id, tradeQty, tradeLeverage, tradeAccountResolved);
               else executeTrade(selectedCompany.id, tradeSide, tradeQty, tradeAccountResolved);
               setTradeQty(1);
             },
             disabled: tradeQty < 1 || tradeSide === "sell" && assetsFrozen || (tradeSide === "buy" ? false : selectedHeld < tradeQty),
             style: { width: "100%", padding: 14, borderRadius: 12, border: "none", fontWeight: 700, background: tradeSide === "buy" ? C.green : C.red, color: "#0B0E14" },
             children: [
-              tradeSide === "buy" ? tradeLeverage > 1 && !tradeIsIp && !tradeIsGrey ? `\u041E\u0442\u043A\u0440\u044B\u0442\u044C \u043F\u043E\u0437\u0438\u0446\u0438\u044E \xD7${tradeLeverage}` : "\u041A\u0443\u043F\u0438\u0442\u044C" : "\u041F\u0440\u043E\u0434\u0430\u0442\u044C",
+              tradeSide === "buy" ? tradeLeverage > 1 && !tradeIsIp && !tradeIsGrey && !tradeIsBank ? `\u041E\u0442\u043A\u0440\u044B\u0442\u044C \u043F\u043E\u0437\u0438\u0446\u0438\u044E \xD7${tradeLeverage}` : "\u041A\u0443\u043F\u0438\u0442\u044C" : "\u041F\u0440\u043E\u0434\u0430\u0442\u044C",
               " ",
               selectedCompany.ticker
             ]
