@@ -1,4 +1,4 @@
-// Market Sandbox — V2.19.0 (трейдеры банка: убрано фиксированное выделение по пресету — теперь наём бесплатный, сумму выделения задаёшь вручную полем ввода у каждого трейдера, ровно как кредитный пул; деньги реально списываются/возвращаются со счёта банка при изменении суммы и при увольнении.)
+// Market Sandbox — V2.20.0 (найден и исправлен корневой баг: bankRef.current синхронизировался с состоянием bank внутри useEffect с зависимостью [marketplace] вместо [bank] — из-за этого bankRef.current почти всегда оставался null/устаревшим, и ВСЕ функции банка, которые его читают (найм/увольнение трейдера, выделение суммы, внесение/снятие со счёта, реклама, IPO, а также сам 30-минутный цикл банка) молча ничего не делали. Разнёс синхронизацию на два отдельных useEffect. Проверено end-to-end в headless-браузере (Playwright): найм, выделение суммы трейдеру, увольнение, перевод ИП↔банк в обе стороны, рекламная кампания — всё подтверждено по факту изменения чисел на экране, а не только по отсутствию ошибок.)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -2290,8 +2290,10 @@ function MarketSandbox() {
   }, [playerSocialProfile]);
   useEffect(() => {
     marketplaceRef.current = marketplace;
-    bankRef.current = bank;
   }, [marketplace]);
+  useEffect(() => {
+    bankRef.current = bank;
+  }, [bank]);
   useEffect(() => {
     zzoneBizRef.current = zzoneBiz;
   }, [zzoneBiz]);
