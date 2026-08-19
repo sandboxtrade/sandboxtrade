@@ -921,6 +921,7 @@ var BANK_CREDIT_RATE_MIN = 0.005;
 var BANK_CREDIT_RATE_MAX = 0.12;
 var BANK_CREDIT_BASE_DEMAND = 3.5e6;
 var BANK_CREDIT_CAP_FRACTION = 4;
+var BANK_LOAN_REPAY_FRACTION = 0.12;
 var BANK_CARD_FEE_MIN = 0.005;
 var BANK_CARD_FEE_MAX = 0.04;
 var BANK_CARD_BASE_TRANSFER_VOL = 2600;
@@ -935,12 +936,17 @@ var BANK_TRADERS_POOL = [
 ];
 function bankTraderCommission() { return 0.05; }
 function estimateBankCycle(bank) {
-  if (!bank) return { creditIncome: 0, tradingPnl: 0, cardIncome: 0, depositInterest: 0, salaryPaid: BANK_SALARY_PER_CYCLE, net: 0 };
+  if (!bank) return { creditIncome: 0, newLoansIssued: 0, principalRepaid: 0, tradingPnl: 0, cardIncome: 0, depositInterest: 0, salaryPaid: BANK_SALARY_PER_CYCLE, net: 0, projectedOutstanding: 0 };
   const normalized = (bank.creditRate - BANK_CREDIT_RATE_MIN) / (BANK_CREDIT_RATE_MAX - BANK_CREDIT_RATE_MIN || 1);
   const demandFactor = 1 - normalized * 0.8;
   const creditDemand = BANK_CREDIT_BASE_DEMAND * demandFactor;
-  const creditVolume = Math.max(0, Math.min(bank.creditPoolAllocated || 0, creditDemand, Math.max(0, bank.capital)));
-  const creditIncome = creditVolume * bank.creditRate;
+  const currentOutstanding = bank.creditOutstanding || 0;
+  const targetOutstanding = Math.max(0, Math.min(bank.creditPoolAllocated || 0, creditDemand));
+  const desiredNewLoans = Math.max(0, targetOutstanding - currentOutstanding);
+  const newLoansIssued = Math.min(desiredNewLoans, Math.max(0, bank.capital));
+  const principalRepaid = currentOutstanding * BANK_LOAN_REPAY_FRACTION;
+  const creditIncome = currentOutstanding * bank.creditRate;
+  const projectedOutstanding = Math.max(0, currentOutstanding + newLoansIssued - principalRepaid);
   const tradingPnl = (bank.traders || []).reduce((sum, t) => {
     const winMid = t.risk * 1.5 * (1 - bankTraderCommission());
     const lossMid = t.risk * 0.45;
@@ -949,8 +955,8 @@ function estimateBankCycle(bank) {
   const cardIncome = bank.clients * BANK_CARD_BASE_TRANSFER_VOL * bank.cardFeeRate;
   const depositInterest = (bank.deposits || []).reduce((sum, d) => sum + d.principal * d.ratePerCycle, 0);
   const salaryPaid = BANK_SALARY_PER_CYCLE;
-  const net = creditIncome + tradingPnl + cardIncome - depositInterest - salaryPaid;
-  return { creditIncome, tradingPnl, cardIncome, depositInterest, salaryPaid, net };
+  const net = creditIncome - newLoansIssued + principalRepaid + tradingPnl + cardIncome - depositInterest - salaryPaid;
+  return { creditIncome, newLoansIssued, principalRepaid, tradingPnl, cardIncome, depositInterest, salaryPaid, net, projectedOutstanding };
 }
 var BANK_NPC_AVG_CREDIT_RATE = 0.09;
 var BANK_NPC_AVG_CARD_FEE = 0.025;
@@ -2617,7 +2623,7 @@ function MarketSandbox() {
     setIpBankRating(typeof data.ipBankRating === "number" ? data.ipBankRating : 50);
     setReputation(typeof data.reputation === "number" ? data.reputation : 100);
     setPlayerSocialProfile(data.playerSocialProfile && typeof data.playerSocialProfile === "object" ? { trust: typeof data.playerSocialProfile.trust === "number" ? data.playerSocialProfile.trust : 50, postLog: Array.isArray(data.playerSocialProfile.postLog) ? data.playerSocialProfile.postLog : [], lastPostAt: data.playerSocialProfile.lastPostAt || 0 } : { trust: 50, postLog: [], lastPostAt: 0 });
-    setBank(data.bank && typeof data.bank === "object" ? { trust: 50, maxCapitalReached: data.bank.capital || BANK_MIN_CAPITAL, holdings: {}, creditPoolAllocated: 0, depositRates: { short: DEPOSIT_TARIFFS[0].rateMin, mid: DEPOSIT_TARIFFS[1].rateMin, long: DEPOSIT_TARIFFS[2].rateMin }, deposits: [], totalDepositInterestPaid: 0, totalDepositPrincipalReturned: 0, totalDepositsOpened: 0, missedDepositPayments: 0, lastCycleBreakdown: null, ...data.bank } : null);
+    setBank(data.bank && typeof data.bank === "object" ? { trust: 50, maxCapitalReached: data.bank.capital || BANK_MIN_CAPITAL, holdings: {}, creditPoolAllocated: 0, depositRates: { short: DEPOSIT_TARIFFS[0].rateMin, mid: DEPOSIT_TARIFFS[1].rateMin, long: DEPOSIT_TARIFFS[2].rateMin }, deposits: [], totalDepositInterestPaid: 0, totalDepositPrincipalReturned: 0, totalDepositsOpened: 0, missedDepositPayments: 0, lastCycleBreakdown: null, creditOutstanding: 0, ...data.bank } : null);
     setMarketplace(data.marketplace && typeof data.marketplace === "object" ? (() => {
       const saved = data.marketplace;
       return {
@@ -4559,8 +4565,15 @@ function MarketSandbox() {
       const normalized = (b.creditRate - BANK_CREDIT_RATE_MIN) / (BANK_CREDIT_RATE_MAX - BANK_CREDIT_RATE_MIN || 1);
       const demandFactor = 1 - normalized * 0.8;
       const creditDemand = BANK_CREDIT_BASE_DEMAND * demandFactor;
-      const creditVolume = Math.max(0, Math.min(b.creditPoolAllocated || 0, creditDemand, Math.max(0, b.capital)));
-      const creditIncome = Math.round(creditVolume * b.creditRate);
+      // ---- кредитный портфель как реальный баланс: выдача реально списывает со счёта, погашение реально возвращает ----
+      const currentOutstanding = b.creditOutstanding || 0;
+      const targetOutstanding = Math.max(0, Math.min(b.creditPoolAllocated || 0, creditDemand));
+      const desiredNewLoans = Math.max(0, targetOutstanding - currentOutstanding);
+      const newLoansIssued = Math.round(Math.min(desiredNewLoans, Math.max(0, b.capital)));
+      const principalRepaid = Math.round(currentOutstanding * BANK_LOAN_REPAY_FRACTION);
+      const creditIncome = Math.round(currentOutstanding * b.creditRate);
+      const newOutstanding = Math.max(0, currentOutstanding + newLoansIssued - principalRepaid);
+      const creditCapitalDelta = -newLoansIssued + principalRepaid + creditIncome;
       let tradingPnl = 0;
       const newTraders = b.traders.map((t) => {
         const win = Math.random() < t.winRate;
@@ -4626,7 +4639,7 @@ function MarketSandbox() {
         eventClientsDelta = ev.clientsDelta || 0;
         eventPost = ev;
       }
-      const newCapital = b.capital - BANK_SALARY_PER_CYCLE + creditIncome + tradingPnl + cardIncome + eventCapitalDelta + depositCapitalDelta;
+      const newCapital = b.capital - BANK_SALARY_PER_CYCLE + creditCapitalDelta + tradingPnl + cardIncome + eventCapitalDelta + depositCapitalDelta;
       const cycleProfitable = newCapital - eventCapitalDelta >= b.capital;
       const newTrust = Math.max(0, Math.min(100, (b.trust || 50) + (cycleProfitable ? 0.3 : -0.5) + eventTrustDelta - missedDeposits.length * 2));
       const finalClients = Math.max(0, newClients + eventClientsDelta);
@@ -4645,6 +4658,7 @@ function MarketSandbox() {
         maxCapitalReached: Math.max(prev.maxCapitalReached || 0, newCapital),
         traders: newTraders,
         deposits: survivingDeposits,
+        creditOutstanding: newOutstanding,
         totalInterestEarned: prev.totalInterestEarned + creditIncome,
         totalTradingPnl: prev.totalTradingPnl + tradingPnl,
         totalCardFees: prev.totalCardFees + cardIncome,
@@ -4657,6 +4671,8 @@ function MarketSandbox() {
         lastCycleBreakdown: {
           at: Date.now(),
           creditIncome,
+          newLoansIssued,
+          principalRepaid,
           tradingPnl,
           cardIncome,
           depositInflow,
@@ -6793,6 +6809,7 @@ function MarketSandbox() {
       totalDepositsOpened: 0,
       missedDepositPayments: 0,
       lastCycleBreakdown: null,
+      creditOutstanding: 0,
       traders: [],
       totalInterestEarned: 0,
       totalTradingPnl: 0,
@@ -9276,10 +9293,16 @@ function MarketSandbox() {
             const bankCycleFraction = Math.min(1, Math.max(0, 1 - secLeft / (BANK_CYCLE_MS / 1e3)));
             const bankEstCycle = estimateBankCycle(bank);
             const bankLiveNet = Math.round(bankEstCycle.net * bankCycleFraction);
-            const bankLiveCredit = Math.round(bankEstCycle.creditIncome * bankCycleFraction);
+            const bankLiveNewLoans = Math.round(bankEstCycle.newLoansIssued * bankCycleFraction);
+            const bankLiveRepaid = Math.round(bankEstCycle.principalRepaid * bankCycleFraction);
+            const bankLiveInterest = Math.round(bankEstCycle.creditIncome * bankCycleFraction);
+            const bankLiveOutstanding = Math.round((bank.creditOutstanding || 0) + (bankEstCycle.newLoansIssued - bankEstCycle.principalRepaid) * bankCycleFraction);
             const bankLiveTrading = Math.round(bankEstCycle.tradingPnl * bankCycleFraction);
             const bankLiveCards = Math.round(bankEstCycle.cardIncome * bankCycleFraction);
             const bankLiveDepositCost = Math.round(bankEstCycle.depositInterest * bankCycleFraction);
+            const bankLiveInterestTotal = Math.round(bank.totalInterestEarned + bankLiveInterest);
+            const bankLiveTradingTotal = Math.round(bank.totalTradingPnl + bankLiveTrading);
+            const bankLiveCardsTotal = Math.round(bank.totalCardFees + bankLiveCards);
             const availableTraders = BANK_TRADERS_POOL.filter((t) => !bank.traders.some((h) => h.id === t.id));
             const rank = bankRank(bank.capital);
             const bankPortfolioValue = Object.entries(bank.holdings || {}).reduce((s, [cid, h]) => {
@@ -9328,7 +9351,9 @@ function MarketSandbox() {
                 ] }),
                 /* @__PURE__ */ jsx("div", { style: { height: 4, borderRadius: 2, background: C.surface2, overflow: "hidden", marginBottom: 10 }, children: /* @__PURE__ */ jsx("div", { style: { height: "100%", width: `${Math.round(bankCycleFraction * 100)}%`, background: C.gold, transition: "width 0.6s ease" } }) }),
                 [
-                  ["\u041A\u0440\u0435\u0434\u0438\u0442\u044B", bankLiveCredit],
+                  ["\u041D\u043E\u0432\u044B\u0435 \u043A\u0440\u0435\u0434\u0438\u0442\u044B (\u0432\u044B\u0434\u0430\u043D\u043E)", -bankLiveNewLoans],
+                  ["\u041F\u043E\u0433\u0430\u0448\u0435\u043D\u0438\u0435 \u0442\u0435\u043B\u0430", bankLiveRepaid],
+                  ["\u041F\u0440\u043E\u0446\u0435\u043D\u0442\u044B \u043F\u043E \u043A\u0440\u0435\u0434\u0438\u0442\u0430\u043C", bankLiveInterest],
                   ["\u0422\u0440\u0435\u0439\u0434\u0438\u043D\u0433", bankLiveTrading],
                   ["\u041A\u0430\u0440\u0442\u044B", bankLiveCards],
                   ["\u0412\u043A\u043B\u0430\u0434\u044B (\u043D\u0430\u0447\u0438\u0441\u043B\u0435\u043D\u043E)", -bankLiveDepositCost]
@@ -9344,7 +9369,9 @@ function MarketSandbox() {
                   /* @__PURE__ */ jsxs("span", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 13, fontWeight: 700, color: bank.lastCycleBreakdown.netChange >= 0 ? C.green : C.red }, children: [bank.lastCycleBreakdown.netChange >= 0 ? "+" : "", fmt(bank.lastCycleBreakdown.netChange)] })
                 ] }),
                 [
-                  ["\u041A\u0440\u0435\u0434\u0438\u0442\u044B", bank.lastCycleBreakdown.creditIncome],
+                  ["\u041D\u043E\u0432\u044B\u0435 \u043A\u0440\u0435\u0434\u0438\u0442\u044B (\u0432\u044B\u0434\u0430\u043D\u043E)", -(bank.lastCycleBreakdown.newLoansIssued || 0)],
+                  ["\u041F\u043E\u0433\u0430\u0448\u0435\u043D\u0438\u0435 \u0442\u0435\u043B\u0430", bank.lastCycleBreakdown.principalRepaid || 0],
+                  ["\u041F\u0440\u043E\u0446\u0435\u043D\u0442\u044B \u043F\u043E \u043A\u0440\u0435\u0434\u0438\u0442\u0430\u043C", bank.lastCycleBreakdown.creditIncome],
                   ["\u0422\u0440\u0435\u0439\u0434\u0438\u043D\u0433", bank.lastCycleBreakdown.tradingPnl],
                   ["\u041A\u043E\u043C\u0438\u0441\u0441\u0438\u0438 \u0441 \u043A\u0430\u0440\u0442", bank.lastCycleBreakdown.cardIncome],
                   ["\u041D\u043E\u0432\u044B\u0435 \u0432\u043A\u043B\u0430\u0434\u044B", bank.lastCycleBreakdown.depositInflow],
@@ -9359,24 +9386,24 @@ function MarketSandbox() {
               ] }),
               /* @__PURE__ */ jsxs("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 14 }, children: [
                 /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 12 }, children: [
-                  /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkDim }, children: "\u041A\u0440\u0435\u0434\u0438\u0442\u044B \u0432\u0441\u0435\u0433\u043E" }),
-                  /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 14, fontWeight: 700, color: C.green }, children: fmt(bank.totalInterestEarned) })
+                  /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkDim }, children: "\u041F\u0440\u043E\u0446\u0435\u043D\u0442\u044B \u043F\u043E \u043A\u0440\u0435\u0434\u0438\u0442\u0430\u043C \u0432\u0441\u0435\u0433\u043E" }),
+                  /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 14, fontWeight: 700, color: C.green, transition: "all 0.6s ease" }, children: fmt(bankLiveInterestTotal) })
                 ] }),
                 /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 12 }, children: [
                   /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkDim }, children: "\u0422\u0440\u0435\u0439\u0434\u0438\u043D\u0433 \u0432\u0441\u0435\u0433\u043E" }),
-                  /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 14, fontWeight: 700, color: bank.totalTradingPnl >= 0 ? C.green : C.red }, children: fmt(bank.totalTradingPnl) })
+                  /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 14, fontWeight: 700, color: bankLiveTradingTotal >= 0 ? C.green : C.red, transition: "all 0.6s ease" }, children: fmt(bankLiveTradingTotal) })
                 ] }),
                 /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 12 }, children: [
                   /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkDim }, children: "\u041A\u043E\u043C\u0438\u0441\u0441\u0438\u0438 \u0441 \u043A\u0430\u0440\u0442" }),
-                  /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 14, fontWeight: 700, color: C.green }, children: fmt(bank.totalCardFees) })
+                  /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 14, fontWeight: 700, color: C.green, transition: "all 0.6s ease" }, children: fmt(bankLiveCardsTotal) })
                 ] }),
                 /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 12 }, children: [
                   /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkDim }, children: "\u041A\u043B\u0438\u0435\u043D\u0442\u043E\u0432 \u043F\u043E \u043A\u0430\u0440\u0442\u0430\u043C" }),
                   /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 14, fontWeight: 700 }, children: bank.clients })
                 ] }),
                 /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 12 }, children: [
-                  /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkDim }, children: "\u0412 \u043A\u0440\u0435\u0434\u0438\u0442\u0430\u0445 \u0441\u0435\u0439\u0447\u0430\u0441" }),
-                  /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 14, fontWeight: 700 }, children: fmt(Math.max(0, Math.min(bank.creditPoolAllocated || 0, bank.capital))) })
+                  /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkDim }, children: "\u0412\u044B\u0434\u0430\u043D\u043E \u0432 \u043A\u0440\u0435\u0434\u0438\u0442 \u0441\u0435\u0439\u0447\u0430\u0441" }),
+                  /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 14, fontWeight: 700, transition: "all 0.6s ease" }, children: fmt(bankLiveOutstanding) })
                 ] }),
                 /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 12 }, children: [
                   /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkDim }, children: "\u0412\u043E \u0432\u043A\u043B\u0430\u0434\u0430\u0445" }),
