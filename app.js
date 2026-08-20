@@ -1,4 +1,4 @@
-// Market Sandbox — V2.27.0 (Банк — фаза 3: комиссия трейдеров поднята до 10% и больше не удерживается автоматически — начисляется на trader.pnlTotal, выплата теперь ручная кнопкой «Выплатить» (payBankTrader), видно «К выплате» в карточке трейдера. Реклама банка стала вероятностной: ожидаемое число клиентов теперь модифицируется репутацией банка и случайным множителем 0.55–1.45 (не гарантирует фиксированный результат). Цена акций банка (после IPO) больше не прыгает на capital/supply каждый цикл — считается «справедливая» цена из чистого капитала × качественный множитель (репутация/доверие/доля дефолтов), и текущая цена плавно (15% за цикл) подтягивается к ней. Добавлены авто-новости о рекордном капитале банка и об убыточных циклах (>5% капитала).)
+// Market Sandbox — V2.28.0 (Вклады — полная переработка отдельным Deposit Engine, по требованию: убраны 3 тарифа (6/12/24 цикла), теперь ЕДИНЫЙ срок 12 циклов и ОДНА ставка bank.depositRate (0.1%–99%, за весь срок, не за цикл — как в ТЗ: $10,000 под 8% → $10,800 к возврату, $900/цикл). Каждый вклад — контракт {principal, rate, total, payment, paidAmount, cyclesPaid}, total=principal*(1+rate), payment=total/12. Автовыплата ПОЛНОСТЬЮ убрана — банк никогда не списывает деньги сам; выплата только вручную кнопкой «Выплатить» (payDueDeposits), причём строго всё-или-ничего: если capital < суммы к выплате — блокирует и показывает Доступно/Требуется/Дефицит, частичных списаний нет. Изменение ставки не трогает уже открытые вклады (rate фиксируется в момент открытия). Просрочка: вклад остаётся «к выплате» пока не оплачен вручную; через 10 минут (BANK_OVERDUE_GRACE_MS) эскалируется в суд + удар по доверию/репутации (без изменений с прошлой сессии). Добавлена отдельная вкладка «ВКЛАДЫ» внутри банка: сводка (активные вклады / обязательства / к выплате сейчас / следующая выплата / клиенты / ставка) — три числа визуально разделены, как требовалось; список вкладов (топ‑5 + «показать все» + поиск по имени); история вкладов (из общего лога транзакций, отфильтровано по вкладам). bankBalanceSheet.liabilities теперь считается как total-paidAmount по каждому контракту вместо старой формулы через ratePerCycle. Миграция: старые сейвы с depositRates{short/mid/long} и старыми ratePerCycle-вкладами конвертируются в новый формат при загрузке (total/payment/paidAmount восстанавливаются из старых полей).)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -946,8 +946,8 @@ function bankCreditDemandFactor(bank, macro) {
 }
 function bankDepositAttractFactor(bank, macro, rate) {
   const marketRate = BANK_NPC_AVG_DEPOSIT_RATE * bankMarketRateMult(macro);
-  const attract = (rate - marketRate) * 25;
-  const base = Math.max(0.1, 1 + attract);
+  const gap = (rate - marketRate) / marketRate;
+  const base = Math.max(0.1, Math.min(4, 1 + gap * 1.4));
   return base * bankConfidenceMult(bank);
 }
 function bankNplFraction(bank, macro) {
@@ -967,16 +967,10 @@ function bankBalanceSheet(bank, companies) {
   const creditReserve = bank.creditPoolAllocated || 0;
   const creditOutstanding = bank.creditOutstanding || 0;
   const assets = bank.capital + creditReserve + creditOutstanding + tradingCapital + portfolioValue;
-  const liabilities = (bank.deposits || []).reduce((s, d) => {
-    const cyclesLeft = Math.max(0, d.cyclesTotal - d.cyclesPaid);
-    return s + d.principal + cyclesLeft * d.principal * d.ratePerCycle;
-  }, 0);
+  const liabilities = (bank.deposits || []).reduce((s, d) => s + Math.max(0, (d.total ?? d.principal) - (d.paidAmount || 0)), 0);
   const equity = assets - liabilities;
   const now = Date.now();
-  const owedNow = (bank.deposits || []).filter((d) => now >= d.nextPayoutAt).reduce((s, d) => {
-    const isLast = d.cyclesPaid + 1 >= d.cyclesTotal;
-    return s + Math.round(d.principal * d.ratePerCycle) + (isLast ? d.principal : 0);
-  }, 0);
+  const owedNow = (bank.deposits || []).filter((d) => now >= d.nextPayoutAt).reduce((s, d) => s + Math.min(d.payment ?? 0, (d.total ?? d.principal) - (d.paidAmount || 0)), 0);
   const freeLiquidity = bank.capital;
   let liqStatus = "green";
   if (owedNow > 0) {
@@ -1025,7 +1019,10 @@ var DEPOSIT_TARIFFS = [
   { id: "mid", label: "\u0421\u0440\u0435\u0434\u043D\u0438\u0439 (12 \u0446\u0438\u043A\u043B\u043E\u0432)", cycles: 12, rateMin: 0.005, rateMax: 0.022 },
   { id: "long", label: "\u0414\u043E\u043B\u0433\u0438\u0439 (24 \u0446\u0438\u043A\u043B\u0430)", cycles: 24, rateMin: 0.008, rateMax: 0.03 }
 ];
-var BANK_NPC_AVG_DEPOSIT_RATE = 0.012;
+var BANK_DEPOSIT_TERM_CYCLES = 12;
+var BANK_DEPOSIT_RATE_MIN = 0.001;
+var BANK_DEPOSIT_RATE_MAX = 0.99;
+var BANK_NPC_AVG_DEPOSIT_RATE = 0.08;
 var BANK_DEPOSIT_MIN_SIZE = 5e3;
 var BANK_DEPOSIT_MAX_SIZE = 5e4;
 var BANK_DEPOSIT_BASE_INFLOW = 0.14;
@@ -2009,6 +2006,8 @@ function MarketSandbox() {
   const [bank, setBank] = useState(null);
   const [bankAdBudget, setBankAdBudget] = useState("500");
   const [bankAdDuration, setBankAdDuration] = useState("mid");
+  const [depositShowAll, setDepositShowAll] = useState(false);
+  const [depositSearch, setDepositSearch] = useState("");
   const [bankNameInput, setBankNameInput] = useState("\u041C\u043E\u0439 \u0431\u0430\u043D\u043A");
   const [bankTransferAmount, setBankTransferAmount] = useState("");
   const [bankCreditInvestAmount, setBankCreditInvestAmount] = useState("");
@@ -2681,7 +2680,15 @@ function MarketSandbox() {
     setIpBankRating(typeof data.ipBankRating === "number" ? data.ipBankRating : 50);
     setReputation(typeof data.reputation === "number" ? data.reputation : 100);
     setPlayerSocialProfile(data.playerSocialProfile && typeof data.playerSocialProfile === "object" ? { trust: typeof data.playerSocialProfile.trust === "number" ? data.playerSocialProfile.trust : 50, postLog: Array.isArray(data.playerSocialProfile.postLog) ? data.playerSocialProfile.postLog : [], lastPostAt: data.playerSocialProfile.lastPostAt || 0 } : { trust: 50, postLog: [], lastPostAt: 0 });
-    setBank(data.bank && typeof data.bank === "object" ? { trust: 50, reputation: 50, quarterRevenue: 0, quarterEndsAt: Date.now() + QUARTER_MS, totalDefaulted: 0, defaultedSinceCycle: 0, maxCapitalReached: data.bank.capital || BANK_MIN_CAPITAL, holdings: {}, creditPoolAllocated: 0, depositRates: { short: DEPOSIT_TARIFFS[0].rateMin, mid: DEPOSIT_TARIFFS[1].rateMin, long: DEPOSIT_TARIFFS[2].rateMin }, deposits: [], totalDepositInterestPaid: 0, totalDepositPrincipalReturned: 0, totalDepositsOpened: 0, missedDepositPayments: 0, lastCycleBreakdown: null, creditOutstanding: 0, lastTickAt: Date.now(), accum: { creditIncome: 0, newLoansIssued: 0, principalRepaid: 0, tradingPnl: 0, cardIncome: 0, depositInflow: 0, depositInterestPaid: 0, depositPrincipalReturned: 0 }, ...data.bank } : null);
+    if (data.bank && Array.isArray(data.bank.deposits)) {
+      data.bank.deposits = data.bank.deposits.map((d) => d.total !== undefined ? d : (() => {
+        const rate = d.ratePerCycle != null ? d.ratePerCycle * (d.cyclesTotal || BANK_DEPOSIT_TERM_CYCLES) : BANK_NPC_AVG_DEPOSIT_RATE;
+        const total = Math.round(d.principal * (1 + rate));
+        const payment = Math.round(total / (d.cyclesTotal || BANK_DEPOSIT_TERM_CYCLES));
+        return { ...d, rate, total, payment, paidAmount: Math.round((d.cyclesPaid || 0) * payment), cyclesTotal: BANK_DEPOSIT_TERM_CYCLES };
+      })());
+    }
+    setBank(data.bank && typeof data.bank === "object" ? { trust: 50, reputation: 50, quarterRevenue: 0, quarterEndsAt: Date.now() + QUARTER_MS, totalDefaulted: 0, defaultedSinceCycle: 0, maxCapitalReached: data.bank.capital || BANK_MIN_CAPITAL, holdings: {}, creditPoolAllocated: 0, depositRate: BANK_NPC_AVG_DEPOSIT_RATE, deposits: [], totalDepositInterestPaid: 0, totalDepositPrincipalReturned: 0, totalDepositsOpened: 0, missedDepositPayments: 0, lastCycleBreakdown: null, creditOutstanding: 0, lastTickAt: Date.now(), accum: { creditIncome: 0, newLoansIssued: 0, principalRepaid: 0, tradingPnl: 0, cardIncome: 0, depositInflow: 0, depositInterestPaid: 0, depositPrincipalReturned: 0 }, ...data.bank } : null);
     setMarketplace(data.marketplace && typeof data.marketplace === "object" ? (() => {
       const saved = data.marketplace;
       return {
@@ -4662,39 +4669,29 @@ function MarketSandbox() {
       const cardIncome = Math.round(b.clients * BANK_CARD_BASE_TRANSFER_VOL * b.cardFeeRate * dtFrac);
       let depositCapitalDelta = 0;
       let depositInflow = 0;
-      let depositInterestPaid = 0;
-      let depositPrincipalReturned = 0;
       const missedDeposits = [];
       const survivingDeposits = [];
       (b.deposits || []).forEach((d) => {
         if (now < d.nextPayoutAt) { survivingDeposits.push(d); return; }
-        const isLast = d.cyclesPaid + 1 >= d.cyclesTotal;
-        const interestDue = Math.round(d.principal * d.ratePerCycle);
-        const payout = interestDue + (isLast ? d.principal : 0);
-        if (b.capital + depositCapitalDelta >= payout) {
-          depositCapitalDelta -= payout;
-          depositInterestPaid += interestDue;
-          if (isLast) depositPrincipalReturned += d.principal;
-          else survivingDeposits.push({ ...d, cyclesPaid: d.cyclesPaid + 1, nextPayoutAt: now + BANK_CYCLE_MS, overdueSince: null, escalated: false });
-        } else {
-          const overdueSince = d.overdueSince || now;
-          const graceExpired = now - overdueSince > BANK_OVERDUE_GRACE_MS;
-          if (graceExpired && !d.escalated) missedDeposits.push({ ...d, owed: payout });
-          survivingDeposits.push({ ...d, missedPayments: graceExpired ? (d.missedPayments || 0) + 1 : (d.missedPayments || 0), overdueSince, escalated: d.escalated || graceExpired, nextPayoutAt: graceExpired ? now + BANK_CYCLE_MS : d.nextPayoutAt });
-        }
+        const owed = Math.min(d.payment ?? 0, (d.total ?? d.principal) - (d.paidAmount || 0));
+        const overdueSince = d.overdueSince || now;
+        const graceExpired = now - overdueSince > BANK_OVERDUE_GRACE_MS;
+        if (graceExpired && !d.escalated) missedDeposits.push({ ...d, owed });
+        survivingDeposits.push({ ...d, overdueSince, escalated: d.escalated || graceExpired });
       });
       let depositsOpenedThisTick = 0;
-      DEPOSIT_TARIFFS.forEach((t) => {
-        const rate = (b.depositRates && b.depositRates[t.id]) ?? t.rateMin;
-        const inflowMult = bankDepositAttractFactor(b, macroNow, rate);
-        if (Math.random() < BANK_DEPOSIT_BASE_INFLOW * inflowMult * dtFrac) {
-          const principal = Math.round((BANK_DEPOSIT_MIN_SIZE + Math.random() * (BANK_DEPOSIT_MAX_SIZE - BANK_DEPOSIT_MIN_SIZE)) / 100) * 100;
-          survivingDeposits.push({ id: makeId("dep"), tariffId: t.id, npcName: DEPOSIT_NPC_NAMES[Math.floor(Math.random() * DEPOSIT_NPC_NAMES.length)], principal, ratePerCycle: rate, cyclesTotal: t.cycles, cyclesPaid: 0, missedPayments: 0, openedAt: now, nextPayoutAt: now + BANK_CYCLE_MS });
-          depositCapitalDelta += principal;
-          depositInflow += principal;
-          depositsOpenedThisTick += 1;
-        }
-      });
+      const depRate = b.depositRate ?? BANK_NPC_AVG_DEPOSIT_RATE;
+      const inflowMult = bankDepositAttractFactor(b, macroNow, depRate);
+      if (Math.random() < BANK_DEPOSIT_BASE_INFLOW * inflowMult * dtFrac) {
+        const principal = Math.round((BANK_DEPOSIT_MIN_SIZE + Math.random() * (BANK_DEPOSIT_MAX_SIZE - BANK_DEPOSIT_MIN_SIZE)) / 100) * 100;
+        const total = Math.round(principal * (1 + depRate));
+        const payment = Math.round(total / BANK_DEPOSIT_TERM_CYCLES);
+        survivingDeposits.push({ id: makeId("dep"), npcName: DEPOSIT_NPC_NAMES[Math.floor(Math.random() * DEPOSIT_NPC_NAMES.length)], principal, rate: depRate, total, payment, cyclesTotal: BANK_DEPOSIT_TERM_CYCLES, cyclesPaid: 0, paidAmount: 0, openedAt: now, nextPayoutAt: now + BANK_CYCLE_MS, overdueSince: null, escalated: false });
+        depositCapitalDelta += principal;
+        depositInflow += principal;
+        depositsOpenedThisTick += 1;
+        logTx(`Вклад НПС \xB7 открытие`, principal, "in");
+      }
       const capitalDelta = principalRepaid + creditIncome + tradingPnl + cardIncome + depositCapitalDelta;
       const newCapital = b.capital + capitalDelta;
       const turnoverGain = creditIncome + cardIncome + Math.max(0, tradingPnl);
@@ -4721,8 +4718,6 @@ function MarketSandbox() {
         totalInterestEarned: prev.totalInterestEarned + creditIncome,
         totalTradingPnl: prev.totalTradingPnl + tradingPnl,
         totalCardFees: prev.totalCardFees + cardIncome,
-        totalDepositInterestPaid: (prev.totalDepositInterestPaid || 0) + depositInterestPaid,
-        totalDepositPrincipalReturned: (prev.totalDepositPrincipalReturned || 0) + depositPrincipalReturned,
         totalDepositsOpened: (prev.totalDepositsOpened || 0) + depositsOpenedThisTick,
         missedDepositPayments: (prev.missedDepositPayments || 0) + missedDeposits.length,
         accum: {
@@ -4732,8 +4727,8 @@ function MarketSandbox() {
           tradingPnl: (prev.accum?.tradingPnl || 0) + tradingPnl,
           cardIncome: (prev.accum?.cardIncome || 0) + cardIncome,
           depositInflow: (prev.accum?.depositInflow || 0) + depositInflow,
-          depositInterestPaid: (prev.accum?.depositInterestPaid || 0) + depositInterestPaid,
-          depositPrincipalReturned: (prev.accum?.depositPrincipalReturned || 0) + depositPrincipalReturned
+          depositInterestPaid: prev.accum?.depositInterestPaid || 0,
+          depositPrincipalReturned: prev.accum?.depositPrincipalReturned || 0
         }
       } : prev);
       missedDeposits.forEach((d) => {
@@ -6964,7 +6959,7 @@ function MarketSandbox() {
       maxCapitalReached: BANK_MIN_CAPITAL,
       holdings: transferredHoldings,
       creditPoolAllocated: 0,
-      depositRates: { short: DEPOSIT_TARIFFS[0].rateMin, mid: DEPOSIT_TARIFFS[1].rateMin, long: DEPOSIT_TARIFFS[2].rateMin },
+      depositRate: BANK_NPC_AVG_DEPOSIT_RATE,
       deposits: [],
       totalDepositInterestPaid: 0,
       totalDepositPrincipalReturned: 0,
@@ -7013,11 +7008,9 @@ function MarketSandbox() {
     logTx("\u0412\u044B\u0432\u043E\u0434 \u0438\u0437 \u043A\u0440\u0435\u0434\u0438\u0442\u043D\u043E\u0433\u043E \u043E\u0442\u0434\u0435\u043B\u0430", amt, "in");
     setTimeout(saveGame, 50);
   };
-  const setBankDepositRate = (tariffId, rate) => {
-    const t = DEPOSIT_TARIFFS.find((x) => x.id === tariffId);
-    if (!t) return;
-    const clamped = Math.max(0, Number(rate) || 0);
-    setBank((prev) => prev ? { ...prev, depositRates: { ...prev.depositRates, [tariffId]: clamped } } : prev);
+  const setBankDepositRate = (rate) => {
+    const clamped = Math.max(BANK_DEPOSIT_RATE_MIN, Math.min(BANK_DEPOSIT_RATE_MAX, Number(rate) || 0));
+    setBank((prev) => prev ? { ...prev, depositRate: clamped } : prev);
   };
   const hireBankTrader = (traderId) => {
     const b = bankRef.current;
@@ -7078,33 +7071,36 @@ function MarketSandbox() {
     logTx("Внесение на счёт банка \xB7 с ИП", amt, "out");
     setTimeout(saveGame, 50);
   };
-  const settleOverdueDeposits = () => {
+  const payDueDeposits = () => {
     const b = bankRef.current;
     if (!b) return;
     const now = Date.now();
-    let capital = b.capital;
-    let paidInterest = 0;
-    let paidPrincipal = 0;
+    const due = (b.deposits || []).filter((d) => now >= d.nextPayoutAt);
+    const totalDue = due.reduce((s, d) => s + Math.min(d.payment ?? 0, (d.total ?? d.principal) - (d.paidAmount || 0)), 0);
+    if (totalDue <= 0) { notify("Нет вкладов к выплате"); return; }
+    if (b.capital < totalDue) {
+      notify(`Невозможно выплатить \xB7 нужно ${fmt(totalDue)}, доступно ${fmt(b.capital)}`);
+      return;
+    }
+    let paid = 0;
     const nextDeposits = (b.deposits || []).map((d) => {
       if (now < d.nextPayoutAt) return d;
-      const isLast = d.cyclesPaid + 1 >= d.cyclesTotal;
-      const interestDue = Math.round(d.principal * d.ratePerCycle);
-      const payout = interestDue + (isLast ? d.principal : 0);
-      if (capital < payout) return d;
-      capital -= payout;
-      paidInterest += interestDue;
-      if (isLast) { paidPrincipal += d.principal; return null; }
-      return { ...d, cyclesPaid: d.cyclesPaid + 1, nextPayoutAt: now + BANK_CYCLE_MS, overdueSince: null, escalated: false };
+      const owed = Math.min(d.payment ?? 0, (d.total ?? d.principal) - (d.paidAmount || 0));
+      paid += owed;
+      const paidAmount = (d.paidAmount || 0) + owed;
+      const cyclesPaid = (d.cyclesPaid || 0) + 1;
+      if (cyclesPaid >= d.cyclesTotal || paidAmount >= (d.total ?? d.principal) - 1) return null;
+      return { ...d, paidAmount, cyclesPaid, nextPayoutAt: now + BANK_CYCLE_MS, overdueSince: null, escalated: false };
     }).filter(Boolean);
-    if (paidInterest + paidPrincipal <= 0) { notify("\u041D\u0435\u0442 \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u0438\u043B\u0438 \u043D\u0435\u0442 \u0432\u044B\u043F\u043B\u0430\u0442 \u043A \u043F\u043E\u0433\u0430\u0448\u0435\u043D\u0438\u044E"); return; }
     setBank((prev) => prev ? {
       ...prev,
-      capital,
+      capital: prev.capital - paid,
       deposits: nextDeposits,
-      totalDepositInterestPaid: (prev.totalDepositInterestPaid || 0) + paidInterest,
-      totalDepositPrincipalReturned: (prev.totalDepositPrincipalReturned || 0) + paidPrincipal
+      totalDepositInterestPaid: (prev.totalDepositInterestPaid || 0) + Math.max(0, paid - due.reduce((s, d) => s + Math.min(d.principal, d.payment ?? 0), 0)),
+      totalDepositPrincipalReturned: (prev.totalDepositPrincipalReturned || 0) + due.filter((d) => (d.cyclesPaid || 0) + 1 >= d.cyclesTotal).reduce((s, d) => s + d.principal, 0)
     } : prev);
-    notify(`\u0412\u044B\u043F\u043B\u0430\u0447\u0435\u043D\u043E ${fmt(paidInterest + paidPrincipal)} \u043F\u043E \u0432\u043A\u043B\u0430\u0434\u0430\u043C`, true);
+    logTx("Вклады \xB7 выплата", paid, "out");
+    notify(`Выплачено ${fmt(paid)} по вкладам`, true);
     setTimeout(saveGame, 50);
   };
   const startBankIpo = () => {
@@ -9603,7 +9599,7 @@ function MarketSandbox() {
                   /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkDim, marginTop: 8 }, children: ["\u0420\u0435\u043F\u0443\u0442\u0430\u0446\u0438\u044F: ", Math.round(bank.reputation ?? 50), "/100"] }),
                   overdueList.length > 0 && /* @__PURE__ */ jsxs("div", { style: { marginTop: 10 }, children: [
                     /* @__PURE__ */ jsxs("div", { style: { fontSize: 11.5, color: C.red, marginBottom: 8 }, children: ["\u26A0 \u0417\u0430\u043F\u0440\u043E\u0441\u044B \u043D\u0430 \u0432\u044B\u043F\u043B\u0430\u0442\u0443: ", overdueList.length] }),
-                    /* @__PURE__ */ jsx("button", { onClick: settleOverdueDeposits, style: { width: "100%", padding: 10, borderRadius: 10, border: "none", fontWeight: 700, fontSize: 12.5, background: C.red, color: "#fff" }, children: "\u0412\u044B\u043F\u043B\u0430\u0442\u0438\u0442\u044C \u0441\u0440\u043E\u0447\u043D\u044B\u0435 \u0432\u044B\u043F\u043B\u0430\u0442\u044B" })
+                    /* @__PURE__ */ jsx("button", { onClick: payDueDeposits, style: { width: "100%", padding: 10, borderRadius: 10, border: "none", fontWeight: 700, fontSize: 12.5, background: C.red, color: "#fff" }, children: "Выплатить срочные выплаты" })
                   ] })
                 ] });
               })(),
@@ -9626,27 +9622,11 @@ function MarketSandbox() {
                   /* @__PURE__ */ jsx("span", { style: { color: C.inkDim }, children: label }),
                   /* @__PURE__ */ jsxs("span", { style: { fontFamily: "'JetBrains Mono', monospace", color: v >= 0 ? C.green : C.red, transition: "all 0.6s ease" }, children: [v >= 0 ? "+" : "", fmt(v)] })
                 ] }, label)),
-                /* @__PURE__ */ jsxs("div", { style: { fontSize: 10, color: C.inkFaint, marginTop: 6 }, children: ["\u0412\u0441\u0451 \u0432\u044B\u0448\u0435 \u2014 \u0440\u0435\u0430\u043B\u044C\u043D\u044B\u0435 \u0434\u0435\u043D\u044C\u0433\u0438, \u0441\u043F\u0438\u0441\u044B\u0432\u0430\u044E\u0442\u0441\u044F/\u043F\u0440\u0438\u0445\u043E\u0434\u044F\u0442 \u043A\u0430\u0436\u0434\u0443\u044E \u0441\u0435\u043A\u0443\u043D\u0434\u0443. \u0422\u043E\u043B\u044C\u043A\u043E \u0437\u0430\u0440\u043F\u043B\u0430\u0442\u0430 \u0448\u0442\u0430\u0442\u0430 \u0441\u043F\u0438\u0448\u0435\u0442\u0441\u044F \u043E\u0434\u043D\u0438\u043C \u043F\u043B\u0430\u0442\u0435\u0436\u043E\u043C \u0447\u0435\u0440\u0435\u0437 ", secLeft, " \u0441\u0435\u043A"] })
-              ] }),
-              bank.lastCycleBreakdown && /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
-                /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }, children: [
-                  /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, textTransform: "uppercase", letterSpacing: 1 }, children: "\u0418\u0442\u043E\u0433 \u043F\u043E\u0441\u043B\u0435\u0434\u043D\u0435\u0433\u043E \u0437\u0430\u0432\u0435\u0440\u0448\u0451\u043D\u043D\u043E\u0433\u043E \u0446\u0438\u043A\u043B\u0430" }),
-                  /* @__PURE__ */ jsxs("span", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 13, fontWeight: 700, color: bank.lastCycleBreakdown.netChange >= 0 ? C.green : C.red }, children: [bank.lastCycleBreakdown.netChange >= 0 ? "+" : "", fmt(bank.lastCycleBreakdown.netChange)] })
-                ] }),
-                [
-                  ["\u041F\u043E\u0433\u0430\u0448\u0435\u043D\u0438\u0435 \u0442\u0435\u043B\u0430 \u043A\u0440\u0435\u0434\u0438\u0442\u043E\u0432", bank.lastCycleBreakdown.principalRepaid || 0],
-                  ["\u041F\u0440\u043E\u0446\u0435\u043D\u0442\u044B \u043F\u043E \u043A\u0440\u0435\u0434\u0438\u0442\u0430\u043C", bank.lastCycleBreakdown.creditIncome],
-                  ["\u0422\u0440\u0435\u0439\u0434\u0438\u043D\u0433", bank.lastCycleBreakdown.tradingPnl],
-                  ["\u041A\u043E\u043C\u0438\u0441\u0441\u0438\u0438 \u0441 \u043A\u0430\u0440\u0442", bank.lastCycleBreakdown.cardIncome],
-                  ["\u041D\u043E\u0432\u044B\u0435 \u0432\u043A\u043B\u0430\u0434\u044B", bank.lastCycleBreakdown.depositInflow],
-                  ["\u0412\u044B\u043F\u043B\u0430\u0442\u044B \u043F\u043E \u0432\u043A\u043B\u0430\u0434\u0430\u043C", -bank.lastCycleBreakdown.depositInterestPaid],
-                  ["\u0412\u043E\u0437\u0432\u0440\u0430\u0442 \u0442\u0435\u043B\u0430 \u0432\u043A\u043B\u0430\u0434\u043E\u0432", -bank.lastCycleBreakdown.depositPrincipalReturned],
-                  ["\u0417\u0430\u0440\u043F\u043B\u0430\u0442\u0430 \u0448\u0442\u0430\u0442\u0430", -bank.lastCycleBreakdown.salaryPaid],
-                  ["\u0421\u043E\u0431\u044B\u0442\u0438\u0435", bank.lastCycleBreakdown.eventCapitalDelta]
-                ].filter(([, v]) => v !== 0).map(([label, v]) => /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, padding: "4px 0" }, children: [
-                  /* @__PURE__ */ jsx("span", { style: { color: C.inkDim }, children: label }),
-                  /* @__PURE__ */ jsxs("span", { style: { fontFamily: "'JetBrains Mono', monospace", color: v >= 0 ? C.green : C.red }, children: [v >= 0 ? "+" : "", fmt(v)] })
-                ] }, label))
+                /* @__PURE__ */ jsxs("div", { style: { fontSize: 10, color: C.inkFaint, marginTop: 6 }, children: ["\u0412\u0441\u0451 \u0432\u044B\u0448\u0435 \u2014 \u0440\u0435\u0430\u043B\u044C\u043D\u044B\u0435 \u0434\u0435\u043D\u044C\u0433\u0438, \u0441\u043F\u0438\u0441\u044B\u0432\u0430\u044E\u0442\u0441\u044F/\u043F\u0440\u0438\u0445\u043E\u0434\u044F\u0442 \u043A\u0430\u0436\u0434\u0443\u044E \u0441\u0435\u043A\u0443\u043D\u0434\u0443. \u0422\u043E\u043B\u044C\u043A\u043E \u0437\u0430\u0440\u043F\u043B\u0430\u0442\u0430 \u0448\u0442\u0430\u0442\u0430 \u0441\u043F\u0438\u0448\u0435\u0442\u0441\u044F \u043E\u0434\u043D\u0438\u043C \u043F\u043B\u0430\u0442\u0435\u0436\u043E\u043C \u0447\u0435\u0440\u0435\u0437 ", secLeft, " \u0441\u0435\u043A"] }),
+                bank.lastCycleBreakdown && /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 11, color: C.inkFaint, marginTop: 8, paddingTop: 8, borderTop: `1px solid ${C.border}` }, children: [
+                  /* @__PURE__ */ jsx("span", { children: "\u041F\u0440\u043E\u0448\u043B\u044B\u0439 \u0446\u0438\u043A\u043B" }),
+                  /* @__PURE__ */ jsxs("span", { style: { fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: bank.lastCycleBreakdown.netChange >= 0 ? C.green : C.red }, children: [bank.lastCycleBreakdown.netChange >= 0 ? "+" : "", fmt(bank.lastCycleBreakdown.netChange)] })
+                ] })
               ] }),
               /* @__PURE__ */ jsxs("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 14 }, children: [
                 /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 12 }, children: [
@@ -9717,27 +9697,87 @@ function MarketSandbox() {
                 ] }),
                 /* @__PURE__ */ jsx("button", { onClick: () => runBankAdCampaign(bankAdBudget, bankAdDuration), disabled: bank.capital < (Number(bankAdBudget) || 0) || (Number(bankAdBudget) || 0) < 100, style: actionBtnStyle(bank.capital >= (Number(bankAdBudget) || 0) && (Number(bankAdBudget) || 0) >= 100), children: "\u0417\u0430\u043F\u0443\u0441\u0442\u0438\u0442\u044C \u043A\u0430\u043C\u043F\u0430\u043D\u0438\u044E" })
               ] }),
-              /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
-                /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }, children: "\u0412\u043A\u043B\u0430\u0434\u044B \u041D\u041F\u0421 \xB7 \u0441\u0442\u0430\u0432\u043A\u0438 \u0437\u0430 \u0446\u0438\u043A\u043B" }),
-                DEPOSIT_TARIFFS.map((t) => {
-                  const rate = (bank.depositRates && bank.depositRates[t.id]) ?? t.rateMin;
-                  const tariffDeposits = (bank.deposits || []).filter((d) => d.tariffId === t.id);
-                  const sum = tariffDeposits.reduce((s, d) => s + d.principal, 0);
-                  return /* @__PURE__ */ jsxs("div", { style: { marginBottom: 14 }, children: [
+              (() => {
+                const now = Date.now();
+                const deps = bank.deposits || [];
+                const activePrincipal = deps.reduce((s, d) => s + d.principal, 0);
+                const liability = deps.reduce((s, d) => s + Math.max(0, (d.total ?? d.principal) - (d.paidAmount || 0)), 0);
+                const dueNow = deps.filter((d) => now >= d.nextPayoutAt);
+                const dueSum = dueNow.reduce((s, d) => s + Math.min(d.payment ?? 0, (d.total ?? d.principal) - (d.paidAmount || 0)), 0);
+                const upcoming = deps.filter((d) => now < d.nextPayoutAt).sort((a, b) => a.nextPayoutAt - b.nextPayoutAt)[0];
+                const nextIn = upcoming ? Math.max(0, upcoming.nextPayoutAt - now) : null;
+                const fmtCountdown = (ms) => { const s = Math.floor(ms / 1000); const m = Math.floor(s / 60); const h = Math.floor(m / 60); return `${h > 0 ? h + "\u0447 " : ""}${m % 60}:${String(s % 60).padStart(2, "0")}`; };
+                const filtered = deps.filter((d) => !depositSearch || d.npcName.toLowerCase().includes(depositSearch.toLowerCase()) || d.id.includes(depositSearch));
+                const sorted = [...filtered].sort((a, b) => b.openedAt - a.openedAt);
+                const visible = depositShowAll ? sorted : sorted.slice(0, 5);
+                const canPay = dueSum > 0 && bank.capital >= dueSum;
+                const historyItems = transactions.filter((tx) => tx.label.startsWith("\u0412\u043A\u043B\u0430\u0434") || tx.label.startsWith("\u0412\u043A\u043B\u0430\u0434\u044B")).slice(0, 8);
+                return /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
+                  /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 12, textTransform: "uppercase", letterSpacing: 1 }, children: "\u0412\u043A\u043B\u0430\u0434\u044B \xB7 \u0441\u0440\u043E\u043A 12 \u0446\u0438\u043A\u043B\u043E\u0432" }),
+                  /* @__PURE__ */ jsxs("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }, children: [
+                    [["\u0410\u043A\u0442\u0438\u0432\u043D\u044B\u0435 \u0432\u043A\u043B\u0430\u0434\u044B", fmt(activePrincipal), C.ink],
+                     ["\u041E\u0431\u044F\u0437\u0430\u0442\u0435\u043B\u044C\u0441\u0442\u0432\u0430", fmt(liability), C.red],
+                     ["\u041A \u0432\u044B\u043F\u043B\u0430\u0442\u0435 \u0441\u0435\u0439\u0447\u0430\u0441", fmt(dueSum), dueSum > 0 ? C.gold : C.inkDim],
+                     ["\u0421\u043B\u0435\u0434\u0443\u044E\u0449\u0430\u044F \u0432\u044B\u043F\u043B\u0430\u0442\u0430", nextIn != null ? fmtCountdown(nextIn) : "\u2014", C.inkDim],
+                     ["\u0410\u043A\u0442\u0438\u0432\u043D\u044B\u0445 \u043A\u043B\u0438\u0435\u043D\u0442\u043E\u0432", String(deps.length), C.ink],
+                     ["\u0422\u0435\u043A\u0443\u0449\u0430\u044F \u0441\u0442\u0430\u0432\u043A\u0430", `${((bank.depositRate ?? BANK_NPC_AVG_DEPOSIT_RATE) * 100).toFixed(1)}%`, C.ink]
+                    ].map(([label, val, color]) => /* @__PURE__ */ jsxs("div", { children: [
+                      /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkFaint }, children: label }),
+                      /* @__PURE__ */ jsx("div", { style: { fontSize: 15, fontWeight: 700, color, fontFamily: "'JetBrains Mono', monospace" }, children: val })
+                    ] }, label))
+                  ] }),
+                  /* @__PURE__ */ jsxs("div", { style: { background: C.surface2, borderRadius: 12, padding: 12, marginBottom: 14 }, children: [
+                    /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkDim, marginBottom: 6 }, children: "\u0412\u042B\u041F\u041B\u0410\u0422\u042B" }),
+                    canPay ? /* @__PURE__ */ jsx("button", { onClick: payDueDeposits, style: { ...actionBtnStyle(true), marginBottom: 0 }, children: `\u0412\u044B\u043F\u043B\u0430\u0442\u0438\u0442\u044C ${fmt(dueSum)}` }) : dueSum > 0 ? /* @__PURE__ */ jsxs("div", { children: [
+                      /* @__PURE__ */ jsx("div", { style: { padding: 10, borderRadius: 10, background: C.red + "22", color: C.red, fontSize: 12.5, fontWeight: 700, textAlign: "center", marginBottom: 6 }, children: "\u041D\u0415\u0425\u0412\u0410\u0422\u041A\u0410 \u041B\u0418\u041A\u0412\u0418\u0414\u041D\u041E\u0421\u0422\u0418" }),
+                      /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkDim, display: "flex", justifyContent: "space-between" }, children: [
+                        /* @__PURE__ */ jsxs("span", { children: ["\u0414\u043E\u0441\u0442\u0443\u043F\u043D\u043E: ", fmt(bank.capital)] }),
+                        /* @__PURE__ */ jsxs("span", { children: ["\u0422\u0440\u0435\u0431\u0443\u0435\u0442\u0441\u044F: ", fmt(dueSum)] }),
+                        /* @__PURE__ */ jsxs("span", { style: { color: C.red }, children: ["\u0414\u0435\u0444\u0438\u0446\u0438\u0442: ", fmt(dueSum - bank.capital)] })
+                      ] })
+                    ] }) : /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkFaint, textAlign: "center", padding: 8 }, children: "\u041D\u0435\u0447\u0435\u0433\u043E \u0432\u044B\u043F\u043B\u0430\u0447\u0438\u0432\u0430\u0442\u044C \u043F\u0440\u044F\u043C\u043E \u0441\u0435\u0439\u0447\u0430\u0441" })
+                  ] }),
+                  /* @__PURE__ */ jsxs("div", { style: { marginBottom: 14 }, children: [
                     /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, color: C.inkDim, marginBottom: 4 }, children: [
-                      /* @__PURE__ */ jsxs("span", { children: [t.label, " \xB7 ", tariffDeposits.length, " \u0432\u043A\u043B\u0430\u0434\u0447\u0438\u043A\u043E\u0432 \xB7 ", fmt(sum)] }),
-                      /* @__PURE__ */ jsxs("span", { style: { color: C.ink, fontWeight: 700 }, children: [(rate * 100).toFixed(2), "%/\u0446\u0438\u043A\u043B"] })
+                      /* @__PURE__ */ jsx("span", { children: "\u0421\u0422\u0410\u0412\u041A\u0410 \u041F\u041E \u0412\u041A\u041B\u0410\u0414\u0410\u041C (\u0437\u0430 \u0432\u0435\u0441\u044C \u0441\u0440\u043E\u043A)" }),
+                      /* @__PURE__ */ jsxs("span", { style: { color: C.ink, fontWeight: 700 }, children: [((bank.depositRate ?? BANK_NPC_AVG_DEPOSIT_RATE) * 100).toFixed(1), "%"] })
                     ] }),
-                    /* @__PURE__ */ jsx("input", { type: "range", min: t.rateMin, max: t.rateMax * 5, step: 5e-4, value: rate, onChange: (e) => setBankDepositRate(t.id, e.target.value), style: { width: "100%", marginBottom: 6 } }),
+                    /* @__PURE__ */ jsx("input", { type: "range", min: BANK_DEPOSIT_RATE_MIN, max: BANK_DEPOSIT_RATE_MAX, step: 0.001, value: bank.depositRate ?? BANK_NPC_AVG_DEPOSIT_RATE, onChange: (e) => setBankDepositRate(e.target.value), style: { width: "100%", marginBottom: 6 } }),
                     /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "center", gap: 6 }, children: [
-                      /* @__PURE__ */ jsx("input", { type: "number", value: Math.round(rate * 1e4) / 100, onChange: (e) => setBankDepositRate(t.id, (Number(e.target.value) || 0) / 100), onFocus: (e) => e.target.select(), step: 0.1, style: { ...inputStyle, flex: 1, marginBottom: 0, fontFamily: "'JetBrains Mono', monospace" } }),
-                      /* @__PURE__ */ jsx("span", { style: { fontSize: 11.5, color: C.inkFaint, flexShrink: 0 }, children: "% \u0437\u0430 \u0446\u0438\u043A\u043B \xB7 \u0431\u0435\u0437 \u043E\u0433\u0440\u0430\u043D\u0438\u0447\u0435\u043D\u0438\u044F, \u0432\u0432\u043E\u0434\u0438 \u0441\u0432\u043E\u0451" })
-                    ] })
-                  ] }, t.id);
-                }),
-                /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginTop: 4, lineHeight: 1.5 }, children: "\u0412\u044B\u0448\u0435 \u0441\u0442\u0430\u0432\u043A\u0430 \u2014 \u0431\u043E\u043B\u044C\u0448\u0435 \u0432\u043A\u043B\u0430\u0434\u0447\u0438\u043A\u043E\u0432, \u043D\u043E \u0434\u043E\u0440\u043E\u0436\u0435 \u043A\u0430\u0436\u0434\u044B\u0439 \u0446\u0438\u043A\u043B. \u0414\u0435\u043D\u044C\u0433\u0438 \u0432\u043A\u043B\u0430\u0434\u0447\u0438\u043A\u043E\u0432 \u0441\u0440\u0430\u0437\u0443 \u043F\u043E\u043F\u0430\u0434\u0430\u044E\u0442 \u043D\u0430 \u0441\u0447\u0451\u0442 \u0431\u0430\u043D\u043A\u0430. \u041F\u0440\u043E\u0441\u0440\u043E\u0447\u043A\u0430 \u0432\u044B\u043F\u043B\u0430\u0442\u044B \u0433\u0440\u043E\u0437\u0438\u0442 \u0441\u0443\u0434\u043E\u043C." }),
-                bank.missedDepositPayments > 0 && /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.red, marginTop: 6 }, children: ["\u041F\u0440\u043E\u0441\u0440\u043E\u0447\u0435\u043A \u043F\u043E \u0432\u044B\u043F\u043B\u0430\u0442\u0430\u043C: ", bank.missedDepositPayments] })
-              ] }),
+                      /* @__PURE__ */ jsx("input", { type: "number", value: Math.round((bank.depositRate ?? BANK_NPC_AVG_DEPOSIT_RATE) * 1000) / 10, onChange: (e) => setBankDepositRate((Number(e.target.value) || 0) / 100), onFocus: (e) => e.target.select(), step: 0.1, min: 0.1, max: 99, style: { ...inputStyle, flex: 1, marginBottom: 0, fontFamily: "'JetBrains Mono', monospace" } }),
+                      /* @__PURE__ */ jsx("span", { style: { fontSize: 11.5, color: C.inkFaint, flexShrink: 0 }, children: "% \u0437\u0430 \u0432\u0435\u0441\u044C \u0441\u0440\u043E\u043A \xB7 0.1\u201399%" })
+                    ] }),
+                    /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginTop: 6, lineHeight: 1.5 }, children: "\u0418\u0437\u043C\u0435\u043D\u0435\u043D\u0438\u0435 \u0441\u0442\u0430\u0432\u043A\u0438 \u043D\u0435 \u0432\u043B\u0438\u044F\u0435\u0442 \u043D\u0430 \u0443\u0436\u0435 \u043E\u0442\u043A\u0440\u044B\u0442\u044B\u0435 \u0432\u043A\u043B\u0430\u0434\u044B \u2014 \u0442\u043E\u043B\u044C\u043A\u043E \u043D\u0430 \u043D\u043E\u0432\u044B\u0435." }),
+                    bank.missedDepositPayments > 0 && /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.red, marginTop: 6 }, children: ["\u041F\u0440\u043E\u0441\u0440\u043E\u0447\u0435\u043A \u043F\u043E \u0432\u044B\u043F\u043B\u0430\u0442\u0430\u043C: ", bank.missedDepositPayments] })
+                  ] }),
+                  deps.length > 0 && /* @__PURE__ */ jsxs("div", { children: [
+                    /* @__PURE__ */ jsx("input", { type: "text", value: depositSearch, onChange: (e) => setDepositSearch(e.target.value), placeholder: "\u041F\u043E\u0438\u0441\u043A \u043F\u043E \u0438\u043C\u0435\u043D\u0438 NPC", style: { ...inputStyle, fontSize: 12.5, marginBottom: 10 } }),
+                    visible.map((d) => {
+                      const isDue = now >= d.nextPayoutAt;
+                      const remaining = Math.max(0, (d.total ?? d.principal) - (d.paidAmount || 0));
+                      const statusLabel = isDue ? (d.escalated ? "\u041F\u0420\u041E\u0421\u0420\u041E\u0427\u041A\u0410" : "\u041A \u0412\u042B\u041F\u041B\u0410\u0422\u0415") : "\u0410\u041A\u0422\u0418\u0412\u0415\u041D";
+                      const statusColor = isDue ? (d.escalated ? C.red : C.gold) : C.green;
+                      return /* @__PURE__ */ jsxs("div", { style: { padding: "10px 0", borderBottom: `1px solid ${C.border}` }, children: [
+                        /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", marginBottom: 4 }, children: [
+                          /* @__PURE__ */ jsx("span", { style: { fontSize: 13, fontWeight: 600 }, children: d.npcName }),
+                          /* @__PURE__ */ jsx("span", { style: { fontSize: 10.5, fontWeight: 700, color: statusColor }, children: statusLabel })
+                        ] }),
+                        /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkDim }, children: ["\u0412\u043A\u043B\u0430\u0434: ", fmt(d.principal), " \xB7 \u0421\u0442\u0430\u0432\u043A\u0430: ", ((d.rate ?? 0) * 100).toFixed(1), "% \xB7 \u041A \u0432\u043E\u0437\u0432\u0440\u0430\u0442\u0443: ", fmt(d.total ?? d.principal)] }),
+                        /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkDim }, children: ["\u0412\u044B\u043F\u043B\u0430\u0447\u0435\u043D\u043E: ", fmt(d.paidAmount || 0), " \xB7 \u041E\u0441\u0442\u0430\u043B\u043E\u0441\u044C: ", fmt(remaining)] }),
+                        /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkFaint }, children: [isDue ? `\u041A \u0432\u044B\u043F\u043B\u0430\u0442\u0435: ${fmt(Math.min(d.payment ?? 0, remaining))}` : `\u0421\u043B\u0435\u0434\u0443\u044E\u0449\u0430\u044F \u0432\u044B\u043F\u043B\u0430\u0442\u0430: ${fmt(d.payment ?? 0)} \xB7 \u0447\u0435\u0440\u0435\u0437 ${fmtCountdown(Math.max(0, d.nextPayoutAt - now))}`] })
+                      ] }, d.id);
+                    }),
+                    sorted.length > 5 && /* @__PURE__ */ jsx("button", { onClick: () => setDepositShowAll((v) => !v), style: { width: "100%", padding: 8, marginTop: 8, borderRadius: 8, border: `1px solid ${C.border}`, background: "transparent", color: C.inkDim, fontSize: 11.5 }, children: depositShowAll ? "\u0421\u0432\u0435\u0440\u043D\u0443\u0442\u044C" : `\u041F\u043E\u043A\u0430\u0437\u0430\u0442\u044C \u0432\u0441\u0435 (${sorted.length})` })
+                  ] }),
+                  historyItems.length > 0 && /* @__PURE__ */ jsxs("div", { style: { marginTop: 14, paddingTop: 12, borderTop: `1px solid ${C.border}` }, children: [
+                    /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkDim, marginBottom: 6 }, children: "\u0418\u0421\u0422\u041E\u0420\u0418\u042F \u0412\u041A\u041B\u0410\u0414\u041E\u0412" }),
+                    historyItems.map((tx) => /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 11, color: C.inkFaint, padding: "3px 0" }, children: [
+                      /* @__PURE__ */ jsx("span", { children: tx.label }),
+                      /* @__PURE__ */ jsxs("span", { style: { color: tx.dir === "in" ? C.green : C.red }, children: [tx.dir === "in" ? "+" : "\u2212", fmt(tx.amount)] })
+                    ] }, tx.id))
+                  ] })
+                ] });
+              })(),
               /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
                 /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }, children: "\u0422\u0440\u0435\u0439\u0434\u0435\u0440\u044B \xB7 \u043A\u043E\u043C\u0438\u0441\u0441\u0438\u044F 10% \u0441 \u043F\u0440\u0438\u0431\u044B\u043B\u0438, \u0432\u044B\u043F\u043B\u0430\u0442\u0430 \u0432\u0440\u0443\u0447\u043D\u0443\u044E" }),
                 bank.traders.map((t) => {
