@@ -1,4 +1,4 @@
-// Market Sandbox — V2.28.0 (Вклады — полная переработка отдельным Deposit Engine, по требованию: убраны 3 тарифа (6/12/24 цикла), теперь ЕДИНЫЙ срок 12 циклов и ОДНА ставка bank.depositRate (0.1%–99%, за весь срок, не за цикл — как в ТЗ: $10,000 под 8% → $10,800 к возврату, $900/цикл). Каждый вклад — контракт {principal, rate, total, payment, paidAmount, cyclesPaid}, total=principal*(1+rate), payment=total/12. Автовыплата ПОЛНОСТЬЮ убрана — банк никогда не списывает деньги сам; выплата только вручную кнопкой «Выплатить» (payDueDeposits), причём строго всё-или-ничего: если capital < суммы к выплате — блокирует и показывает Доступно/Требуется/Дефицит, частичных списаний нет. Изменение ставки не трогает уже открытые вклады (rate фиксируется в момент открытия). Просрочка: вклад остаётся «к выплате» пока не оплачен вручную; через 10 минут (BANK_OVERDUE_GRACE_MS) эскалируется в суд + удар по доверию/репутации (без изменений с прошлой сессии). Добавлена отдельная вкладка «ВКЛАДЫ» внутри банка: сводка (активные вклады / обязательства / к выплате сейчас / следующая выплата / клиенты / ставка) — три числа визуально разделены, как требовалось; список вкладов (топ‑5 + «показать все» + поиск по имени); история вкладов (из общего лога транзакций, отфильтровано по вкладам). bankBalanceSheet.liabilities теперь считается как total-paidAmount по каждому контракту вместо старой формулы через ratePerCycle. Миграция: старые сейвы с depositRates{short/mid/long} и старыми ratePerCycle-вкладами конвертируются в новый формат при загрузке (total/payment/paidAmount восстанавливаются из старых полей).)
+// Market Sandbox — V2.30.0 (Bank Treasury — фундаментальный аудит и фикс. АУДИТ: bank.capital подтверждён как ЕДИНСТВЕННЫЙ источник истины для свободных денег банка (17 использований, дублей не найдено); creditPoolAllocated/traders[].allocation/holdings — не дубли, а явно обособленные суб-счета, уже корректно суммируются в bankBalanceSheet(). НАЙДЕНА РЕАЛЬНАЯ ПРОБЛЕМА №1: заголовочная карточка банка называла bank.capital (свободные деньги) «капиталом банка», хотя формула капитала (активы−обязательства=bs.equity) считалась только в панели ниже — игрок физически не видел настоящий капитал как главную цифру. Исправлено: хедер теперь показывает bs.equity как «капитал банка» (главная крупная цифра), bank.capital — подписью «свободные деньги» рядом. НАЙДЕНА РЕАЛЬНАЯ ПРОБЛЕМА №2 (корень жалобы на вклады): вероятность нового вклада считалась как BANK_DEPOSIT_BASE_INFLOW(0.14)×mult×dtFrac — при суммировании по всем тикам цикла это давало ожидание 0.14 вкладчика за 30 минут ДАЖЕ ПРИ МАКСИМАЛЬНОЙ ставке (было 0.56 на пределе mult=4). Заменено на BANK_DEPOSIT_LAMBDA_BASE=6 (ожидаемое число вкладчиков за цикл при нейтральной привлекательности) — теперь при выгодной ставке+рекламе реально достигает 60+ за цикл, при слабой ставке падает до <1. Размер вклада — с равномерного $5k-$50k на взвешенное распределение (bankRollDepositSize): 55% $500-3k, 30% $3-12k, 12% $12-40k, 3% редкие киты $40-150k — большинство мелкие, богатые NPC редки, как и просили. Добавлен лёгкий эффект «критический капитал»: если bs.equity отрицателен 2+ цикла подряд — доп. штраф доверию + новость о проверке регулятора (отдельно от уже существующей паники по ликвидности, не путать эти два состояния). Никаких новых денежных состояний не создано — используются исключительно bank.capital + bankBalanceSheet().)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -926,6 +926,35 @@ var BANK_CARD_FEE_MIN = 0.005;
 var BANK_CARD_FEE_MAX = 0.04;
 var BANK_CARD_BASE_TRANSFER_VOL = 2600;
 var BANK_CLIENTS_AD_SQRT_K = 1.5;
+var BANK_MARKETING_DURATION_MS = 10 * 60 * 1e3;
+var BANK_MARKETING_MIN_BUDGET = 100;
+var BANK_MARKETING_MAX_ACTIVE = 3;
+var BANK_MARKETING_STRATEGIES = [
+  { id: "aggressive", label: "\u0410\u0433\u0440\u0435\u0441\u0441\u0438\u0432\u043D\u0430\u044F", reachK: 1.7, boostK: 1.25, varMin: 0.35, varMax: 1.7 },
+  { id: "standard", label: "\u0421\u0442\u0430\u043D\u0434\u0430\u0440\u0442\u043D\u0430\u044F", reachK: 1, boostK: 1, varMin: 0.6, varMax: 1.4 },
+  { id: "targeted", label: "\u0422\u043E\u0447\u0435\u0447\u043D\u0430\u044F", reachK: 0.55, boostK: 1.6, varMin: 0.8, varMax: 1.25 }
+];
+var BANK_MARKETING_PRODUCTS = [
+  { id: "credits", label: "\u041A\u0440\u0435\u0434\u0438\u0442\u044B" },
+  { id: "deposits", label: "\u0412\u043A\u043B\u0430\u0434\u044B" },
+  { id: "cards", label: "\u0414\u0435\u0431\u0435\u0442\u043E\u0432\u044B\u0435 \u043A\u0430\u0440\u0442\u044B" }
+];
+function bankMarketingStrategy(id) {
+  return BANK_MARKETING_STRATEGIES.find((s) => s.id === id) || BANK_MARKETING_STRATEGIES[1];
+}
+function bankMarketingReachTarget(budget, strategy) {
+  return Math.round(Math.sqrt(budget) * strategy.reachK * 140);
+}
+function bankMarketingProgress(campaign, now) {
+  return Math.max(0, Math.min(1, (now - campaign.startedAt) / BANK_MARKETING_DURATION_MS));
+}
+function bankMarketingBoost(campaign, now) {
+  const strat = bankMarketingStrategy(campaign.strategy);
+  const progress = bankMarketingProgress(campaign, now);
+  const reach = Math.round(campaign.reachTarget * progress);
+  const boost = progress * strat.boostK * Math.sqrt(campaign.budget / 1000) * 0.32;
+  return { progress, reach, boost };
+}
 var BANK_IPO_CAPITAL_THRESHOLD = 8e6;
 var BANK_IPO_SUPPLY = 1e7;
 var BANK_TAX_RATE = 0.03;
@@ -1025,7 +1054,15 @@ var BANK_DEPOSIT_RATE_MAX = 0.99;
 var BANK_NPC_AVG_DEPOSIT_RATE = 0.08;
 var BANK_DEPOSIT_MIN_SIZE = 5e3;
 var BANK_DEPOSIT_MAX_SIZE = 5e4;
-var BANK_DEPOSIT_BASE_INFLOW = 0.14;
+var BANK_DEPOSIT_LAMBDA_BASE = 6;
+function bankRollDepositSize() {
+  const r = Math.random();
+  const between = (a, b) => Math.round((a + Math.random() * (b - a)) / 100) * 100;
+  if (r < 0.55) return between(500, 3e3);
+  if (r < 0.85) return between(3e3, 12e3);
+  if (r < 0.97) return between(12e3, 4e4);
+  return between(4e4, 15e4);
+}
 var DEPOSIT_NPC_NAMES = ["\u0418\u0433\u043E\u0440\u044C \u0421\u043C\u0438\u0440\u043D\u043E\u0432", "\u0410\u043B\u0438\u043D\u0430 \u041A\u043E\u0432\u0430\u043B\u0451\u0432\u0430", "\u041F\u0451\u0442\u0440 \u0424\u0451\u0434\u043E\u0440\u043E\u0432", "\u041C\u0430\u0440\u0438\u043D\u0430 \u0412\u043E\u043B\u043A\u043E\u0432\u0430", "\u0414\u0435\u043D\u0438\u0441 \u041E\u0440\u043B\u043E\u0432", "\u041E\u043B\u044C\u0433\u0430 \u041A\u0440\u044B\u043B\u043E\u0432\u0430", "\u0421\u0435\u0440\u0433\u0435\u0439 \u0412\u043E\u043B\u043A\u043E\u0432", "\u041D\u0430\u0442\u0430\u043B\u044C\u044F \u0411\u0435\u043B\u043E\u0432\u0430"];
 var BANK_RANKS = [
   { min: 0, label: "\u0421\u0442\u0430\u0440\u0442\u0430\u043F", color: "#8FA0B3" },
@@ -2004,8 +2041,9 @@ function MarketSandbox() {
   const [playerSocialProfile, setPlayerSocialProfile] = useState({ trust: 50, postLog: [], lastPostAt: 0 });
   const [marketplace, setMarketplace] = useState(null);
   const [bank, setBank] = useState(null);
-  const [bankAdBudget, setBankAdBudget] = useState("500");
-  const [bankAdDuration, setBankAdDuration] = useState("mid");
+  const [bankMktProduct, setBankMktProduct] = useState(null);
+  const [bankMktBudget, setBankMktBudget] = useState("2000");
+  const [bankMktStrategy, setBankMktStrategy] = useState("standard");
   const [depositShowAll, setDepositShowAll] = useState(false);
   const [depositSearch, setDepositSearch] = useState("");
   const [bankNameInput, setBankNameInput] = useState("\u041C\u043E\u0439 \u0431\u0430\u043D\u043A");
@@ -2688,7 +2726,7 @@ function MarketSandbox() {
         return { ...d, rate, total, payment, paidAmount: Math.round((d.cyclesPaid || 0) * payment), cyclesTotal: BANK_DEPOSIT_TERM_CYCLES };
       })());
     }
-    setBank(data.bank && typeof data.bank === "object" ? { trust: 50, reputation: 50, quarterRevenue: 0, quarterEndsAt: Date.now() + QUARTER_MS, totalDefaulted: 0, defaultedSinceCycle: 0, maxCapitalReached: data.bank.capital || BANK_MIN_CAPITAL, holdings: {}, creditPoolAllocated: 0, depositRate: BANK_NPC_AVG_DEPOSIT_RATE, deposits: [], totalDepositInterestPaid: 0, totalDepositPrincipalReturned: 0, totalDepositsOpened: 0, missedDepositPayments: 0, lastCycleBreakdown: null, creditOutstanding: 0, lastTickAt: Date.now(), accum: { creditIncome: 0, newLoansIssued: 0, principalRepaid: 0, tradingPnl: 0, cardIncome: 0, depositInflow: 0, depositInterestPaid: 0, depositPrincipalReturned: 0 }, ...data.bank } : null);
+    setBank(data.bank && typeof data.bank === "object" ? { trust: 50, reputation: 50, quarterRevenue: 0, quarterEndsAt: Date.now() + QUARTER_MS, totalDefaulted: 0, defaultedSinceCycle: 0, maxCapitalReached: data.bank.capital || BANK_MIN_CAPITAL, holdings: {}, creditPoolAllocated: 0, depositRate: BANK_NPC_AVG_DEPOSIT_RATE, deposits: [], totalDepositInterestPaid: 0, totalDepositPrincipalReturned: 0, totalDepositsOpened: 0, totalDepositsAmount: 0, totalLoansIssuedCount: 0, totalLoansIssuedAmount: 0, marketingCampaigns: [], marketingHistory: [], missedDepositPayments: 0, lastCycleBreakdown: null, creditOutstanding: 0, lastTickAt: Date.now(), accum: { creditIncome: 0, newLoansIssued: 0, principalRepaid: 0, tradingPnl: 0, cardIncome: 0, depositInflow: 0, depositInterestPaid: 0, depositPrincipalReturned: 0 }, ...data.bank } : null);
     setMarketplace(data.marketplace && typeof data.marketplace === "object" ? (() => {
       const saved = data.marketplace;
       return {
@@ -4646,7 +4684,12 @@ function MarketSandbox() {
       if (dtMs <= 0) { return; }
       const dtFrac = dtMs / BANK_CYCLE_MS;
       const macroNow = macroRef.current;
-      const demandFactor = bankCreditDemandFactor(b, macroNow);
+      const activeCampaigns = b.marketingCampaigns || [];
+      const campaignBoost = (product) => activeCampaigns.filter((c) => c.product === product).reduce((s, c) => s + bankMarketingBoost(c, now).boost, 0);
+      const creditCampaignBoost = campaignBoost("credits");
+      const depositCampaignBoost = campaignBoost("deposits");
+      const cardsCampaignBoost = campaignBoost("cards");
+      const demandFactor = bankCreditDemandFactor(b, macroNow) * (1 + creditCampaignBoost);
       const creditDemand = BANK_CREDIT_BASE_DEMAND * demandFactor;
       // ---- \u043a\u0440\u0435\u0434\u0438\u0442\u043d\u044b\u0439 \u043e\u0442\u0434\u0435\u043b \u0438\u0437\u043e\u043b\u0438\u0440\u043e\u0432\u0430\u043d \u043e\u0442 \u043e\u0441\u043d\u043e\u0432\u043d\u043e\u0433\u043e \u0441\u0447\u0451\u0442\u0430: \u0434\u0435\u043d\u044c\u0433\u0438 \u0442\u0443\u0434\u0430 \u0432\u043a\u043b\u0430\u0434\u044b\u0432\u0430\u044e\u0442\u0441\u044f \u043e\u0442\u0434\u0435\u043b\u044c\u043d\u044b\u043c \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0435\u043c (investInCredits) \u0438 \u0431\u043e\u043b\u044c\u0448\u0435 \u043d\u0435 \u0442\u0440\u043e\u0433\u0430\u044e\u0442 \u043e\u0441\u043d\u043e\u0432\u043d\u043e\u0439 \u0441\u0447\u0451\u0442; creditPoolAllocated \u0442\u0435\u043f\u0435\u0440\u044c \u0431\u0443\u043a\u0432\u0430\u043b\u044c\u043d\u043e \u0441\u0432\u043e\u0431\u043e\u0434\u043d\u044b\u0439 \u043e\u0441\u0442\u0430\u0442\u043e\u043a \u0432 \u043e\u0442\u0434\u0435\u043b\u0435 (\u00ab\u0432 \u043e\u0431\u043e\u0440\u043e\u0442\u0435, \u043d\u043e \u0435\u0449\u0451 \u043d\u0435 \u0437\u0430\u043d\u044f\u0442\u043e\u00bb), creditOutstanding \u2014 \u0442\u043e, \u0447\u0442\u043e \u0443\u0436\u0435 \u0432\u044b\u0434\u0430\u043d\u043e (\u00ab\u0437\u0430\u043d\u044f\u0442\u043e\u00bb) ----
       const idlePool = Math.max(0, b.creditPoolAllocated || 0);
@@ -4680,25 +4723,54 @@ function MarketSandbox() {
         survivingDeposits.push({ ...d, overdueSince, escalated: d.escalated || graceExpired });
       });
       let depositsOpenedThisTick = 0;
+      let depositsAmountThisTick = 0;
       const depRate = b.depositRate ?? BANK_NPC_AVG_DEPOSIT_RATE;
-      const inflowMult = bankDepositAttractFactor(b, macroNow, depRate);
-      if (Math.random() < BANK_DEPOSIT_BASE_INFLOW * inflowMult * dtFrac) {
-        const principal = Math.round((BANK_DEPOSIT_MIN_SIZE + Math.random() * (BANK_DEPOSIT_MAX_SIZE - BANK_DEPOSIT_MIN_SIZE)) / 100) * 100;
+      const inflowMult = bankDepositAttractFactor(b, macroNow, depRate) * (1 + depositCampaignBoost);
+      if (Math.random() < BANK_DEPOSIT_LAMBDA_BASE * inflowMult * dtFrac) {
+        const principal = bankRollDepositSize();
         const total = Math.round(principal * (1 + depRate));
         const payment = Math.round(total / BANK_DEPOSIT_TERM_CYCLES);
         survivingDeposits.push({ id: makeId("dep"), npcName: DEPOSIT_NPC_NAMES[Math.floor(Math.random() * DEPOSIT_NPC_NAMES.length)], principal, rate: depRate, total, payment, cyclesTotal: BANK_DEPOSIT_TERM_CYCLES, cyclesPaid: 0, paidAmount: 0, openedAt: now, nextPayoutAt: now + BANK_CYCLE_MS, overdueSince: null, escalated: false });
         depositCapitalDelta += principal;
         depositInflow += principal;
         depositsOpenedThisTick += 1;
+        depositsAmountThisTick += principal;
         logTx(`Вклад НПС \xB7 открытие`, principal, "in");
+      }
+      let cardsClientsGained = 0;
+      if (cardsCampaignBoost > 0) {
+        const cardsProb = 0.02 * cardsCampaignBoost * dtFrac * 1e3;
+        if (Math.random() < cardsProb) cardsClientsGained = 1 + (Math.random() < 0.25 ? 1 : 0);
       }
       const capitalDelta = principalRepaid + creditIncome + tradingPnl + cardIncome + depositCapitalDelta;
       const newCapital = b.capital + capitalDelta;
       const turnoverGain = creditIncome + cardIncome + Math.max(0, tradingPnl);
       const escalatedCount = missedDeposits.length;
-      setBank((prev) => prev ? {
+      const finishedNow = activeCampaigns.filter((c) => bankMarketingProgress(c, now) >= 1);
+      const stillActive = activeCampaigns.filter((c) => bankMarketingProgress(c, now) < 1);
+      setBank((prev) => {
+        if (!prev) return prev;
+        const newClients = prev.clients + cardsClientsGained;
+        const newTotalDepositsAmount = (prev.totalDepositsAmount || 0) + depositsAmountThisTick;
+        const newTotalLoansCount = (prev.totalLoansIssuedCount || 0) + (newLoansIssued > 0 ? 1 : 0);
+        const newTotalLoansAmount = (prev.totalLoansIssuedAmount || 0) + newLoansIssued;
+        const reports = finishedNow.map((c) => {
+          if (c.product === "deposits") {
+            const gainedCount = Math.max(0, prev.totalDepositsOpened + depositsOpenedThisTick - c.baseline.count);
+            const gainedAmount = Math.max(0, newTotalDepositsAmount - c.baseline.amount);
+            return { ...c, report: { newCount: gainedCount, amount: gainedAmount, avgSize: gainedCount > 0 ? Math.round(gainedAmount / gainedCount) : 0, cac: gainedCount > 0 ? Math.round(c.budget / gainedCount) : 0 } };
+          }
+          if (c.product === "credits") {
+            const gainedAmount = Math.max(0, newTotalLoansAmount - c.baseline.amount);
+            return { ...c, report: { amount: gainedAmount, projectedIncome: Math.round(gainedAmount * (prev.creditRate || 0)), cac: gainedAmount > 0 ? Math.round(c.budget / (gainedAmount / 1000)) : 0 } };
+          }
+          const gainedClients = Math.max(0, newClients - c.baseline.count);
+          return { ...c, report: { newClients: gainedClients, cac: gainedClients > 0 ? Math.round(c.budget / gainedClients) : 0 } };
+        });
+        return {
         ...prev,
         capital: newCapital,
+        clients: newClients,
         creditOutstanding: newOutstanding,
         creditPoolAllocated: newIdlePool,
         deposits: survivingDeposits,
@@ -4708,6 +4780,8 @@ function MarketSandbox() {
         trust: escalatedCount > 0 ? Math.max(0, (prev.trust || 50) - escalatedCount * 4) : prev.trust,
         reputation: escalatedCount > 0 ? Math.max(0, (prev.reputation || 50) - escalatedCount * 3) : prev.reputation,
         lastTickAt: now,
+        marketingCampaigns: stillActive,
+        marketingHistory: reports.length > 0 ? [...reports, ...(prev.marketingHistory || [])].slice(0, 6) : prev.marketingHistory,
         traders: prev.traders.map((t) => {
           const winMid = t.risk * 1.5;
           const lossMid = t.risk * 0.45;
@@ -4719,6 +4793,9 @@ function MarketSandbox() {
         totalTradingPnl: prev.totalTradingPnl + tradingPnl,
         totalCardFees: prev.totalCardFees + cardIncome,
         totalDepositsOpened: (prev.totalDepositsOpened || 0) + depositsOpenedThisTick,
+        totalDepositsAmount: newTotalDepositsAmount,
+        totalLoansIssuedCount: newTotalLoansCount,
+        totalLoansIssuedAmount: newTotalLoansAmount,
         missedDepositPayments: (prev.missedDepositPayments || 0) + missedDeposits.length,
         accum: {
           creditIncome: (prev.accum?.creditIncome || 0) + creditIncome,
@@ -4730,7 +4807,8 @@ function MarketSandbox() {
           depositInterestPaid: prev.accum?.depositInterestPaid || 0,
           depositPrincipalReturned: prev.accum?.depositPrincipalReturned || 0
         }
-      } : prev);
+      };
+      });
       missedDeposits.forEach((d) => {
         createCourtCase({
           source: "bank_deposit_default",
@@ -4793,6 +4871,16 @@ function MarketSandbox() {
         panicPost = `Клиенты «${b.name}» массово требуют вернуть вклады на фоне слухов о проблемах с ликвидностью`;
       }
       const newEscalatedStreak = bs && bs.liqStatus === "red" ? (b.escalatedStreak || 0) + 1 : 0;
+      const equityCritical = bs && bs.equity < 0;
+      const newEquityCriticalStreak = equityCritical ? (b.equityCriticalStreak || 0) + 1 : 0;
+      let equityCriticalPost = null;
+      let equityTrustHit = 0;
+      if (equityCritical && newEquityCriticalStreak >= 2) {
+        equityTrustHit = 3;
+        if (newEquityCriticalStreak === 2 || newEquityCriticalStreak % 4 === 0) {
+          equityCriticalPost = `«${b.name}» второй цикл подряд работает с отрицательным собственным капиталом — регулятор начал проверку`;
+        }
+      }
       const finalClients = Math.max(0, newClients + eventClientsDelta);
       let isPublic = b.isPublic;
       let stockCompanyId = b.stockCompanyId;
@@ -4807,10 +4895,11 @@ function MarketSandbox() {
         ...prev,
         capital: newCapital,
         clients: finalClients,
-        trust: newTrust,
+        trust: Math.max(0, newTrust - equityTrustHit),
         reputation: newReputation,
         deposits: panicDeposits,
         escalatedStreak: newEscalatedStreak,
+        equityCriticalStreak: newEquityCriticalStreak,
         defaultedSinceCycle: 0,
         maxCapitalReached: Math.max(prev.maxCapitalReached || 0, newCapital),
         totalSalaryPaid: prev.totalSalaryPaid + BANK_SALARY_PER_CYCLE,
@@ -4837,6 +4926,7 @@ function MarketSandbox() {
       } : prev);
       if (eventPost) pushPost({ text: `«${b.name}»: ${eventPost.text}`, positive: eventPost.positive, isMacro: false, importance: 2 });
       if (panicPost) pushPost({ text: panicPost, positive: false, isMacro: false, importance: 3 });
+      if (equityCriticalPost) pushPost({ text: equityCriticalPost, positive: false, isMacro: false, importance: 3 });
       if (nplPost) pushPost({ text: nplPost, positive: false, isMacro: false, importance: 2 });
       const cycleNet = Math.round(accumNet - BANK_SALARY_PER_CYCLE + eventCapitalDelta);
       if (newCapital > (b.maxCapitalReached || 0) * 1.02) {
@@ -6964,6 +7054,11 @@ function MarketSandbox() {
       totalDepositInterestPaid: 0,
       totalDepositPrincipalReturned: 0,
       totalDepositsOpened: 0,
+      totalDepositsAmount: 0,
+      totalLoansIssuedCount: 0,
+      totalLoansIssuedAmount: 0,
+      marketingCampaigns: [],
+      marketingHistory: [],
       missedDepositPayments: 0,
       lastCycleBreakdown: null,
       creditOutstanding: 0,
@@ -7129,23 +7224,35 @@ function MarketSandbox() {
     pushPost({ text: `\xAB${b.name}\xBB \u0432\u044B\u0448\u0435\u043B \u043D\u0430 IPO \u043F\u043E\u0434 \u0442\u0438\u043A\u0435\u0440\u043E\u043C ${stockTicker} \u043F\u043E \u0446\u0435\u043D\u0435 ${fmt(price)}`, positive: true, isMacro: false, importance: 4, ticker: stockTicker });
     setTimeout(saveGame, 50);
   };
-  const runBankAdCampaign = (budgetRaw, durationId) => {
-    const budget = Math.max(100, Math.round(Number(budgetRaw) || 0));
+  const launchBankMarketingCampaign = (product, budgetRaw, strategyId) => {
+    const budget = Math.max(BANK_MARKETING_MIN_BUDGET, Math.round(Number(budgetRaw) || 0));
     const bCur = bankRef.current;
     if (!bCur) return;
+    if (!BANK_MARKETING_PRODUCTS.some((p) => p.id === product)) return;
+    if ((bCur.marketingCampaigns || []).length >= BANK_MARKETING_MAX_ACTIVE) {
+      notify(`Максимум ${BANK_MARKETING_MAX_ACTIVE} активные кампании одновременно`);
+      return;
+    }
+    if ((bCur.marketingCampaigns || []).some((c) => c.product === product)) {
+      notify("По этому продукту уже идёт кампания");
+      return;
+    }
     if (bCur.capital < budget) {
       notify(`Недостаточно средств на счёте банка \xB7 нужно ${fmt(budget)}`);
       return;
     }
-    const duration = AD_DURATIONS.find((d) => d.id === durationId) || AD_DURATIONS[1];
-    const feeAttract = 1 + (BANK_CARD_FEE_MAX - bCur.cardFeeRate) / (BANK_CARD_FEE_MAX - BANK_CARD_FEE_MIN);
-    const repMult = 0.5 + (bCur.reputation ?? 50) / 100;
-    const expected = Math.sqrt(budget) * BANK_CLIENTS_AD_SQRT_K * feeAttract * repMult * Math.sqrt(duration.ms / (30 * 60 * 1e3));
-    const roll = 0.55 + Math.random() * 0.9;
-    const newClients = Math.max(0, Math.round(expected * roll));
-    setBank((prev) => prev ? { ...prev, capital: prev.capital - budget, clients: prev.clients + newClients } : prev);
-    logTx("Реклама банка", budget, "out");
-    notify(newClients > 0 ? `+${newClients} клиентов` : "Реклама не принесла клиентов в этот раз", newClients > 0);
+    const strategy = bankMarketingStrategy(strategyId);
+    const reachTarget = bankMarketingReachTarget(budget, strategy);
+    const now = Date.now();
+    const baseline = product === "deposits"
+      ? { count: bCur.totalDepositsOpened || 0, amount: bCur.totalDepositsAmount || 0 }
+      : product === "credits"
+      ? { amount: bCur.totalLoansIssuedAmount || 0 }
+      : { count: bCur.clients || 0 };
+    const campaign = { id: makeId("mkt"), product, strategy: strategy.id, budget, startedAt: now, endsAt: now + BANK_MARKETING_DURATION_MS, reachTarget, baseline };
+    setBank((prev) => prev ? { ...prev, capital: prev.capital - budget, marketingCampaigns: [...(prev.marketingCampaigns || []), campaign] } : prev);
+    logTx(`Маркетинг \xB7 ${BANK_MARKETING_PRODUCTS.find((p) => p.id === product)?.label}`, budget, "out");
+    notify("Кампания запущена", true);
     setTimeout(saveGame, 50);
   };
   const withdrawMarketplacePayout = () => {
@@ -9535,6 +9642,7 @@ function MarketSandbox() {
             const rateScore = (liveMarketCreditRate - bank.creditRate) / liveMarketCreditRate;
             const feeScore = (BANK_NPC_AVG_CARD_FEE - bank.cardFeeRate) / BANK_NPC_AVG_CARD_FEE;
             const competitiveness = Math.max(-1, Math.min(1, (rateScore + feeScore) / 2));
+            const bankHeroBs = bankBalanceSheet(bank, companies);
             return /* @__PURE__ */ jsxs("div", { style: { marginBottom: 22 }, children: [
               /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.gold}55`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
                 /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start" }, children: [
@@ -9547,8 +9655,9 @@ function MarketSandbox() {
                     bank.isPublic && /* @__PURE__ */ jsxs("div", { style: { fontSize: 12, color: C.inkDim, fontFamily: "'JetBrains Mono', monospace" }, children: ["\u0442\u0438\u043A\u0435\u0440 ", bank.stockTicker] })
                   ] }),
                   /* @__PURE__ */ jsxs("div", { style: { textAlign: "right" }, children: [
-                    /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 20, fontWeight: 700, color: bank.capital >= 0 ? C.ink : C.red }, children: fmt(bank.capital) }),
-                    /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkDim }, children: "\u043A\u0430\u043F\u0438\u0442\u0430\u043B \u0431\u0430\u043D\u043A\u0430" })
+                    /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 20, fontWeight: 700, color: bankHeroBs && bankHeroBs.equity >= 0 ? C.ink : C.red }, children: fmt(bankHeroBs ? bankHeroBs.equity : bank.capital) }),
+                    /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkDim }, children: "\u043A\u0430\u043F\u0438\u0442\u0430\u043B \u0431\u0430\u043D\u043A\u0430 (\u0430\u043A\u0442\u0438\u0432\u044B \u2212 \u043E\u0431\u044F\u0437\u0430\u0442\u0435\u043B\u044C\u0441\u0442\u0432\u0430)" }),
+                    /* @__PURE__ */ jsxs("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 12.5, color: C.inkFaint, marginTop: 2 }, children: ["\u0441\u0432\u043E\u0431\u043E\u0434\u043D\u044B\u0435 \u0434\u0435\u043D\u044C\u0433\u0438: ", fmt(bank.capital)] })
                   ] })
                 ] }),
                 /* @__PURE__ */ jsxs("div", { style: { fontSize: 11.5, color: C.inkFaint, marginTop: 10 }, children: [
@@ -9689,14 +9798,78 @@ function MarketSandbox() {
                 /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginTop: 4 }, children: "\u041D\u0438\u0436\u0435 \u043A\u043E\u043C\u0438\u0441\u0441\u0438\u044F \u2014 \u0431\u043E\u043B\u044C\u0448\u0435 \u043A\u043B\u0438\u0435\u043D\u0442\u043E\u0432 \u043F\u0440\u0438\u0432\u043B\u0435\u043A\u0430\u0435\u0442 \u0440\u0435\u043A\u043B\u0430\u043C\u0430, \u043D\u043E \u043C\u0435\u043D\u044C\u0448\u0435 \u0434\u043E\u0445\u043E\u0434 \u0441 \u043A\u0430\u0436\u0434\u043E\u0433\u043E" }),
                 /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint }, children: ["\u0421\u0440\u0435\u0434\u043D\u044F\u044F \u043F\u043E \u0440\u044B\u043D\u043A\u0443 \u2248 ", (BANK_NPC_AVG_CARD_FEE * 100).toFixed(1), "%. \u041D\u0438\u0436\u0435 \u0440\u044B\u043D\u043A\u0430 \u2014 \u043A\u043B\u0438\u0435\u043D\u0442\u044B \u0443\u0445\u043E\u0434\u044F\u0442 \u043A \u0432\u0430\u043C \u0441\u0430\u043C\u0438, \u0432\u044B\u0448\u0435 \u2014 \u043A \u043A\u043E\u043D\u043A\u0443\u0440\u0435\u043D\u0442\u0430\u043C"] })
               ] }),
-              /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
-                /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 8 }, children: "\u0420\u0435\u043A\u043B\u0430\u043C\u0430 \u0431\u0430\u043D\u043A\u0430 \xB7 \u043F\u0440\u0438\u0432\u043B\u0435\u0447\u0435\u043D\u0438\u0435 \u043A\u043B\u0438\u0435\u043D\u0442\u043E\u0432" }),
-                /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8, marginBottom: 8 }, children: [
-                  /* @__PURE__ */ jsx("input", { type: "number", value: bankAdBudget, onChange: (e) => setBankAdBudget(e.target.value), onFocus: (e) => e.target.select(), style: { ...inputStyle, flex: 1, marginBottom: 0, fontFamily: "'JetBrains Mono', monospace" } }),
-                  /* @__PURE__ */ jsx("select", { value: bankAdDuration, onChange: (e) => setBankAdDuration(e.target.value), style: { background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, color: C.ink, fontSize: 13, padding: "0 10px" }, children: AD_DURATIONS.map((d) => /* @__PURE__ */ jsx("option", { value: d.id, children: d.label }, d.id)) })
-                ] }),
-                /* @__PURE__ */ jsx("button", { onClick: () => runBankAdCampaign(bankAdBudget, bankAdDuration), disabled: bank.capital < (Number(bankAdBudget) || 0) || (Number(bankAdBudget) || 0) < 100, style: actionBtnStyle(bank.capital >= (Number(bankAdBudget) || 0) && (Number(bankAdBudget) || 0) >= 100), children: "\u0417\u0430\u043F\u0443\u0441\u0442\u0438\u0442\u044C \u043A\u0430\u043C\u043F\u0430\u043D\u0438\u044E" })
-              ] }),
+              (() => {
+                const now = Date.now();
+                const campaigns = bank.marketingCampaigns || [];
+                const history = bank.marketingHistory || [];
+                const spendActive = campaigns.reduce((s, c) => s + c.budget, 0);
+                const spendPeriod = spendActive + history.reduce((s, c) => s + c.budget, 0);
+                const clientsAttracted = history.reduce((s, c) => s + (c.report?.newClients || c.report?.newCount || 0), 0);
+                const fmtCountdown = (ms) => { const s = Math.max(0, Math.floor(ms / 1000)); const m = Math.floor(s / 60); return `${m}:${String(s % 60).padStart(2, "0")}`; };
+                const selectedProduct = BANK_MARKETING_PRODUCTS.find((p) => p.id === bankMktProduct);
+                const strategy = bankMarketingStrategy(bankMktStrategy);
+                const budgetNum = Number(bankMktBudget) || 0;
+                const forecastReach = budgetNum >= BANK_MARKETING_MIN_BUDGET ? bankMarketingReachTarget(budgetNum, strategy) : 0;
+                const canLaunch = selectedProduct && budgetNum >= BANK_MARKETING_MIN_BUDGET && budgetNum <= bank.capital && campaigns.length < BANK_MARKETING_MAX_ACTIVE && !campaigns.some((c) => c.product === selectedProduct.id);
+                return /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
+                  /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 12, textTransform: "uppercase", letterSpacing: 1 }, children: "\u041C\u0430\u0440\u043A\u0435\u0442\u0438\u043D\u0433 \u0431\u0430\u043D\u043A\u0430" }),
+                  /* @__PURE__ */ jsxs("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 14 }, children: [
+                    [["\u0410\u043A\u0442\u0438\u0432\u043D\u044B\u0435 \u043A\u0430\u043C\u043F\u0430\u043D\u0438\u0438", fmt(spendActive)],
+                     ["\u0420\u0430\u0441\u0445\u043E\u0434\u044B \u0437\u0430 \u043F\u0435\u0440\u0438\u043E\u0434", fmt(spendPeriod)],
+                     ["\u041F\u0440\u0438\u0432\u043B\u0435\u0447\u0435\u043D\u043E \u043A\u043B\u0438\u0435\u043D\u0442\u043E\u0432", String(clientsAttracted)]
+                    ].map(([label, val]) => /* @__PURE__ */ jsxs("div", { children: [
+                      /* @__PURE__ */ jsx("div", { style: { fontSize: 9.5, color: C.inkFaint }, children: label }),
+                      /* @__PURE__ */ jsx("div", { style: { fontSize: 13.5, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace" }, children: val })
+                    ] }, label))
+                  ] }),
+                  campaigns.length > 0 && /* @__PURE__ */ jsx("div", { style: { marginBottom: 14 }, children: campaigns.map((c) => {
+                    const { progress, reach, boost } = bankMarketingBoost(c, now);
+                    const prod = BANK_MARKETING_PRODUCTS.find((p) => p.id === c.product);
+                    return /* @__PURE__ */ jsxs("div", { style: { background: C.surface2, borderRadius: 10, padding: 10, marginBottom: 8 }, children: [
+                      /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }, children: [
+                        /* @__PURE__ */ jsxs("span", { style: { fontWeight: 600 }, children: [prod?.label, " \xB7 ", bankMarketingStrategy(c.strategy).label] }),
+                        /* @__PURE__ */ jsx("span", { style: { color: C.gold, fontSize: 11 }, children: "\u0410\u041A\u0422\u0418\u0412\u041D\u0410" })
+                      ] }),
+                      /* @__PURE__ */ jsx("div", { style: { height: 4, borderRadius: 2, background: C.surface, overflow: "hidden", marginBottom: 6 }, children: /* @__PURE__ */ jsx("div", { style: { height: "100%", width: `${Math.round(progress * 100)}%`, background: C.gold, transition: "width 0.6s ease" } }) }),
+                      /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 11, color: C.inkDim }, children: [
+                        /* @__PURE__ */ jsxs("span", { children: ["\u041E\u0445\u0432\u0430\u0442: ", reach.toLocaleString("ru-RU")] }),
+                        /* @__PURE__ */ jsxs("span", { children: [fmtCountdown(c.endsAt - now), " \u0434\u043E \u043E\u0442\u0447\u0451\u0442\u0430"] })
+                      ] })
+                    ] }, c.id);
+                  }) }),
+                  /* @__PURE__ */ jsx("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 12 }, children: BANK_MARKETING_PRODUCTS.map((p) => {
+                    const busy = campaigns.some((c) => c.product === p.id);
+                    const isSel = bankMktProduct === p.id;
+                    return /* @__PURE__ */ jsx("button", { onClick: () => setBankMktProduct(p.id), disabled: busy, style: { padding: "10px 6px", borderRadius: 10, border: `1px solid ${isSel ? C.gold : C.border}`, background: isSel ? C.gold + "1A" : "transparent", color: busy ? C.inkFaint : C.ink, fontSize: 11.5, fontWeight: 600 }, children: busy ? `${p.label} \xB7 \u0438\u0434\u0451\u0442` : p.label }, p.id);
+                  }) }),
+                  selectedProduct && /* @__PURE__ */ jsxs("div", { style: { background: C.surface2, borderRadius: 12, padding: 12 }, children: [
+                    /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8, marginBottom: 8 }, children: [
+                      /* @__PURE__ */ jsx("input", { type: "number", value: bankMktBudget, onChange: (e) => setBankMktBudget(e.target.value), onFocus: (e) => e.target.select(), placeholder: "\u0411\u044E\u0434\u0436\u0435\u0442", style: { ...inputStyle, flex: 1, marginBottom: 0, fontFamily: "'JetBrains Mono', monospace" } }),
+                      /* @__PURE__ */ jsx("select", { value: bankMktStrategy, onChange: (e) => setBankMktStrategy(e.target.value), style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, color: C.ink, fontSize: 12.5, padding: "0 8px" }, children: BANK_MARKETING_STRATEGIES.map((s) => /* @__PURE__ */ jsx("option", { value: s.id, children: s.label }, s.id)) })
+                    ] }),
+                    /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkDim, marginBottom: 10 }, children: ["\u041F\u0440\u043E\u0433\u043D\u043E\u0437 \u043E\u0445\u0432\u0430\u0442\u0430: \u2248", forecastReach.toLocaleString("ru-RU"), " \u2014 \u043D\u0435 \u0433\u0430\u0440\u0430\u043D\u0442\u0438\u044F, \u0440\u0435\u0430\u043B\u044C\u043D\u044B\u0439 \u0440\u0435\u0437\u0443\u043B\u044C\u0442\u0430\u0442 \u0437\u0430\u0432\u0438\u0441\u0438\u0442 \u043E\u0442 \u0440\u0435\u043F\u0443\u0442\u0430\u0446\u0438\u0438, \u0441\u0442\u0430\u0432\u043E\u043A \u0438 \u044D\u043A\u043E\u043D\u043E\u043C\u0438\u043A\u0438"] }),
+                    /* @__PURE__ */ jsx("button", { onClick: () => { launchBankMarketingCampaign(selectedProduct.id, bankMktBudget, bankMktStrategy); setBankMktProduct(null); }, disabled: !canLaunch, style: actionBtnStyle(canLaunch), children: "\u0417\u0430\u043F\u0443\u0441\u0442\u0438\u0442\u044C \u043A\u0430\u043C\u043F\u0430\u043D\u0438\u044E" }),
+                    !canLaunch && budgetNum > 0 && budgetNum < BANK_MARKETING_MIN_BUDGET && /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.red, marginTop: 6 }, children: ["\u041C\u0438\u043D\u0438\u043C\u0443\u043C ", fmt(BANK_MARKETING_MIN_BUDGET)] })
+                  ] }),
+                  history.length > 0 && /* @__PURE__ */ jsxs("div", { style: { marginTop: 14, paddingTop: 12, borderTop: `1px solid ${C.border}` }, children: [
+                    /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkDim, marginBottom: 8 }, children: "\u041E\u0422\u0427\u0401\u0422\u042B \u041A\u0410\u041C\u041F\u0410\u041D\u0418\u0419" }),
+                    history.slice(0, 3).map((c) => {
+                      const prod = BANK_MARKETING_PRODUCTS.find((p) => p.id === c.product);
+                      const r = c.report || {};
+                      const effective = (r.newCount || r.newClients || 0) > 0 && c.budget / Math.max(1, r.newCount || r.newClients || 1) < c.budget;
+                      return /* @__PURE__ */ jsxs("div", { style: { fontSize: 11.5, color: C.inkDim, padding: "6px 0", borderBottom: `1px solid ${C.border}` }, children: [
+                        /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", marginBottom: 2 }, children: [
+                          /* @__PURE__ */ jsxs("span", { style: { color: C.ink, fontWeight: 600 }, children: [prod?.label, " \xB7 ", fmt(c.budget)] }),
+                          /* @__PURE__ */ jsx("span", { style: { color: effective ? C.green : C.inkFaint }, children: effective ? "\u042D\u0424\u0424\u0415\u041A\u0422\u0418\u0412\u041D\u0410" : "\u0421\u041B\u0410\u0411\u041E" })
+                        ] }),
+                        c.product === "deposits" && /* @__PURE__ */ jsxs("span", { children: [r.newCount || 0, " \u0432\u043A\u043B\u0430\u0434\u0447\u0438\u043A\u043E\u0432 \xB7 ", fmt(r.amount || 0), " \xB7 CAC ", fmt(r.cac || 0)] }),
+                        c.product === "credits" && /* @__PURE__ */ jsxs("span", { children: ["\u0432\u044B\u0434\u0430\u043D\u043E \u043A\u0440\u0435\u0434\u0438\u0442\u043E\u0432 \u043D\u0430 ", fmt(r.amount || 0)] }),
+                        c.product === "cards" && /* @__PURE__ */ jsxs("span", { children: ["+", r.newClients || 0, " \u043A\u043B\u0438\u0435\u043D\u0442\u043E\u0432 \xB7 CAC ", fmt(r.cac || 0)] })
+                      ] }, c.id);
+                    })
+                  ] })
+                ] });
+              })(),
               (() => {
                 const now = Date.now();
                 const deps = bank.deposits || [];
