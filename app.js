@@ -1,4 +1,4 @@
-// Market Sandbox — V2.32.0 (Новый внутренний счёт банка: ДЕПОЗИТНЫЙ СЧЁТ (bank.depositReserve). Раньше деньги новых вкладчиков сразу падали на основной счёт банка (bank.capital) и были мгновенно доступны для кредитов/трейдинга/рекламы. Теперь деньги вкладчиков (и органические, и от рекламных кампаний) зачисляются на отдельный bank.depositReserve — использовать их напрямую нельзя, нужно вручную перевести на «Счёт банка» (transferDepositReserveToCapital) или на «ООО» (transferDepositReserveToIp, использует тот же ipCash что и ИП). Выплаты по вкладам (payDueDeposits) по-прежнему списываются только с bank.capital — то есть если не перевести деньги из резерва вовремя, выплатить вкладчикам нечем, несмотря на то что деньги формально «в банке». Это осознанное усиление банковской механики ликвидности. bankBalanceSheet().assets теперь включает depositReserve (это всё ещё деньги банка, просто на другом счету), в панели «Баланс и ликвидность» добавлена строка «Депозитный счёт (не переведено)». Новый блок «ДЕПОЗИТНЫЙ СЧЁТ» в вкладке Вклады с полем суммы и двумя кнопками перевода. Миграция: старым сейвам просто ставится depositReserve:0 — их прошлые вклады уже физически лежат в capital, ничего мигрировать не нужно.)
+// Market Sandbox — V2.33.0 (Маркетплейс: убрано обязательное условие «свой магазин с оборотом от 500к» для запуска. Банк: IPO теперь гейтится по чистому капиталу (equity = активы-обязательства), а не по свободному кэшу — раньше капитал уходил в кредиты/трейдеров/портфель и порог IPO был почти недостижим. Вклады: выплата пачкой раз в 15 минут вместо поштучной по каждому вкладчику — сумма каждого вклада начисляется пропорционально времени с момента открытия. Полностью удалены менеджер магазина и офлайн-магазин (константы, хендлеры, тик-эффекты, рендер, сохранения). Реклама магазина на ZZONE: исправлен потолок — шанс продажи был захардкожен на 0.7 и насыщался уже на небольших бюджетах, из-за чего 1млн и 10к давали одинаковый эффект; теперь избыточный множитель идёт в объём продажи за один тик, без потолка.)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -472,8 +472,8 @@ var SHOP_ITEMS = [
   { id: "home2", category: "\u041D\u0435\u0434\u0432\u0438\u0436\u0438\u043C\u043E\u0441\u0442\u044C", name: "\u0414\u043E\u043C \u0437\u0430 \u0433\u043E\u0440\u043E\u0434\u043E\u043C", price: 9e4, icon: "\u{1F3E1}", ltv: 0.6, liquidity: "normal", maintenance: 0, waivesRent: true, ratingBonus: 2, unlocks: "\u041E\u0442\u043C\u0435\u043D\u044F\u0435\u0442 \u0430\u0440\u0435\u043D\u0434\u0443 \u0436\u0438\u043B\u044C\u044F + \u043F\u043B\u044E\u0441 \u043A \u0434\u043E\u0432\u0435\u0440\u0438\u044E \u0431\u0430\u043D\u043A\u043E\u0432" },
   { id: "home3", category: "\u041D\u0435\u0434\u0432\u0438\u0436\u0438\u043C\u043E\u0441\u0442\u044C", name: "\u041E\u0441\u043E\u0431\u043D\u044F\u043A", price: 4e5, icon: "\u{1F3F0}", ltv: 0.65, liquidity: "slow", maintenance: 0, waivesRent: true, ratingBonus: 5, unlocks: "\u041E\u0442\u043C\u0435\u043D\u044F\u0435\u0442 \u0430\u0440\u0435\u043D\u0434\u0443 \u0436\u0438\u043B\u044C\u044F + \u0437\u0430\u043C\u0435\u0442\u043D\u044B\u0439 \u043F\u043B\u044E\u0441 \u043A \u0434\u043E\u0432\u0435\u0440\u0438\u044E \u0431\u0430\u043D\u043A\u043E\u0432" },
   { id: "home4", category: "\u041D\u0435\u0434\u0432\u0438\u0436\u0438\u043C\u043E\u0441\u0442\u044C", name: "\u041F\u0435\u043D\u0442\u0445\u0430\u0443\u0441 \u0432 \u0446\u0435\u043D\u0442\u0440\u0435", price: 8e5, icon: "\u{1F3D9}\uFE0F", ltv: 0.7, liquidity: "slow", maintenance: 0, waivesRent: true, ratingBonus: 8, unlocks: "\u041E\u0442\u043C\u0435\u043D\u044F\u0435\u0442 \u0430\u0440\u0435\u043D\u0434\u0443 \u0436\u0438\u043B\u044C\u044F + \u043C\u0430\u043A\u0441\u0438\u043C\u0430\u043B\u044C\u043D\u044B\u0439 \u043F\u043B\u044E\u0441 \u043A \u0434\u043E\u0432\u0435\u0440\u0438\u044E \u0431\u0430\u043D\u043A\u043E\u0432" },
-  { id: "commercial1", category: "\u041D\u0435\u0434\u0432\u0438\u0436\u0438\u043C\u043E\u0441\u0442\u044C", name: "\u041A\u043E\u043C\u043C\u0435\u0440\u0447\u0435\u0441\u043A\u043E\u0435 \u043F\u043E\u043C\u0435\u0449\u0435\u043D\u0438\u0435", price: 12e4, icon: "\u{1F3EC}", ltv: 0.5, liquidity: "slow", maintenance: 60, offlineDiscount: 0.25, unlocks: "\u0421\u043A\u0438\u0434\u043A\u0430 25% \u043D\u0430 \u043E\u0442\u043A\u0440\u044B\u0442\u0438\u0435 \u043E\u0444\u043B\u0430\u0439\u043D-\u043C\u0430\u0433\u0430\u0437\u0438\u043D\u0430" },
-  { id: "equipment1", category: "\u041E\u0431\u043E\u0440\u0443\u0434\u043E\u0432\u0430\u043D\u0438\u0435", name: "\u0422\u043E\u0440\u0433\u043E\u0432\u043E\u0435 \u043E\u0431\u043E\u0440\u0443\u0434\u043E\u0432\u0430\u043D\u0438\u0435", price: 2e4, icon: "\u{1F6E0}\uFE0F", ltv: 0.35, liquidity: "normal", maintenance: 40, offlineBoost: 0.06, unlocks: "\u041D\u0435\u0431\u043E\u043B\u044C\u0448\u043E\u0439 \u043F\u043B\u044E\u0441 \u043A \u0441\u043F\u0440\u043E\u0441\u0443 \u043E\u0444\u043B\u0430\u0439\u043D-\u043C\u0430\u0433\u0430\u0437\u0438\u043D\u0430" },
+  { id: "commercial1", category: "\u041D\u0435\u0434\u0432\u0438\u0436\u0438\u043C\u043E\u0441\u0442\u044C", name: "\u041A\u043E\u043C\u043C\u0435\u0440\u0447\u0435\u0441\u043A\u043E\u0435 \u043F\u043E\u043C\u0435\u0449\u0435\u043D\u0438\u0435", price: 12e4, icon: "\u{1F3EC}", ltv: 0.5, liquidity: "slow", maintenance: 60, unlocks: "\u0422\u0440\u0435\u0431\u0443\u0435\u0442\u0441\u044F \u0434\u043B\u044F \u043E\u0442\u043A\u0440\u044B\u0442\u0438\u044F \u0441\u0432\u043E\u0435\u0433\u043E \u0431\u0430\u043D\u043A\u0430 \u0438 \u043C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441\u0430" },
+  { id: "equipment1", category: "\u041E\u0431\u043E\u0440\u0443\u0434\u043E\u0432\u0430\u043D\u0438\u0435", name: "\u0422\u043E\u0440\u0433\u043E\u0432\u043E\u0435 \u043E\u0431\u043E\u0440\u0443\u0434\u043E\u0432\u0430\u043D\u0438\u0435", price: 2e4, icon: "\u{1F6E0}\uFE0F", ltv: 0.35, liquidity: "normal", maintenance: 40, unlocks: "\u0422\u0440\u0435\u0431\u0443\u0435\u0442\u0441\u044F \u0434\u043B\u044F \u0441\u043F\u0435\u0446\u0438\u0430\u043B\u0438\u0437\u0438\u0440\u043E\u0432\u0430\u043D\u043D\u044B\u0445 \u0442\u0435\u043D\u0434\u0435\u0440\u043E\u0432" },
   { id: "watch1", category: "\u0410\u043A\u0441\u0435\u0441\u0441\u0443\u0430\u0440\u044B", name: "\u0428\u0432\u0435\u0439\u0446\u0430\u0440\u0441\u043A\u0438\u0435 \u0447\u0430\u0441\u044B", price: 5e3, icon: "\u231A", ltv: 0.5, liquidity: "instant", maintenance: 0, unlocks: "\u041A\u043E\u043C\u043F\u0430\u043A\u0442\u043D\u044B\u0439 \u0437\u0430\u043B\u043E\u0433\u043E\u0432\u044B\u0439 \u0430\u043A\u0442\u0438\u0432" },
   { id: "art1", category: "\u0410\u043A\u0441\u0435\u0441\u0441\u0443\u0430\u0440\u044B", name: "\u041F\u0440\u0435\u0434\u043C\u0435\u0442 \u0438\u0441\u043A\u0443\u0441\u0441\u0442\u0432\u0430", price: 2e4, icon: "\u{1F5BC}\uFE0F", ltv: 0.45, liquidity: "instant", maintenance: 0, unlocks: "\u041A\u043E\u043C\u043F\u0430\u043A\u0442\u043D\u044B\u0439 \u0437\u0430\u043B\u043E\u0433\u043E\u0432\u044B\u0439 \u0430\u043A\u0442\u0438\u0432" }
 ];
@@ -576,14 +576,6 @@ function warehouseFactoryCapacityBonus(warehouseList) {
   return (warehouseList || []).reduce((sum, w) => sum + (FACTORY_WAREHOUSE_CAPACITY_BONUS[w.tierId] || 0), 0);
 }
 var FACTORY_BUYER_NAMES = ["\u0420\u0438\u0442\u0435\u0439\u043B-\u0441\u0435\u0442\u044C \xAB\u0414\u043E\u043C\u0438\u043D\u043E\xBB", "\u041E\u043F\u0442\u043E\u0432\u0438\u043A \u0441 \u0440\u044B\u043D\u043A\u0430", "\u0418\u043D\u0442\u0435\u0440\u043D\u0435\u0442-\u043C\u0430\u0433\u0430\u0437\u0438\u043D \xAB\u041A\u0430\u043A\u0442\u0443\u0441\xBB", "\u0414\u0438\u0441\u0442\u0440\u0438\u0431\u044C\u044E\u0442\u043E\u0440 \xAB\u0412\u043E\u043B\u043D\u0430\xBB", "\u0421\u0435\u0442\u0435\u0432\u043E\u0439 \u0437\u0430\u043A\u0443\u043F\u0449\u0438\u043A", "\u0427\u0430\u0441\u0442\u043D\u044B\u0439 \u043E\u043F\u0442"];
-var OFFLINE_STORE_TIERS = {
-  small: { id: "small", name: "\u041C\u0430\u043B\u0435\u043D\u044C\u043A\u0438\u0439 \u043C\u0430\u0433\u0430\u0437\u0438\u043D", openingCost: 1e4, rent: 2e3, salary: 1800, electricity: 200, extraMin: 100, extraMax: 2e3, adCost: 1200, healthyStockValue: 8e3, footfall: 55, maxHourlyRevenue: 15e3 },
-  medium: { id: "medium", name: "\u0421\u0440\u0435\u0434\u043D\u0438\u0439 \u043C\u0430\u0433\u0430\u0437\u0438\u043D", openingCost: 3e4, rent: 15e3, salary: 4e3, electricity: 800, extraMin: 400, extraMax: 5e3, adCost: 3500, healthyStockValue: 25e3, footfall: 140, maxHourlyRevenue: 52e3 }
-};
-var OFFLINE_TICKS_PER_HOUR = 6;
-var OFFLINE_TICK_MS = 60 * 60 * 1e3 / OFFLINE_TICKS_PER_HOUR;
-var OFFLINE_AD_DURATION_TICKS = 3;
-var OFFLINE_AD_MULT = 1.35;
 var WAREHOUSE_CYCLE_MS = 15 * 60 * 1e3;
 var WAREHOUSE_CYCLE_HOUR_FRACTION = WAREHOUSE_CYCLE_MS / (60 * 60 * 1e3);
 var WAREHOUSE_BASE_ZZONE_VOLUME = 16e7;
@@ -886,8 +878,7 @@ function marketplaceIpoEligible(mp) {
 function marketplaceValuation(mp) {
   return Math.max(5e5, mp.totalRevenue * 4 + mp.totalGmv * 0.04);
 }
-var MANAGER_SALARY = 5e3;
-var MANAGER_SALARY_CYCLE_MS = 30 * 60 * 1e3;
+
 var PRODUCT_CATEGORIES = [
   { id: "clothes", name: "\u041E\u0434\u0435\u0436\u0434\u0430", icon: "\u{1F455}", priceMult: 0.4, marginMult: 0.75 },
   { id: "accessories", name: "\u0410\u043A\u0441\u0435\u0441\u0441\u0443\u0430\u0440\u044B", icon: "\u231A", priceMult: 0.65, marginMult: 0.9 },
@@ -991,6 +982,14 @@ function bankNplFraction(bank, macro) {
   const trustRisk = Math.max(0, (60 - (bank.trust || 50)) / 100) * 0.01;
   return Math.min(0.15, BANK_NPL_BASE + rateRisk + macroStress + trustRisk);
 }
+function depositEarnedAmount(d, now) {
+  const elapsed = Math.max(0, now - (d.openedAt || now));
+  const frac = Math.min(1, elapsed / BANK_DEPOSIT_TERM_MS);
+  return (d.total ?? d.principal) * frac;
+}
+function depositOwedNow(d, now) {
+  return Math.max(0, depositEarnedAmount(d, now) - (d.paidAmount || 0));
+}
 function bankBalanceSheet(bank, companies) {
   if (!bank) return null;
   const portfolioValue = Object.entries(bank.holdings || {}).reduce((s, [cid, h]) => {
@@ -1005,7 +1004,8 @@ function bankBalanceSheet(bank, companies) {
   const liabilities = (bank.deposits || []).reduce((s, d) => s + Math.max(0, (d.total ?? d.principal) - (d.paidAmount || 0)), 0);
   const equity = assets - liabilities;
   const now = Date.now();
-  const owedNow = (bank.deposits || []).filter((d) => now >= d.nextPayoutAt).reduce((s, d) => s + Math.min(d.payment ?? 0, (d.total ?? d.principal) - (d.paidAmount || 0)), 0);
+  const depositsDueNow = now >= (bank.nextDepositPayoutAt || 0);
+  const owedNow = depositsDueNow ? (bank.deposits || []).reduce((s, d) => s + depositOwedNow(d, now), 0) : 0;
   const freeLiquidity = bank.capital;
   let liqStatus = "green";
   if (owedNow > 0) {
@@ -1021,29 +1021,6 @@ var BANK_TRADERS_POOL = [
   { id: "t_shark", name: "\u041C\u0430\u043A\u0441\u0438\u043C \u0410\u043A\u0443\u043B\u043E\u0432", tier: "\u0410\u0433\u0440\u0435\u0441\u0441\u0438\u0432\u043D\u044B\u0439", winRate: 0.5, risk: 0.14, allocation: 2e6 }
 ];
 function bankTraderCommission() { return 0.1; }
-function estimateBankCycle(bank) {
-  if (!bank) return { creditIncome: 0, newLoansIssued: 0, principalRepaid: 0, tradingPnl: 0, cardIncome: 0, depositInterest: 0, salaryPaid: BANK_SALARY_PER_CYCLE, net: 0, projectedOutstanding: 0 };
-  const normalized = (bank.creditRate - BANK_CREDIT_RATE_MIN) / (BANK_CREDIT_RATE_MAX - BANK_CREDIT_RATE_MIN || 1);
-  const demandFactor = 1 - normalized * 0.8;
-  const creditDemand = BANK_CREDIT_BASE_DEMAND * demandFactor;
-  const currentOutstanding = bank.creditOutstanding || 0;
-  const targetOutstanding = Math.max(0, Math.min(bank.creditPoolAllocated || 0, creditDemand));
-  const desiredNewLoans = Math.max(0, targetOutstanding - currentOutstanding);
-  const newLoansIssued = Math.min(desiredNewLoans, Math.max(0, bank.capital));
-  const principalRepaid = currentOutstanding * BANK_LOAN_REPAY_FRACTION;
-  const creditIncome = currentOutstanding * bank.creditRate;
-  const projectedOutstanding = Math.max(0, currentOutstanding + newLoansIssued - principalRepaid);
-  const tradingPnl = (bank.traders || []).reduce((sum, t) => {
-    const winMid = t.risk * 1.5 * (1 - bankTraderCommission());
-    const lossMid = t.risk * 0.45;
-    return sum + t.allocation * (t.winRate * winMid - (1 - t.winRate) * lossMid);
-  }, 0);
-  const cardIncome = Math.sqrt(Math.max(0, bank.clients)) * BANK_CARD_BASE_TRANSFER_VOL * bank.cardFeeRate;
-  const depositInterest = (bank.deposits || []).reduce((sum, d) => sum + d.principal * d.ratePerCycle, 0);
-  const salaryPaid = BANK_SALARY_PER_CYCLE;
-  const net = creditIncome - newLoansIssued + principalRepaid + tradingPnl + cardIncome - depositInterest - salaryPaid;
-  return { creditIncome, newLoansIssued, principalRepaid, tradingPnl, cardIncome, depositInterest, salaryPaid, net, projectedOutstanding };
-}
 var BANK_NPC_AVG_CREDIT_RATE = 0.09;
 var BANK_NPC_AVG_CARD_FEE = 0.025;
 var BANK_ORGANIC_GROWTH_BASE = 18;
@@ -1055,6 +1032,8 @@ var DEPOSIT_TARIFFS = [
   { id: "long", label: "\u0414\u043E\u043B\u0433\u0438\u0439 (24 \u0446\u0438\u043A\u043B\u0430)", cycles: 24, rateMin: 0.008, rateMax: 0.03 }
 ];
 var BANK_DEPOSIT_TERM_CYCLES = 12;
+var BANK_DEPOSIT_TERM_MS = BANK_DEPOSIT_TERM_CYCLES * BANK_CYCLE_MS;
+var BANK_DEPOSIT_PAYOUT_INTERVAL_MS = 15 * 60 * 1e3;
 var BANK_DEPOSIT_RATE_MIN = 0.001;
 var BANK_DEPOSIT_RATE_MAX = 0.99;
 var BANK_NPC_AVG_DEPOSIT_RATE = 0.08;
@@ -1398,9 +1377,7 @@ var AD_TIERS = [
   { id: "featured", name: "\u0422\u043E\u043F \u0432\u044B\u0434\u0430\u0447\u0438", cost: 450, boostMult: 2.2, durationMin: 8 },
   { id: "blast", name: "\u0420\u0430\u0441\u0441\u044B\u043B\u043A\u0430 \u0432\u0441\u0435\u043C \u043F\u043E\u043A\u0443\u043F\u0430\u0442\u0435\u043B\u044F\u043C", cost: 1e3, boostMult: 3.2, durationMin: 12 }
 ];
-var MANAGER_AD_TIER_MAP = { min: "basic", mid: "featured", max: "blast" };
-var MANAGER_PRICE_GAP_DEFAULT = 3;
-var MANAGER_AD_TIER_LABEL = { min: "\xD71.5", mid: "\xD72.2", max: "\xD73.2 \u043C\u0430\u043A\u0441" };
+
 function computeAdBoost(activeAds) {
   if (!activeAds || !activeAds.length) return 1;
   const sorted = [...activeAds].sort((a, b) => b.boostMult - a.boostMult);
@@ -2091,10 +2068,8 @@ function MarketSandbox() {
   const [listedPriceInputs, setListedPriceInputs] = useState({});
   const [bizPath, setBizPath] = useState(null);
   const [confirmCloseResell, setConfirmCloseResell] = useState(null);
-  const [confirmCloseOffline, setConfirmCloseOffline] = useState(null);
-  const [managerFormInputs, setManagerFormInputs] = useState({});
+
   const [factoryTransferInputs, setFactoryTransferInputs] = useState({});
-  const [warehouseWithdrawTarget, setWarehouseWithdrawTarget] = useState({});
   const [factoryProductionInputs, setFactoryProductionInputs] = useState({});
   const [favorites, setFavorites] = useState({});
   const [marketFilterCat, setMarketFilterCat] = useState("all");
@@ -2696,7 +2671,7 @@ function MarketSandbox() {
       if (s.stock > 0) cats.accessories = { stock: s.stock, avgCost: s.avgCost || 0, listedPrice: s.listedPrice || 0 };
       const { stock, avgCost, listedPrice, ...rest } = s;
       return { ...rest, categories: cats, orders: (s.orders || []).map((o) => o.category ? o : { ...o, category: "accessories" }) };
-    }) : []);
+    }).map((s) => { const { manager, offlineStore, ...rest } = s; return rest; }) : []);
     setFactories(Array.isArray(data.factories) ? data.factories.map((f) => f.equipmentLevel == null ? { ...f, equipmentLevel: 0 } : f) : []);
     setWarehouses(Array.isArray(data.warehouses) ? data.warehouses.map((w) => ({ ...w, payoutBalance: w.payoutBalance || 0, totalProcessedTurnover: w.totalProcessedTurnover || 0 })) : []);
     setIpCash(typeof data.ipCash === "number" ? data.ipCash : 0);
@@ -2733,7 +2708,7 @@ function MarketSandbox() {
         return { ...d, rate, total, payment, paidAmount: Math.round((d.cyclesPaid || 0) * payment), cyclesTotal: BANK_DEPOSIT_TERM_CYCLES };
       })());
     }
-    setBank(data.bank && typeof data.bank === "object" ? { trust: 50, reputation: 50, quarterRevenue: 0, quarterEndsAt: Date.now() + QUARTER_MS, totalDefaulted: 0, defaultedSinceCycle: 0, maxCapitalReached: data.bank.capital || BANK_MIN_CAPITAL, holdings: {}, creditPoolAllocated: 0, depositReserve: 0, depositRate: BANK_NPC_AVG_DEPOSIT_RATE, deposits: [], totalDepositInterestPaid: 0, totalDepositPrincipalReturned: 0, totalDepositsOpened: 0, totalDepositsAmount: 0, totalLoansIssuedCount: 0, totalLoansIssuedAmount: 0, marketingCampaigns: [], marketingHistory: [], missedDepositPayments: 0, lastCycleBreakdown: null, creditOutstanding: 0, lastTickAt: Date.now(), accum: { creditIncome: 0, newLoansIssued: 0, principalRepaid: 0, tradingPnl: 0, cardIncome: 0, depositInflow: 0, depositInterestPaid: 0, depositPrincipalReturned: 0 }, ...data.bank } : null);
+    setBank(data.bank && typeof data.bank === "object" ? { trust: 50, reputation: 50, quarterRevenue: 0, quarterEndsAt: Date.now() + QUARTER_MS, totalDefaulted: 0, defaultedSinceCycle: 0, maxCapitalReached: data.bank.capital || BANK_MIN_CAPITAL, holdings: {}, creditPoolAllocated: 0, depositReserve: 0, depositRate: BANK_NPC_AVG_DEPOSIT_RATE, deposits: [], nextDepositPayoutAt: Date.now() + BANK_DEPOSIT_PAYOUT_INTERVAL_MS, depositOverdueSince: null, depositEscalated: false, totalDepositInterestPaid: 0, totalDepositPrincipalReturned: 0, totalDepositsOpened: 0, totalDepositsAmount: 0, totalLoansIssuedCount: 0, totalLoansIssuedAmount: 0, marketingCampaigns: [], marketingHistory: [], missedDepositPayments: 0, lastCycleBreakdown: null, creditOutstanding: 0, lastTickAt: Date.now(), accum: { creditIncome: 0, newLoansIssued: 0, principalRepaid: 0, tradingPnl: 0, cardIncome: 0, depositInflow: 0, depositInterestPaid: 0, depositPrincipalReturned: 0 }, ...data.bank } : null);
     setMarketplace(data.marketplace && typeof data.marketplace === "object" ? (() => {
       const saved = data.marketplace;
       return {
@@ -3870,9 +3845,11 @@ function MarketSandbox() {
           const zzoneMult = clamp01(1 + companyPerfPct(companiesRef.current, "ZZONE") / 200, 0.75, 1.2);
           const activeAds = (shop.ads || []).filter((a) => Date.now() < a.adUntil);
           const adMult = activeAds.length ? computeAdBoost(activeAds) : 1;
-          const saleChance = Math.min(0.7, Math.max(0.02, 0.16 * attractiveness * ratingMult * adMult * repMult * zzoneMult));
+          const adMultForChance = Math.min(adMult, 6);
+          const saleChance = Math.min(0.85, Math.max(0.02, 0.16 * attractiveness * ratingMult * adMultForChance * repMult * zzoneMult));
+          const adQtyBoost = 1 + Math.max(0, adMult - 6) * 0.15;
           if (Math.random() < saleChance) {
-            const qtySold = Math.min(c.stock, 1 + Math.floor(Math.random() * 3));
+            const qtySold = Math.min(c.stock, Math.max(1, Math.round((1 + Math.floor(Math.random() * 3)) * adQtyBoost)));
             const grossRevenue = c.listedPrice * qtySold;
             const fee = Math.round(grossRevenue * MARKETPLACE_FEE);
             const netRevenue = grossRevenue - fee;
@@ -4285,235 +4262,6 @@ function MarketSandbox() {
   useEffect(() => {
     if (!loaded) return;
     const id = setInterval(() => {
-      const shops = resellShopsRef.current;
-      const due = shops.filter((s) => s.offlineStore && Date.now() >= s.offlineStore.nextTickAt);
-      if (!due.length) return;
-      let ipCashDelta = 0;
-      const updates = {};
-      const factoryStockUsed = {};
-      due.forEach((shop) => {
-        const os = shop.offlineStore;
-        const tier = OFFLINE_STORE_TIERS[os.tier];
-        const extra = Math.round(tier.extraMin + Math.random() * (tier.extraMax - tier.extraMin));
-        const totalCost = Math.round((tier.rent + tier.salary + tier.electricity + extra) / OFFLINE_TICKS_PER_HOUR);
-        const available = ipCashRef.current + ipCashDelta;
-        let missedTicks = os.missedTicks;
-        let boostHealth = os.boostHealth;
-        let paidCost;
-        if (available >= totalCost) {
-          paidCost = totalCost;
-          missedTicks = 0;
-        } else {
-          paidCost = Math.max(0, available);
-          boostHealth = Math.max(0, boostHealth - 30);
-          missedTicks += 1;
-        }
-        ipCashDelta -= paidCost;
-        logTx(`\u0420\u0430\u0441\u0445\u043E\u0434\u044B \u043E\u0444\u043B\u0430\u0439\u043D-\u043C\u0430\u0433\u0430\u0437\u0438\u043D\u0430 \xAB${shop.name}\xBB (\u0430\u0440\u0435\u043D\u0434\u0430/\u0437\u0430\u0440\u043F\u043B\u0430\u0442\u0430/\u044D\u043B\u0435\u043A\u0442\u0440\u0438\u0447\u0435\u0441\u0442\u0432\u043E/\u0434\u043E\u043F.)`, paidCost, "out");
-        if (missedTicks >= 3 * OFFLINE_TICKS_PER_HOUR) {
-          updates[shop.id] = { offlineStore: null };
-          pushPost({ text: `\u041E\u0444\u043B\u0430\u0439\u043D-\u043C\u0430\u0433\u0430\u0437\u0438\u043D \xAB${shop.name}\xBB \u0437\u0430\u043A\u0440\u044B\u043B\u0441\u044F \u2014 \u043D\u0435 \u043F\u043E\u0442\u044F\u043D\u0443\u043B \u0440\u0430\u0441\u0445\u043E\u0434\u044B`, positive: false, isMacro: false });
-          return;
-        }
-        let cats = { ...shop.categories || {} };
-        const manager = shop.manager;
-        let adUntilTick = os.adUntilTick;
-        if (manager && manager.hired && manager.autoAdEnabled && os.tickCount >= adUntilTick) {
-          const available2 = ipCashRef.current + ipCashDelta;
-          if (available2 >= tier.adCost) {
-            ipCashDelta -= tier.adCost;
-            adUntilTick = os.tickCount + OFFLINE_AD_DURATION_TICKS;
-            logTx(`\u041C\u0435\u043D\u0435\u0434\u0436\u0435\u0440: \u0440\u0435\u043A\u043B\u0430\u043C\u0430 \u0442\u043E\u0447\u043A\u0438 \xB7 \xAB${shop.name}\xBB`, tier.adCost, "out");
-          }
-        }
-        const catValues = PRODUCT_CATEGORIES.map((cat) => {
-          const c = cats[cat.id];
-          if (!c) return { cat, value: 0, stock: 0 };
-          const price = c.listedPrice > 0 ? c.listedPrice : c.avgCost * 1.5 * cat.marginMult;
-          return { cat, value: c.stock * price, stock: c.stock };
-        });
-        const totalStockValue = catValues.reduce((s, x) => s + x.value, 0);
-        const adActive = os.tickCount < adUntilTick;
-        const adMult = adActive ? OFFLINE_AD_MULT : 1;
-        const equipmentBoost = (ownedItemsRef.current.equipment1 || 0) > 0 ? SHOP_ITEMS.find((i) => i.id === "equipment1").offlineBoost : 0;
-        const conditionMult = 0.4 + boostHealth / 100 * 0.9 + equipmentBoost;
-        const repMult = Math.max(0.4, Math.min(1.2, reputationRef.current / 100));
-        const sellable = PRODUCT_CATEGORIES.filter((cat) => {
-          const c = cats[cat.id];
-          return c && c.stock > 0 && c.listedPrice > 0;
-        });
-        const growthLevelPrev = os.growthLevel || 0;
-        const growthDemandMult = 1 + growthLevelPrev / 100 * 0.8;
-        const growthCapMult = 1 + growthLevelPrev / 100 * 0.6;
-        const newCategories = { ...cats };
-        let revenue = 0;
-        let avgAttractiveness = 0;
-        if (sellable.length > 0) {
-          const desired = sellable.map((cat) => {
-            const c = cats[cat.id];
-            const fairPrice = c.avgCost * 1.5 * cat.marginMult * marketIndexRef.current;
-            const attractiveness = Math.max(0.35, Math.min(2.2, fairPrice / c.listedPrice));
-            const ratingMult = Math.max(0.15, Math.min(1.3, (shop.rating - 1) / 4));
-            const randomFactor = 0.75 + Math.random() * 0.5;
-            const shareOfFootfall = tier.footfall / OFFLINE_TICKS_PER_HOUR / sellable.length;
-            const demandUnits = shareOfFootfall * 1.4 * attractiveness * ratingMult * repMult * adMult * conditionMult * randomFactor * growthDemandMult;
-            const units = Math.max(0, Math.min(c.stock, Math.round(demandUnits)));
-            return { cat, units, price: c.listedPrice, value: units * c.listedPrice, attractiveness };
-          });
-          avgAttractiveness = desired.reduce((s, d) => s + d.attractiveness, 0) / desired.length;
-          const desiredTotal = desired.reduce((s, d) => s + d.value, 0);
-          const maxTickRevenue = tier.maxHourlyRevenue * growthCapMult / OFFLINE_TICKS_PER_HOUR;
-          const scale = desiredTotal > maxTickRevenue && desiredTotal > 0 ? maxTickRevenue / desiredTotal : 1;
-          desired.forEach(({ cat, units, price }) => {
-            const finalUnits = scale < 1 ? Math.floor(units * scale) : units;
-            if (finalUnits > 0) {
-              newCategories[cat.id] = { ...newCategories[cat.id], stock: newCategories[cat.id].stock - finalUnits };
-              revenue += finalUnits * price;
-            }
-          });
-        }
-        const growthHealthy = sellable.length > 0 && avgAttractiveness >= 0.7;
-        const growthLevel = growthHealthy ? Math.min(100, growthLevelPrev + 1) : Math.max(0, growthLevelPrev - 2);
-        if (totalStockValue >= tier.healthyStockValue) boostHealth = Math.min(100, boostHealth + 8);
-        else if (totalStockValue > 0) boostHealth = Math.max(0, boostHealth - 3);
-        else boostHealth = Math.max(0, boostHealth - 15);
-        if (revenue > 0) {
-          ipCashDelta += revenue;
-          setQuarterRevenue((r) => r + revenue);
-          logTx(`\u041E\u0444\u043B\u0430\u0439\u043D-\u043F\u0440\u043E\u0434\u0430\u0436\u0438 \xB7 \xAB${shop.name}\xBB`, revenue, "in");
-        }
-        updates[shop.id] = {
-          categories: newCategories,
-          totalRevenue: shop.totalRevenue + revenue,
-          offlineStore: { ...os, boostHealth, missedTicks, adUntilTick, growthLevel, tickCount: os.tickCount + 1, nextTickAt: Date.now() + OFFLINE_TICK_MS, totalOfflineRevenue: os.totalOfflineRevenue + revenue }
-        };
-      });
-      if (ipCashDelta !== 0) setIpCash((c) => Math.max(0, c + ipCashDelta));
-      setResellShops((prev) => prev.map((s) => updates[s.id] ? { ...s, ...updates[s.id] } : s));
-      if (Object.keys(factoryStockUsed).length) {
-        setFactories((prev) => prev.map((f) => factoryStockUsed[f.id] ? { ...f, stock: Math.max(0, f.stock - factoryStockUsed[f.id]), totalTransferredToShop: (f.totalTransferredToShop || 0) + factoryStockUsed[f.id] } : f));
-      }
-      setTimeout(saveGame, 50);
-    }, 15e3);
-    return () => clearInterval(id);
-  }, [loaded]);
-  useEffect(() => {
-    if (!loaded) return;
-    const id = setInterval(() => {
-      const shops = resellShopsRef.current;
-      const due = shops.filter((s) => s.manager?.hired);
-      if (!due.length) return;
-      let ipCashDelta = 0;
-      const updates = {};
-      const factoryStockUsed = {};
-      due.forEach((shop) => {
-        let manager = { ...shop.manager };
-        if (Date.now() >= manager.nextSalaryAt) {
-          const cyclesPassed = Math.max(1, Math.floor((Date.now() - manager.nextSalaryAt) / MANAGER_SALARY_CYCLE_MS) + 1);
-          manager.salaryDue += MANAGER_SALARY * cyclesPassed;
-          manager.nextSalaryAt += cyclesPassed * MANAGER_SALARY_CYCLE_MS;
-        }
-        if (manager.salaryDue >= MANAGER_SALARY * 3) {
-          pushPost({ text: `\xAB${shop.name}\xBB: \u043C\u0435\u043D\u0435\u0434\u0436\u0435\u0440 \u0443\u0432\u043E\u043B\u0438\u043B\u0441\u044F \u2014 \u0437\u0430\u0440\u043F\u043B\u0430\u0442\u0430 \u043D\u0435 \u0432\u044B\u043F\u043B\u0430\u0447\u0438\u0432\u0430\u043B\u0430\u0441\u044C \u0441\u043B\u0438\u0448\u043A\u043E\u043C \u0434\u043E\u043B\u0433\u043E`, positive: false, isMacro: false });
-          updates[shop.id] = { ...updates[shop.id], manager: null };
-          return;
-        }
-        let cats = { ...shop.categories || {} };
-        let managerNewAds = null;
-        const priceGap = Number.isFinite(manager.priceGap) ? Math.max(0, manager.priceGap) : MANAGER_PRICE_GAP_DEFAULT;
-        const preferredSupplier = manager.supplierId && manager.supplierId !== "auto" ? SUPPLIERS.find((s) => s.id === manager.supplierId) : null;
-        const candidateSuppliers = preferredSupplier ? [preferredSupplier] : SUPPLIERS;
-        PRODUCT_CATEGORIES.forEach((cat) => {
-          const c = cats[cat.id];
-          if (!c) return;
-          let next = c;
-          const targetStock = manager.minStock * 2;
-          if (next.stock < manager.minStock && targetStock > next.stock) {
-            let needed = targetStock - next.stock;
-            if (manager.supplierId && manager.supplierId.indexOf("factory:") === 0) {
-              const factoryId = manager.supplierId.slice(8);
-              const factory = factoriesRef.current.find((f) => f.id === factoryId && f.category === cat.id);
-              const factoryStockLeft = factory ? Math.max(0, factory.stock - (factoryStockUsed[factory.id] || 0)) : 0;
-              if (factory && factoryStockLeft > 0 && needed > 0) {
-                const unitCost = FACTORY_UNIT_COST[cat.id];
-                const logisticsUnitCost = unitCost * FACTORY_SHOP_TRANSFER_FEE_PCT;
-                const available2 = ipCashRef.current + ipCashDelta;
-                const affordableByLogistics = logisticsUnitCost > 0 ? Math.floor(available2 / logisticsUnitCost) : needed;
-                const fromFactory = Math.max(0, Math.min(needed, factoryStockLeft, affordableByLogistics));
-                if (fromFactory > 0) {
-                  const logisticsCost = Math.round(fromFactory * logisticsUnitCost);
-                  ipCashDelta -= logisticsCost;
-                  factoryStockUsed[factory.id] = (factoryStockUsed[factory.id] || 0) + fromFactory;
-                  const newStock = next.stock + fromFactory;
-                  const newAvgCost = next.stock > 0 ? (next.avgCost * next.stock + unitCost * fromFactory) / newStock : unitCost;
-                  next = { ...next, stock: newStock, avgCost: Math.round(newAvgCost * 100) / 100 };
-                  needed -= fromFactory;
-                  logTx(`\u041C\u0435\u043D\u0435\u0434\u0436\u0435\u0440: \u043F\u0435\u0440\u0435\u0432\u043E\u0434 \u0441\u043E \u0441\u0432\u043E\u0435\u0433\u043E \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u0430 \xB7 \xAB${shop.name}\xBB (${cat.name} \xD7${fromFactory})`, logisticsCost, "out");
-                }
-              }
-            }
-            const bestSupplier = needed > 0 ? candidateSuppliers.reduce((best, s) => {
-              const perf = companyPerfPct(companiesRef.current, s.companyTicker);
-              const price = s.pricePerUnit * cat.priceMult * marketIndexRef.current * supplierHealthPriceMult(perf);
-              return !best || price < best.price ? { supplier: s, price } : best;
-            }, null) : null;
-            if (bestSupplier) {
-              const unitPrice = Math.round(bestSupplier.price * 100) / 100;
-              const available2 = ipCashRef.current + ipCashDelta;
-              const affordableUnits = unitPrice > 0 ? Math.floor(available2 / unitPrice) : 0;
-              const buyUnits = Math.max(0, Math.min(needed, affordableUnits));
-              if (buyUnits > 0) {
-                const cost = Math.round(buyUnits * unitPrice * 100) / 100;
-                ipCashDelta -= cost;
-                const newStock = next.stock + buyUnits;
-                const newAvgCost = next.stock > 0 ? (next.avgCost * next.stock + unitPrice * buyUnits) / newStock : unitPrice;
-                next = { ...next, stock: newStock, avgCost: Math.round(newAvgCost * 100) / 100 };
-                logTx(`\u041C\u0435\u043D\u0435\u0434\u0436\u0435\u0440: \u0434\u043E\u043A\u0443\u043F\u043A\u0430 \u043E\u0441\u0442\u0430\u0442\u043A\u0430 \xB7 \xAB${shop.name}\xBB (${cat.name}, ${bestSupplier.supplier.flag} ${bestSupplier.supplier.country})`, cost, "out");
-              }
-            }
-          }
-          if (next.avgCost > 0) {
-            const maxMarketPrice = next.avgCost * 1.5 * cat.marginMult * marketIndexRef.current;
-            const targetPrice = Math.round(Math.max(next.avgCost * 0.5, maxMarketPrice - priceGap) * 100) / 100;
-            if (Math.abs((next.listedPrice || 0) - targetPrice) > 0.01) next = { ...next, listedPrice: targetPrice };
-          }
-          if (next !== c) cats[cat.id] = next;
-        });
-        if (manager.autoAdEnabled) {
-          const adTierId = MANAGER_AD_TIER_MAP[manager.adTier] || "featured";
-          const onlineTier = AD_TIERS.find((t) => t.id === adTierId);
-          const activeAds = (shop.ads || []).filter((a) => Date.now() < a.adUntil);
-          const activeBoost = activeAds.length ? computeAdBoost(activeAds) : 1;
-          if (onlineTier && activeBoost < onlineTier.boostMult) {
-            const available3 = ipCashRef.current + ipCashDelta;
-            if (available3 >= onlineTier.cost) {
-              ipCashDelta -= onlineTier.cost;
-              managerNewAds = [{ id: makeId("ad"), tierId: onlineTier.id, boostMult: onlineTier.boostMult, adUntil: Date.now() + onlineTier.durationMin * 6e4 }];
-              logTx(`\u041C\u0435\u043D\u0435\u0434\u0436\u0435\u0440: \u0440\u0435\u043A\u043B\u0430\u043C\u0430 \u043D\u0430 \u043C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441\u0435 \xB7 \xAB${shop.name}\xBB (${onlineTier.name})`, onlineTier.cost, "out");
-            }
-          }
-        }
-        updates[shop.id] = {
-          ...updates[shop.id],
-          categories: cats,
-          manager,
-          ...managerNewAds ? { ads: [...shop.ads || [], ...managerNewAds] } : {}
-        };
-      });
-      if (ipCashDelta !== 0) setIpCash((c) => Math.max(0, c + ipCashDelta));
-      if (Object.keys(updates).length) {
-        setResellShops((prev) => prev.map((s) => updates[s.id] ? { ...s, ...updates[s.id] } : s));
-      }
-      if (Object.keys(factoryStockUsed).length) {
-        setFactories((prev) => prev.map((f) => factoryStockUsed[f.id] ? { ...f, stock: Math.max(0, f.stock - factoryStockUsed[f.id]), totalTransferredToShop: (f.totalTransferredToShop || 0) + factoryStockUsed[f.id] } : f));
-      }
-      setTimeout(saveGame, 50);
-    }, 15e3);
-    return () => clearInterval(id);
-  }, [loaded]);
-  useEffect(() => {
-    if (!loaded) return;
-    const id = setInterval(() => {
       const list = warehousesRef.current;
       const due = list.filter((w) => Date.now() >= w.nextCycleAt);
       if (!due.length) return;
@@ -4719,16 +4467,23 @@ function MarketSandbox() {
       const cardIncome = Math.round(Math.sqrt(Math.max(0, b.clients)) * BANK_CARD_BASE_TRANSFER_VOL * b.cardFeeRate * dtFrac);
       let depositReserveDelta = 0;
       let depositInflow = 0;
-      const missedDeposits = [];
-      const survivingDeposits = [];
-      (b.deposits || []).forEach((d) => {
-        if (now < d.nextPayoutAt) { survivingDeposits.push(d); return; }
-        const owed = Math.min(d.payment ?? 0, (d.total ?? d.principal) - (d.paidAmount || 0));
-        const overdueSince = d.overdueSince || now;
-        const graceExpired = now - overdueSince > BANK_OVERDUE_GRACE_MS;
-        if (graceExpired && !d.escalated) missedDeposits.push({ ...d, owed });
-        survivingDeposits.push({ ...d, overdueSince, escalated: d.escalated || graceExpired });
-      });
+      const survivingDeposits = (b.deposits || []).slice();
+      const depositsDueNow = now >= (b.nextDepositPayoutAt || 0);
+      const pendingOwed = depositsDueNow ? survivingDeposits.reduce((s, d) => s + depositOwedNow(d, now), 0) : 0;
+      let depositOverdueSince = b.depositOverdueSince || null;
+      let depositEscalated = b.depositEscalated || false;
+      let missedDeposits = [];
+      if (depositsDueNow && pendingOwed > 0) {
+        if (!depositOverdueSince) depositOverdueSince = now;
+        const graceExpired = now - depositOverdueSince > BANK_OVERDUE_GRACE_MS;
+        if (graceExpired && !depositEscalated) {
+          missedDeposits = survivingDeposits.filter((d) => depositOwedNow(d, now) > 0).map((d) => ({ ...d, owed: depositOwedNow(d, now) }));
+          depositEscalated = true;
+        }
+      } else {
+        depositOverdueSince = null;
+        depositEscalated = false;
+      }
       let depositsOpenedThisTick = 0;
       let depositsAmountThisTick = 0;
       const depRate = b.depositRate ?? BANK_NPC_AVG_DEPOSIT_RATE;
@@ -4736,8 +4491,7 @@ function MarketSandbox() {
       if (Math.random() < BANK_DEPOSIT_LAMBDA_BASE * inflowMult * dtFrac) {
         const principal = bankRollDepositSize();
         const total = Math.round(principal * (1 + depRate));
-        const payment = Math.round(total / BANK_DEPOSIT_TERM_CYCLES);
-        survivingDeposits.push({ id: makeId("dep"), npcName: DEPOSIT_NPC_NAMES[Math.floor(Math.random() * DEPOSIT_NPC_NAMES.length)], principal, rate: depRate, total, payment, cyclesTotal: BANK_DEPOSIT_TERM_CYCLES, cyclesPaid: 0, paidAmount: 0, openedAt: now, nextPayoutAt: now + BANK_CYCLE_MS, overdueSince: null, escalated: false });
+        survivingDeposits.push({ id: makeId("dep"), npcName: DEPOSIT_NPC_NAMES[Math.floor(Math.random() * DEPOSIT_NPC_NAMES.length)], principal, rate: depRate, total, paidAmount: 0, openedAt: now });
         depositReserveDelta += principal;
         depositInflow += principal;
         depositsOpenedThisTick += 1;
@@ -4751,8 +4505,7 @@ function MarketSandbox() {
         if (Math.random() < lambdaPerSec * dtMs / 1e3) {
           const principal = bankRollDepositSize();
           const total = Math.round(principal * (1 + depRate));
-          const payment = Math.round(total / BANK_DEPOSIT_TERM_CYCLES);
-          survivingDeposits.push({ id: makeId("dep"), npcName: DEPOSIT_NPC_NAMES[Math.floor(Math.random() * DEPOSIT_NPC_NAMES.length)], principal, rate: depRate, total, payment, cyclesTotal: BANK_DEPOSIT_TERM_CYCLES, cyclesPaid: 0, paidAmount: 0, openedAt: now, nextPayoutAt: now + BANK_CYCLE_MS, overdueSince: null, escalated: false });
+          survivingDeposits.push({ id: makeId("dep"), npcName: DEPOSIT_NPC_NAMES[Math.floor(Math.random() * DEPOSIT_NPC_NAMES.length)], principal, rate: depRate, total, paidAmount: 0, openedAt: now });
           depositReserveDelta += principal;
           depositInflow += principal;
           depositsOpenedThisTick += 1;
@@ -4797,6 +4550,8 @@ function MarketSandbox() {
         creditOutstanding: newOutstanding,
         creditPoolAllocated: newIdlePool,
         deposits: survivingDeposits,
+        depositOverdueSince,
+        depositEscalated,
         depositReserve: (prev.depositReserve || 0) + depositReserveDelta,
         quarterRevenue: (prev.quarterRevenue || 0) + turnoverGain,
         totalDefaulted: (prev.totalDefaulted || 0) + defaulted,
@@ -4890,8 +4645,9 @@ function MarketSandbox() {
       const isPanic = bs && bs.liqStatus === "red" && (b.escalatedStreak || 0) >= 1;
       let panicDeposits = b.deposits || [];
       let panicPost = null;
+      let panicForceDue = false;
       if (isPanic && Math.random() < 0.35) {
-        panicDeposits = panicDeposits.map((d) => Math.random() < 0.3 ? { ...d, nextPayoutAt: Date.now() } : d);
+        panicForceDue = true;
         panicPost = `Клиенты «${b.name}» массово требуют вернуть вклады на фоне слухов о проблемах с ликвидностью`;
       }
       const newEscalatedStreak = bs && bs.liqStatus === "red" ? (b.escalatedStreak || 0) + 1 : 0;
@@ -4922,6 +4678,7 @@ function MarketSandbox() {
         trust: Math.max(0, newTrust - equityTrustHit),
         reputation: newReputation,
         deposits: panicDeposits,
+        nextDepositPayoutAt: panicForceDue ? Date.now() : prev.nextDepositPayoutAt,
         escalatedStreak: newEscalatedStreak,
         equityCriticalStreak: newEquityCriticalStreak,
         defaultedSinceCycle: 0,
@@ -5338,76 +5095,6 @@ function MarketSandbox() {
   };
   const RESELL_TOTAL_STARTUP = RESELL_STARTUP.registration + RESELL_STARTUP.rent + RESELL_STARTUP.equipment;
   const emptyCategoryMap = () => Object.fromEntries(PRODUCT_CATEGORIES.map((c) => [c.id, { stock: 0, avgCost: 0, listedPrice: 0 }]));
-  const openOfflineStore = (shopId, tierId) => {
-    const tier = OFFLINE_STORE_TIERS[tierId];
-    const shop = resellShops.find((s) => s.id === shopId);
-    if (!tier) return;
-    const hasCommercial = (ownedItems.commercial1 || 0) > 0;
-    const effectiveCost = Math.round(tier.openingCost * (hasCommercial ? 1 - SHOP_ITEMS.find((i) => i.id === "commercial1").offlineDiscount : 1));
-    if (!shop || shop.offlineStore) return;
-    if (ipCash < effectiveCost) {
-      notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u043D\u0430 \u0418\u041F \u2014 \u043D\u0443\u0436\u043D\u043E ${fmt(effectiveCost)}`);
-      return;
-    }
-    setIpCash((c) => c - effectiveCost);
-    setResellShops((prev) => prev.map((s) => s.id === shopId ? { ...s, offlineStore: { tier: tierId, boostHealth: 70, missedTicks: 0, adUntilTick: 0, tickCount: 0, growthLevel: 0, nextTickAt: Date.now() + OFFLINE_TICK_MS, totalOfflineRevenue: 0 } } : s));
-    logTx(`\u041E\u0442\u043A\u0440\u044B\u0442\u0438\u0435 \u043E\u0444\u043B\u0430\u0439\u043D-\u043C\u0430\u0433\u0430\u0437\u0438\u043D\u0430 \xB7 ${tier.name}${hasCommercial ? " (\u0441\u043A\u0438\u0434\u043A\u0430 \u0437\u0430 \u043A\u043E\u043C\u043C\u0435\u0440\u0447. \u043D\u0435\u0434\u0432\u0438\u0436\u0438\u043C\u043E\u0441\u0442\u044C)" : ""}`, effectiveCost, "out");
-    setTimeout(saveGame, 50);
-  };
-  const closeOfflineStore = (shopId) => {
-    setResellShops((prev) => prev.map((s) => s.id === shopId ? { ...s, offlineStore: null } : s));
-    setTimeout(saveGame, 50);
-  };
-  const runOfflineAd = (shopId) => {
-    const shop = resellShops.find((s) => s.id === shopId);
-    if (!shop?.offlineStore) return;
-    const tier = OFFLINE_STORE_TIERS[shop.offlineStore.tier];
-    if (ipCash < tier.adCost) {
-      notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u043D\u0430 \u0418\u041F \u2014 \u043D\u0443\u0436\u043D\u043E ${fmt(tier.adCost)}`);
-      return;
-    }
-    setIpCash((c) => c - tier.adCost);
-    setResellShops((prev) => prev.map((s) => s.id === shopId ? { ...s, offlineStore: { ...s.offlineStore, adUntilTick: s.offlineStore.tickCount + OFFLINE_AD_DURATION_TICKS } } : s));
-    logTx(`\u0420\u0435\u043A\u043B\u0430\u043C\u0430 \u043E\u0444\u043B\u0430\u0439\u043D-\u043C\u0430\u0433\u0430\u0437\u0438\u043D\u0430 \xB7 ${tier.name}`, tier.adCost, "out");
-    setTimeout(saveGame, 50);
-  };
-  const hireManager = (shopId, { minStock, priceGap, adTier, autoAdEnabled, supplierId }) => {
-    const shop = resellShops.find((s) => s.id === shopId);
-    if (!shop) return;
-    setResellShops((prev) => prev.map((s) => s.id === shopId ? { ...s, manager: {
-      hired: true,
-      minStock: Math.max(1, Math.round(Number(minStock) || 0)),
-      priceGap: Math.max(0, Number(priceGap)) || 0,
-      adTier: ["min", "mid", "max"].includes(adTier) ? adTier : "mid",
-      autoAdEnabled: !!autoAdEnabled,
-      supplierId: supplierId || "auto",
-      salaryDue: 0,
-      nextSalaryAt: Date.now() + MANAGER_SALARY_CYCLE_MS
-    } } : s));
-    setTimeout(saveGame, 50);
-  };
-  const updateManagerSettings = (shopId, patch) => {
-    setResellShops((prev) => prev.map((s) => s.id === shopId && s.manager ? { ...s, manager: { ...s.manager, ...patch } } : s));
-    setTimeout(saveGame, 50);
-  };
-  const fireManager = (shopId) => {
-    setResellShops((prev) => prev.map((s) => s.id === shopId ? { ...s, manager: null } : s));
-    setTimeout(saveGame, 50);
-  };
-  const payManagerSalary = (shopId) => {
-    const shop = resellShops.find((s) => s.id === shopId);
-    const due = shop?.manager?.salaryDue || 0;
-    if (due <= 0) return;
-    const paid = Math.min(due, ipCash);
-    if (paid <= 0) {
-      notify("\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u043D\u0430 \u0418\u041F \u0434\u043B\u044F \u0437\u0430\u0440\u043F\u043B\u0430\u0442\u044B \u043C\u0435\u043D\u0435\u0434\u0436\u0435\u0440\u0430");
-      return;
-    }
-    setIpCash((c) => c - paid);
-    setResellShops((prev) => prev.map((s) => s.id === shopId && s.manager ? { ...s, manager: { ...s.manager, salaryDue: s.manager.salaryDue - paid } } : s));
-    logTx(`\u0417\u0430\u0440\u043F\u043B\u0430\u0442\u0430 \u043C\u0435\u043D\u0435\u0434\u0436\u0435\u0440\u0430 \xB7 \xAB${shop.name}\xBB`, paid, "out");
-    setTimeout(saveGame, 50);
-  };
   const startResellBusiness = (name) => {
     const src = resolvedPayFrom;
     const bal = getAccountBalance(src);
@@ -6970,7 +6657,6 @@ function MarketSandbox() {
       { id: "warehouses", label: "2 \u0431\u043E\u043B\u044C\u0448\u0438\u0445 \u0441\u043A\u043B\u0430\u0434\u0430 ZZONE", met: largeWarehouses.length >= 2 },
       { id: "entity", label: "\u042E\u0440\u0438\u0434\u0438\u0447\u0435\u0441\u043A\u0430\u044F \u0444\u043E\u0440\u043C\u0430 \u041E\u041E\u041E", met: entityType === "ooo" },
       { id: "office", label: "\u041E\u0444\u0438\u0441 \u0432 \u0441\u043E\u0431\u0441\u0442\u0432\u0435\u043D\u043D\u043E\u0441\u0442\u0438", met: (ownedItems.commercial1 || 0) > 0 },
-      { id: "shop", label: `\u041C\u0430\u0433\u0430\u0437\u0438\u043D \u043D\u0430 ZZONE \u0441 \u043E\u0431\u043E\u0440\u043E\u0442\u043E\u043C \u043E\u0442 ${fmt(MARKETPLACE_SELLER_TURNOVER_REQ)}`, met: !!qualifyingShop && qualifyingShop.totalRevenue >= MARKETPLACE_SELLER_TURNOVER_REQ },
       { id: "cash", label: `${fmt(totalCost)} \u043D\u0430 \u0441\u0447\u0451\u0442\u0435 \u0418\u041F`, met: ipCash >= totalCost }
     ];
     return { checks, eligible: checks.every((c) => c.met), largeWarehouses, qualifyingShop, totalCost };
@@ -6978,18 +6664,18 @@ function MarketSandbox() {
   const createMarketplace = () => {
     if (marketplaceRef.current) return;
     const { eligible, largeWarehouses, qualifyingShop, totalCost } = marketplaceEligibility();
-    if (!eligible || !qualifyingShop) return;
+    if (!eligible) return;
     const chosenWarehouseIds = largeWarehouses.slice(0, 2).map((w) => w.id);
     setIpCash((c) => c - totalCost);
     logTx("\u041C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441 \xB7 \u043F\u043E\u0434\u0433\u043E\u0442\u043E\u0432\u043A\u0430 \u043A IPO", MARKETPLACE_IPO_PREP_COST, "out");
     logTx("\u041C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441 \xB7 \u0440\u0430\u0437\u0440\u0430\u0431\u043E\u0442\u043A\u0430 \u043F\u043B\u0430\u0442\u0444\u043E\u0440\u043C\u044B", MARKETPLACE_PLATFORM_COST, "out");
     setWarehouses((prev) => prev.map((w) => chosenWarehouseIds.includes(w.id) ? { ...w, assignedToMarketplace: true } : w));
-    setResellShops((prev) => prev.map((s) => s.id === qualifyingShop.id ? { ...s, mergedIntoMarketplace: true } : s));
-    const trustSeed = Math.round(clamp01((playerSocialProfileRef.current.trust + qualifyingShop.rating * 15) / 2, 20, 80));
-    const sellerSeed = 4 + Math.min(6, Math.floor(qualifyingShop.totalRevenue / 150000));
+    if (qualifyingShop) setResellShops((prev) => prev.map((s) => s.id === qualifyingShop.id ? { ...s, mergedIntoMarketplace: true } : s));
+    const trustSeed = Math.round(clamp01((playerSocialProfileRef.current.trust + (qualifyingShop ? qualifyingShop.rating * 15 : 0)) / 2, 20, 80));
+    const sellerSeed = qualifyingShop ? 4 + Math.min(6, Math.floor(qualifyingShop.totalRevenue / 150000)) : 3;
     const mp = {
       id: makeId("marketplace"),
-      name: qualifyingShop.name + " Market",
+      name: (qualifyingShop ? qualifyingShop.name : "ZZONE Rival") + " Market",
       createdAt: Date.now(),
       cash: 0,
       sellerCount: sellerSeed,
@@ -7012,7 +6698,7 @@ function MarketSandbox() {
       stockTicker: null,
       socialProfile: { trust: 50, postLog: [], lastPostAt: 0 },
       warehouseIds: chosenWarehouseIds,
-      originShopId: qualifyingShop.id,
+      originShopId: qualifyingShop ? qualifyingShop.id : null,
       cyclesRun: 0,
       totalGmv: 0,
       totalRevenue: 0,
@@ -7076,6 +6762,9 @@ function MarketSandbox() {
       depositReserve: 0,
       depositRate: BANK_NPC_AVG_DEPOSIT_RATE,
       deposits: [],
+      nextDepositPayoutAt: Date.now() + BANK_DEPOSIT_PAYOUT_INTERVAL_MS,
+      depositOverdueSince: null,
+      depositEscalated: false,
       totalDepositInterestPaid: 0,
       totalDepositPrincipalReturned: 0,
       totalDepositsOpened: 0,
@@ -7212,29 +6901,38 @@ function MarketSandbox() {
     const b = bankRef.current;
     if (!b) return;
     const now = Date.now();
-    const due = (b.deposits || []).filter((d) => now >= d.nextPayoutAt);
-    const totalDue = due.reduce((s, d) => s + Math.min(d.payment ?? 0, (d.total ?? d.principal) - (d.paidAmount || 0)), 0);
-    if (totalDue <= 0) { notify("Нет вкладов к выплате"); return; }
-    if (b.capital < totalDue) {
-      notify(`Невозможно выплатить \xB7 нужно ${fmt(totalDue)}, доступно ${fmt(b.capital)}`);
+    if (now < (b.nextDepositPayoutAt || 0)) { notify("Ещё не время выплаты · выплаты пачкой раз в 15 минут"); return; }
+    const deposits = b.deposits || [];
+    const paid = deposits.reduce((s, d) => s + depositOwedNow(d, now), 0);
+    if (paid <= 0) {
+      setBank((prev) => prev ? { ...prev, nextDepositPayoutAt: now + BANK_DEPOSIT_PAYOUT_INTERVAL_MS, depositOverdueSince: null, depositEscalated: false } : prev);
+      notify("Нет вкладов к выплате");
       return;
     }
-    let paid = 0;
-    const nextDeposits = (b.deposits || []).map((d) => {
-      if (now < d.nextPayoutAt) return d;
-      const owed = Math.min(d.payment ?? 0, (d.total ?? d.principal) - (d.paidAmount || 0));
-      paid += owed;
+    if (b.capital < paid) {
+      notify(`Невозможно выплатить \xB7 нужно ${fmt(paid)}, доступно ${fmt(b.capital)}`);
+      return;
+    }
+    let principalReturned = 0;
+    const nextDeposits = [];
+    deposits.forEach((d) => {
+      const owed = depositOwedNow(d, now);
       const paidAmount = (d.paidAmount || 0) + owed;
-      const cyclesPaid = (d.cyclesPaid || 0) + 1;
-      if (cyclesPaid >= d.cyclesTotal || paidAmount >= (d.total ?? d.principal) - 1) return null;
-      return { ...d, paidAmount, cyclesPaid, nextPayoutAt: now + BANK_CYCLE_MS, overdueSince: null, escalated: false };
-    }).filter(Boolean);
+      if (paidAmount >= (d.total ?? d.principal) - 1) {
+        principalReturned += d.principal;
+      } else {
+        nextDeposits.push({ ...d, paidAmount });
+      }
+    });
     setBank((prev) => prev ? {
       ...prev,
       capital: prev.capital - paid,
       deposits: nextDeposits,
-      totalDepositInterestPaid: (prev.totalDepositInterestPaid || 0) + Math.max(0, paid - due.reduce((s, d) => s + Math.min(d.principal, d.payment ?? 0), 0)),
-      totalDepositPrincipalReturned: (prev.totalDepositPrincipalReturned || 0) + due.filter((d) => (d.cyclesPaid || 0) + 1 >= d.cyclesTotal).reduce((s, d) => s + d.principal, 0)
+      nextDepositPayoutAt: now + BANK_DEPOSIT_PAYOUT_INTERVAL_MS,
+      depositOverdueSince: null,
+      depositEscalated: false,
+      totalDepositInterestPaid: (prev.totalDepositInterestPaid || 0) + Math.max(0, paid - principalReturned),
+      totalDepositPrincipalReturned: (prev.totalDepositPrincipalReturned || 0) + principalReturned
     } : prev);
     logTx("Вклады \xB7 выплата", paid, "out");
     notify(`Выплачено ${fmt(paid)} по вкладам`, true);
@@ -7242,8 +6940,10 @@ function MarketSandbox() {
   };
   const startBankIpo = () => {
     const b = bankRef.current;
-    if (!b || b.isPublic || b.capital < BANK_IPO_CAPITAL_THRESHOLD) return;
-    const price = Math.max(0.5, Number((b.capital / BANK_IPO_SUPPLY).toFixed(2)));
+    if (!b || b.isPublic) return;
+    const bs = bankBalanceSheet(b, companiesRef.current);
+    if (!bs || bs.equity < BANK_IPO_CAPITAL_THRESHOLD) return;
+    const price = Math.max(0.5, Number((bs.equity / BANK_IPO_SUPPLY).toFixed(2)));
     const id2 = makeId("co");
     const stockTicker = "MBNK";
     setCompanies((prev) => [...prev, {
@@ -9724,7 +9424,8 @@ function MarketSandbox() {
                   /* @__PURE__ */ jsx("button", { onClick: () => { depositToBankCapital(bankTransferAmount); setBankTransferAmount(""); }, disabled: !(Number(bankTransferAmount) > 0) || Number(bankTransferAmount) > ipCash, style: { ...actionBtnStyle(Number(bankTransferAmount) > 0 && Number(bankTransferAmount) <= ipCash), flex: 1, marginBottom: 0 }, children: "\u0412\u043D\u0435\u0441\u0442\u0438 \u0441 \u0418\u041F" }),
                   /* @__PURE__ */ jsx("button", { onClick: () => { withdrawBankCapital(bankTransferAmount); setBankTransferAmount(""); }, disabled: !(Number(bankTransferAmount) > 0) || Number(bankTransferAmount) > bank.capital, style: { ...actionBtnStyle(Number(bankTransferAmount) > 0 && Number(bankTransferAmount) <= bank.capital, C.violet), flex: 1, marginBottom: 0 }, children: "\u0421\u043D\u044F\u0442\u044C \u043D\u0430 \u0418\u041F" })
                 ] }),
-                !bank.isPublic && bank.capital >= BANK_IPO_CAPITAL_THRESHOLD && /* @__PURE__ */ jsx("button", { onClick: startBankIpo, style: { ...actionBtnStyle(true), marginTop: 10, marginBottom: 0 }, children: `\u0412\u044B\u0432\u0435\u0441\u0442\u0438 \u0431\u0430\u043D\u043A \u043D\u0430 IPO \xB7 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E \u0441 ${fmt(BANK_IPO_CAPITAL_THRESHOLD)}` })
+                !bank.isPublic && bankHeroBs && bankHeroBs.equity >= BANK_IPO_CAPITAL_THRESHOLD && /* @__PURE__ */ jsx("button", { onClick: startBankIpo, style: { ...actionBtnStyle(true), marginTop: 10, marginBottom: 0 }, children: `\u0412\u044B\u0432\u0435\u0441\u0442\u0438 \u0431\u0430\u043D\u043A \u043D\u0430 IPO \xB7 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E \u0441 ${fmt(BANK_IPO_CAPITAL_THRESHOLD)}` }),
+                !bank.isPublic && bankHeroBs && bankHeroBs.equity < BANK_IPO_CAPITAL_THRESHOLD && /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint, marginTop: 10 }, children: ["\u0414\u043E IPO: ", fmt(Math.max(0, BANK_IPO_CAPITAL_THRESHOLD - bankHeroBs.equity)), " \u043A \u0447\u0438\u0441\u0442\u043E\u043C\u0443 \u043A\u0430\u043F\u0438\u0442\u0430\u043B\u0443 \u0431\u0430\u043D\u043A\u0430"] })
               ] }),
               (() => {
                 const positions = Object.entries(bank.holdings || {}).map(([cid, h]) => {
@@ -9775,7 +9476,7 @@ function MarketSandbox() {
                 if (!bs) return null;
                 const statusMap = { green: ["\uD83D\uDFE2 \u041D\u043E\u0440\u043C\u0430", C.green], yellow: ["\uD83D\uDFE1 \u041D\u0430\u043F\u0440\u044F\u0436\u0435\u043D\u0438\u0435", "#E0C34A"], orange: ["\uD83D\uDFE0 \u0414\u0435\u0444\u0438\u0446\u0438\u0442", "#E08A3C"], red: ["\uD83D\uDD34 \u041A\u0440\u0438\u0442\u0438\u0447\u0435\u0441\u043A\u0438\u0439", C.red] };
                 const [statusLabel, statusColor] = statusMap[bs.liqStatus];
-                const overdueList = (bank.deposits || []).filter((d) => Date.now() >= d.nextPayoutAt);
+                const overdueList = Date.now() >= (bank.nextDepositPayoutAt || 0) ? (bank.deposits || []).filter((d) => depositOwedNow(d, Date.now()) > 0) : [];
                 return /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${statusColor}55`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
                   /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }, children: [
                     /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, textTransform: "uppercase", letterSpacing: 1 }, children: "\u0411\u0430\u043B\u0430\u043D\u0441 \u0438 \u043B\u0438\u043A\u0432\u0438\u0434\u043D\u043E\u0441\u0442\u044C" }),
@@ -9962,17 +9663,17 @@ function MarketSandbox() {
                 const deps = bank.deposits || [];
                 const activePrincipal = deps.reduce((s, d) => s + d.principal, 0);
                 const liability = deps.reduce((s, d) => s + Math.max(0, (d.total ?? d.principal) - (d.paidAmount || 0)), 0);
-                const dueNow = deps.filter((d) => now >= d.nextPayoutAt);
-                const dueSum = dueNow.reduce((s, d) => s + Math.min(d.payment ?? 0, (d.total ?? d.principal) - (d.paidAmount || 0)), 0);
-                const upcoming = deps.filter((d) => now < d.nextPayoutAt).sort((a, b) => a.nextPayoutAt - b.nextPayoutAt)[0];
-                const nextIn = upcoming ? Math.max(0, upcoming.nextPayoutAt - now) : null;
+                const batchDue = now >= (bank.nextDepositPayoutAt || 0);
+                const depositEscalatedFlag = !!bank.depositEscalated;
+                const dueSum = batchDue ? deps.reduce((s, d) => s + depositOwedNow(d, now), 0) : 0;
+                const nextIn = !batchDue ? Math.max(0, (bank.nextDepositPayoutAt || 0) - now) : null;
                 const fmtCountdown = (ms) => { const s = Math.floor(ms / 1000); const m = Math.floor(s / 60); const h = Math.floor(m / 60); return `${h > 0 ? h + "\u0447 " : ""}${m % 60}:${String(s % 60).padStart(2, "0")}`; };
                 const filtered = deps.filter((d) => !depositSearch || d.npcName.toLowerCase().includes(depositSearch.toLowerCase()) || d.id.includes(depositSearch));
                 const sorted = [...filtered].sort((a, b) => b.openedAt - a.openedAt);
                 const visible = depositShowAll ? sorted : sorted.slice(0, 5);
                 const canPay = dueSum > 0 && bank.capital >= dueSum;
                 return /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
-                  /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 12, textTransform: "uppercase", letterSpacing: 1 }, children: "\u0412\u043A\u043B\u0430\u0434\u044B \xB7 \u0441\u0440\u043E\u043A 12 \u0446\u0438\u043A\u043B\u043E\u0432" }),
+                  /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 12, textTransform: "uppercase", letterSpacing: 1 }, children: "\u0412\u043A\u043B\u0430\u0434\u044B \xB7 \u0432\u044B\u043F\u043B\u0430\u0442\u0430 \u043F\u0430\u0447\u043A\u043E\u0439 \u0440\u0430\u0437 \u0432 15 \u043C\u0438\u043D\u0443\u0442" }),
                   /* @__PURE__ */ jsxs("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }, children: [
                     [["\u0410\u043A\u0442\u0438\u0432\u043D\u044B\u0435 \u0432\u043A\u043B\u0430\u0434\u044B", fmt(activePrincipal), C.ink],
                      ["\u041E\u0431\u044F\u0437\u0430\u0442\u0435\u043B\u044C\u0441\u0442\u0432\u0430", fmt(liability), C.red],
@@ -10024,10 +9725,10 @@ function MarketSandbox() {
                   deps.length > 0 && /* @__PURE__ */ jsxs("div", { children: [
                     /* @__PURE__ */ jsx("input", { type: "text", value: depositSearch, onChange: (e) => setDepositSearch(e.target.value), placeholder: "\u041F\u043E\u0438\u0441\u043A \u043F\u043E \u0438\u043C\u0435\u043D\u0438 NPC", style: { ...inputStyle, fontSize: 12.5, marginBottom: 10 } }),
                     visible.map((d) => {
-                      const isDue = now >= d.nextPayoutAt;
                       const remaining = Math.max(0, (d.total ?? d.principal) - (d.paidAmount || 0));
-                      const statusLabel = isDue ? (d.escalated ? "\u041F\u0420\u041E\u0421\u0420\u041E\u0427\u041A\u0410" : "\u041A \u0412\u042B\u041F\u041B\u0410\u0422\u0415") : "\u0410\u041A\u0422\u0418\u0412\u0415\u041D";
-                      const statusColor = isDue ? (d.escalated ? C.red : C.gold) : C.green;
+                      const owedNow2 = batchDue ? depositOwedNow(d, now) : 0;
+                      const statusLabel = batchDue && owedNow2 > 0 ? (depositEscalatedFlag ? "\u041F\u0420\u041E\u0421\u0420\u041E\u0427\u041A\u0410" : "\u041A \u0412\u042B\u041F\u041B\u0410\u0422\u0415") : "\u0410\u041A\u0422\u0418\u0412\u0415\u041D";
+                      const statusColor = batchDue && owedNow2 > 0 ? (depositEscalatedFlag ? C.red : C.gold) : C.green;
                       return /* @__PURE__ */ jsxs("div", { style: { padding: "10px 0", borderBottom: `1px solid ${C.border}` }, children: [
                         /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", marginBottom: 4 }, children: [
                           /* @__PURE__ */ jsx("span", { style: { fontSize: 13, fontWeight: 600 }, children: d.npcName }),
@@ -10035,7 +9736,7 @@ function MarketSandbox() {
                         ] }),
                         /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkDim }, children: ["\u0412\u043A\u043B\u0430\u0434: ", fmt(d.principal), " \xB7 \u0421\u0442\u0430\u0432\u043A\u0430: ", ((d.rate ?? 0) * 100).toFixed(1), "% \xB7 \u041A \u0432\u043E\u0437\u0432\u0440\u0430\u0442\u0443: ", fmt(d.total ?? d.principal)] }),
                         /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkDim }, children: ["\u0412\u044B\u043F\u043B\u0430\u0447\u0435\u043D\u043E: ", fmt(d.paidAmount || 0), " \xB7 \u041E\u0441\u0442\u0430\u043B\u043E\u0441\u044C: ", fmt(remaining)] }),
-                        /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkFaint }, children: [isDue ? `\u041A \u0432\u044B\u043F\u043B\u0430\u0442\u0435: ${fmt(Math.min(d.payment ?? 0, remaining))}` : `\u0421\u043B\u0435\u0434\u0443\u044E\u0449\u0430\u044F \u0432\u044B\u043F\u043B\u0430\u0442\u0430: ${fmt(d.payment ?? 0)} \xB7 \u0447\u0435\u0440\u0435\u0437 ${fmtCountdown(Math.max(0, d.nextPayoutAt - now))}`] })
+                        /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkFaint }, children: batchDue && owedNow2 > 0 ? `\u041A \u0432\u044B\u043F\u043B\u0430\u0442\u0435 \u0432 \u044D\u0442\u043E\u0439 \u043F\u0430\u0447\u043A\u0435: ${fmt(owedNow2)}` : `\u041D\u0430\u043A\u043E\u043F\u0438\u0442\u0441\u044F \u043A \u0441\u043B\u0435\u0434\u0443\u044E\u0449\u0435\u0439 \u0432\u044B\u043F\u043B\u0430\u0442\u0435: ${fmt(depositOwedNow(d, now))}` })
                       ] }, d.id);
                     }),
                     sorted.length > 5 && /* @__PURE__ */ jsx("button", { onClick: () => setDepositShowAll((v) => !v), style: { width: "100%", padding: 8, marginTop: 8, borderRadius: 8, border: `1px solid ${C.border}`, background: "transparent", color: C.inkDim, fontSize: 11.5 }, children: depositShowAll ? "\u0421\u0432\u0435\u0440\u043D\u0443\u0442\u044C" : `\u041F\u043E\u043A\u0430\u0437\u0430\u0442\u044C \u0432\u0441\u0435 (${sorted.length})` })
@@ -10440,339 +10141,6 @@ function MarketSandbox() {
                 })(),
                 /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginTop: 8 }, children: "\u041A\u0430\u043C\u043F\u0430\u043D\u0438\u0438 \u0441\u043A\u043B\u0430\u0434\u044B\u0432\u0430\u044E\u0442\u0441\u044F \u2014 \u043C\u043E\u0436\u043D\u043E \u0437\u0430\u043F\u0443\u0441\u043A\u0430\u0442\u044C \u043D\u0435\u0441\u043A\u043E\u043B\u044C\u043A\u043E \u0441\u0440\u0430\u0437\u0443, \u044D\u0444\u0444\u0435\u043A\u0442 \u043F\u0435\u0440\u0435\u043C\u043D\u043E\u0436\u0430\u0435\u0442\u0441\u044F \u0431\u0435\u0437 \u043F\u043E\u0442\u043E\u043B\u043A\u0430 \u2014 \u0431\u043E\u043B\u044C\u0448\u043E\u0439 \u0431\u044E\u0434\u0436\u0435\u0442 \u043C\u043E\u0436\u0435\u0442 \u0434\u0430\u0442\u044C \u0438 \xD710, \u0438 \xD7100." })
               ] }),
-              /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }, children: "\u041E\u0444\u043B\u0430\u0439\u043D-\u043C\u0430\u0433\u0430\u0437\u0438\u043D" }),
-              !shop.offlineStore ? /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
-                /* @__PURE__ */ jsx("div", { style: { fontSize: 11.5, color: C.inkDim, marginBottom: 12, lineHeight: 1.6 }, children: "\u0424\u0438\u0437\u0438\u0447\u0435\u0441\u043A\u0430\u044F \u0442\u043E\u0447\u043A\u0430 \u2014 \u0434\u043E\u043F\u043E\u043B\u043D\u0438\u0442\u0435\u043B\u044C\u043D\u044B\u0439 \u043A\u0430\u043D\u0430\u043B \u043F\u0440\u043E\u0434\u0430\u0436 \u0442\u043E\u0433\u043E \u0436\u0435 \u0441\u043A\u043B\u0430\u0434\u0430, \u0447\u0442\u043E \u0438 \u043E\u043D\u043B\u0430\u0439\u043D-\u043C\u0430\u0433\u0430\u0437\u0438\u043D. \u041F\u0440\u043E\u0434\u0430\u0436\u0438 \u0437\u0430\u0432\u0438\u0441\u044F\u0442 \u043E\u0442 \u0446\u0435\u043D\u044B, \u0440\u0435\u0439\u0442\u0438\u043D\u0433\u0430, \u0440\u0435\u043F\u0443\u0442\u0430\u0446\u0438\u0438, \u0440\u0435\u043A\u043B\u0430\u043C\u044B \u0438 \u0437\u0430\u043F\u043E\u043B\u043D\u0435\u043D\u043D\u043E\u0441\u0442\u0438 \u0441\u043A\u043B\u0430\u0434\u0430, \u0438 \u043E\u0433\u0440\u0430\u043D\u0438\u0447\u0435\u043D\u044B \u043F\u043E\u0442\u043E\u043A\u043E\u043C \u043F\u043E\u043A\u0443\u043F\u0430\u0442\u0435\u043B\u0435\u0439 \u0442\u043E\u0447\u043A\u0438 \u2014 \u0431\u0435\u0437 \u0442\u043E\u0432\u0430\u0440\u0430 \u043D\u0430 \u0441\u043A\u043B\u0430\u0434\u0435 \u043F\u0440\u043E\u0434\u0430\u0432\u0430\u0442\u044C \u043D\u0435\u0447\u0435\u0433\u043E. \u0410\u0440\u0435\u043D\u0434\u0430, \u0437\u0430\u0440\u043F\u043B\u0430\u0442\u0430 \u0438 \u0440\u0430\u0441\u0445\u043E\u0434\u044B \u0441\u043F\u0438\u0441\u044B\u0432\u0430\u044E\u0442\u0441\u044F \u0441\u043E \u0441\u0447\u0451\u0442\u0430 \u0418\u041F \u0440\u0430\u0437 \u0432 \u0447\u0430\u0441 \u2014 \u0435\u0441\u043B\u0438 \u043D\u0435\u0447\u0435\u043C \u043F\u043B\u0430\u0442\u0438\u0442\u044C, \u0441\u043E\u0441\u0442\u043E\u044F\u043D\u0438\u0435 \u0442\u043E\u0447\u043A\u0438 \u0440\u0435\u0437\u043A\u043E \u043F\u0430\u0434\u0430\u0435\u0442, \u0430 \u043F\u043E\u0441\u043B\u0435 \u0442\u0440\u0451\u0445 \u043F\u0440\u043E\u0432\u0430\u043B\u043E\u0432 \u043F\u043E\u0434\u0440\u044F\u0434 \u043C\u0430\u0433\u0430\u0437\u0438\u043D \u0437\u0430\u043A\u0440\u044B\u0432\u0430\u0435\u0442\u0441\u044F. \u041F\u0443\u0441\u0442\u043E\u0439 \u0438\u043B\u0438 \u0441\u043A\u0443\u0434\u043D\u044B\u0439 \u0441\u043A\u043B\u0430\u0434 \u0442\u043E\u0436\u0435 \u0440\u043E\u043D\u044F\u0435\u0442 \u0441\u043E\u0441\u0442\u043E\u044F\u043D\u0438\u0435. \u041F\u043E\u0441\u043B\u0435 \u043E\u0442\u043A\u0440\u044B\u0442\u0438\u044F \u0437\u0434\u0435\u0441\u044C \u0436\u0435 \u043C\u043E\u0436\u043D\u043E \u0431\u0443\u0434\u0435\u0442 \u043D\u0430\u043D\u044F\u0442\u044C \u043C\u0435\u043D\u0435\u0434\u0436\u0435\u0440\u0430 \u043F\u043E \u043F\u0440\u043E\u0434\u0430\u0436\u0430\u043C \u2014 \u043E\u043D \u0441\u0430\u043C \u0434\u0435\u0440\u0436\u0438\u0442 \u043E\u0441\u0442\u0430\u0442\u043E\u043A, \u043D\u0430\u0446\u0435\u043D\u043A\u0443 \u0438 \u0440\u0435\u043A\u043B\u0430\u043C\u0443." }),
-                Object.entries(OFFLINE_STORE_TIERS).map(([tierId, tier]) => {
-                  const hasCommercial = (ownedItems.commercial1 || 0) > 0;
-                  const effCost = Math.round(tier.openingCost * (hasCommercial ? 1 - SHOP_ITEMS.find((i) => i.id === "commercial1").offlineDiscount : 1));
-                  return /* @__PURE__ */ jsxs("div", { style: { border: `1px solid ${C.border}`, borderRadius: 12, padding: 12, marginBottom: 10 }, children: [
-                    /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", marginBottom: 6 }, children: [
-                      /* @__PURE__ */ jsx("div", { style: { fontWeight: 700, fontSize: 13 }, children: tier.name }),
-                      /* @__PURE__ */ jsxs("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 13 }, children: [
-                        hasCommercial && /* @__PURE__ */ jsx("span", { style: { textDecoration: "line-through", color: C.inkFaint, marginRight: 6 }, children: fmt(tier.openingCost) }),
-                        fmt(effCost)
-                      ] })
-                    ] }),
-                    /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkDim, marginBottom: 4 }, children: [
-                      "\u041F\u043E\u0442\u043E\u043A \u043F\u043E\u043A\u0443\u043F\u0430\u0442\u0435\u043B\u0435\u0439: ",
-                      tier.footfall,
-                      "/\u0447\u0430\u0441 \xB7 \u043F\u043E\u0442\u043E\u043B\u043E\u043A \u043E\u0431\u043E\u0440\u043E\u0442\u0430: ",
-                      fmt(tier.maxHourlyRevenue),
-                      "/\u0447\u0430\u0441"
-                    ] }),
-                    /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkDim, marginBottom: 10 }, children: [
-                      "\u0420\u0430\u0441\u0445\u043E\u0434\u044B \u0432 \u0447\u0430\u0441: \u0430\u0440\u0435\u043D\u0434\u0430 ",
-                      fmt(tier.rent),
-                      " \xB7 \u0437\u0430\u0440\u043F\u043B\u0430\u0442\u0430 ",
-                      fmt(tier.salary),
-                      " \xB7 \u0441\u0432\u0435\u0442 ",
-                      fmt(tier.electricity),
-                      " \xB7 \u0434\u043E\u043F. ",
-                      fmt(tier.extraMin),
-                      "\u2013",
-                      fmt(tier.extraMax)
-                    ] }),
-                    /* @__PURE__ */ jsx("button", { onClick: () => openOfflineStore(shop.id, tierId), disabled: ipCash < effCost, style: { width: "100%", padding: 10, borderRadius: 10, border: "none", fontWeight: 700, fontSize: 12.5, background: ipCash >= effCost ? C.gold : C.surface2, color: ipCash >= effCost ? "#161207" : C.inkFaint }, children: "\u041E\u0442\u043A\u0440\u044B\u0442\u044C \u0441\u043E \u0441\u0447\u0451\u0442\u0430 \u0418\u041F" })
-                  ] }, tierId);
-                })
-              ] }) : (() => {
-                const os = shop.offlineStore;
-                const tier = OFFLINE_STORE_TIERS[os.tier];
-                const adActive = os.tickCount < os.adUntilTick;
-                const adMult = adActive ? OFFLINE_AD_MULT : 1;
-                const equipmentBoost = (ownedItems.equipment1 || 0) > 0 ? SHOP_ITEMS.find((i) => i.id === "equipment1").offlineBoost : 0;
-                const conditionMult = 0.4 + os.boostHealth / 100 * 0.9 + equipmentBoost;
-                const repMult = Math.max(0.4, Math.min(1.2, reputation / 100));
-                const sellableCats = PRODUCT_CATEGORIES.filter((cat) => {
-                  const c = shop.categories?.[cat.id];
-                  return c && c.stock > 0 && c.listedPrice > 0;
-                });
-                const totalStockValue = PRODUCT_CATEGORIES.reduce((sum, cat) => {
-                  const c = shop.categories?.[cat.id];
-                  if (!c) return sum;
-                  const price = c.listedPrice > 0 ? c.listedPrice : c.avgCost * 1.5 * cat.marginMult;
-                  return sum + c.stock * price;
-                }, 0);
-                const avgAttractiveness = sellableCats.length ? sellableCats.reduce((s, cat) => {
-                  const c = shop.categories[cat.id];
-                  const fairPrice = c.avgCost * 1.5 * cat.marginMult * (marketIndex || 1);
-                  return s + Math.max(0.35, Math.min(2.2, fairPrice / c.listedPrice));
-                }, 0) / sellableCats.length : 1;
-                const ratingMult = Math.max(0.15, Math.min(1.3, (shop.rating - 1) / 4));
-                const demandScore = avgAttractiveness * ratingMult * repMult * adMult * conditionMult;
-                const potentialPct = Math.max(0, Math.min(100, Math.round(demandScore / 2.5 * 100)));
-                const footfallPct = Math.round(tier.footfall / OFFLINE_STORE_TIERS.medium.footfall * 100);
-                const stockPct = Math.max(0, Math.min(100, Math.round(totalStockValue / tier.healthyStockValue * 100)));
-                const growthLevel = os.growthLevel || 0;
-                const growthPct = growthLevel;
-                const growthDemandMult = 1 + growthLevel / 100 * 0.8;
-                const growthCapMult = 1 + growthLevel / 100 * 0.6;
-                const hourlyCosts = tier.rent + tier.salary + tier.electricity + (tier.extraMin + tier.extraMax) / 2;
-                const avgPrice = sellableCats.length ? sellableCats.reduce((s, cat) => s + shop.categories[cat.id].listedPrice, 0) / sellableCats.length : 0;
-                const tierMaxHourly = tier.maxHourlyRevenue * growthCapMult;
-                const expectedUnitsLow = Math.round(tier.footfall * 1.4 * demandScore * growthDemandMult * 0.75 / Math.max(1, sellableCats.length));
-                const expectedUnitsHigh = Math.round(tier.footfall * 1.4 * demandScore * growthDemandMult * 1.25 / Math.max(1, sellableCats.length));
-                const expectedRevLow = Math.min(tierMaxHourly, Math.round(expectedUnitsLow * avgPrice * sellableCats.length));
-                const expectedRevHigh = Math.min(tierMaxHourly, Math.round(expectedUnitsHigh * avgPrice * sellableCats.length));
-                const secLeft = Math.max(0, Math.ceil((os.nextTickAt - Date.now()) / 1e3));
-                const bar = (label, pct, color) => /* @__PURE__ */ jsxs("div", { style: { marginBottom: 8 }, children: [
-                  /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 10.5, color: C.inkDim, marginBottom: 3 }, children: [
-                    /* @__PURE__ */ jsx("span", { children: label }),
-                    /* @__PURE__ */ jsxs("span", { children: [
-                      pct,
-                      "%"
-                    ] })
-                  ] }),
-                  /* @__PURE__ */ jsx("div", { style: { height: 5, borderRadius: 3, background: C.surface2, overflow: "hidden" }, children: /* @__PURE__ */ jsx("div", { style: { height: "100%", width: `${pct}%`, background: color } }) })
-                ] });
-                return /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${os.boostHealth < 25 ? C.red + "55" : C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
-                  /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }, children: [
-                    /* @__PURE__ */ jsx("div", { style: { fontWeight: 700, fontSize: 14 }, children: tier.name }),
-                    /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: os.boostHealth < 25 ? C.red : C.inkDim }, children: [
-                      "\u0421\u043E\u0441\u0442\u043E\u044F\u043D\u0438\u0435 ",
-                      Math.round(os.boostHealth),
-                      "/100"
-                    ] })
-                  ] }),
-                  bar("\u041F\u043E\u0442\u0435\u043D\u0446\u0438\u0430\u043B \u043F\u0440\u043E\u0434\u0430\u0436", potentialPct, potentialPct < 30 ? C.red : potentialPct < 60 ? C.gold : C.green),
-                  bar("\u041F\u043E\u0442\u043E\u043A \u043F\u043E\u043A\u0443\u043F\u0430\u0442\u0435\u043B\u0435\u0439", footfallPct, "#5B8CFF"),
-                  bar("\u0417\u0430\u0433\u0440\u0443\u0437\u043A\u0430 \u0441\u043A\u043B\u0430\u0434\u0430", stockPct, stockPct < 30 ? C.red : stockPct < 70 ? C.gold : C.green),
-                  bar("\u0420\u0430\u0437\u0432\u0438\u0442\u0438\u0435 \u0442\u043E\u0447\u043A\u0438", growthPct, growthPct < 30 ? C.inkFaint : growthPct < 70 ? "#5B8CFF" : C.green),
-                  /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkDim, marginBottom: 4 }, children: [
-                    "\u0420\u0430\u0441\u0445\u043E\u0434\u044B \u0432 \u0447\u0430\u0441: ",
-                    /* @__PURE__ */ jsx("b", { style: { color: C.ink }, children: fmt(hourlyCosts) })
-                  ] }),
-                  /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkDim, marginBottom: 10 }, children: [
-                    "\u041E\u0436\u0438\u0434\u0430\u0435\u043C\u044B\u0439 \u043E\u0431\u043E\u0440\u043E\u0442: ",
-                    /* @__PURE__ */ jsx("b", { style: { color: sellableCats.length ? C.green : C.inkFaint }, children: sellableCats.length ? `${fmt(expectedRevLow)}\u2013${fmt(expectedRevHigh)}/\u0447\u0430\u0441` : "\u043D\u0435\u0442 \u0442\u043E\u0432\u0430\u0440\u0430 \u0434\u043B\u044F \u043F\u0440\u043E\u0434\u0430\u0436\u0438" })
-                  ] }),
-                  /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint, marginBottom: 10, lineHeight: 1.6 }, children: [
-                    "\u0412\u043B\u0438\u044F\u043D\u0438\u0435: \u0446\u0435\u043D\u0430 ",
-                    avgAttractiveness >= 1 ? "\u043F\u0440\u0438\u0432\u043B\u0435\u043A\u0430\u0442\u0435\u043B\u044C\u043D\u0430\u044F" : "\u0437\u0430\u0432\u044B\u0448\u0435\u043D\u0430",
-                    " \xB7 \u0440\u0435\u0439\u0442\u0438\u043D\u0433 ",
-                    shop.rating.toFixed(1),
-                    "\u2605 \xB7 \u0440\u0435\u043F\u0443\u0442\u0430\u0446\u0438\u044F ",
-                    Math.round(reputation),
-                    " \xB7 \u0440\u0435\u043A\u043B\u0430\u043C\u0430 ",
-                    adActive ? "\u0430\u043A\u0442\u0438\u0432\u043D\u0430" : "\u043D\u0435\u0442",
-                    " \xB7 \u0441\u043A\u043B\u0430\u0434 ",
-                    stockPct >= 100 ? "\u0437\u0430\u043F\u043E\u043B\u043D\u0435\u043D" : stockPct > 0 ? "\u0447\u0430\u0441\u0442\u0438\u0447\u043D\u043E" : "\u043F\u0443\u0441\u0442\u043E",
-                    /* @__PURE__ */ jsx("br", {}),
-                    "\u0420\u0430\u0437\u0432\u0438\u0442\u0438\u0435 \u0440\u0430\u0441\u0442\u0451\u0442, \u043F\u043E\u043A\u0430 \u0441\u043A\u043B\u0430\u0434 \u043D\u0435 \u043F\u0443\u0441\u0442 \u0438 \u0446\u0435\u043D\u0430 \u043D\u0435 \u0437\u0430\u0434\u0440\u0430\u043D\u0430 (+1/\u0442\u0438\u043A), \u0438 \u043F\u0430\u0434\u0430\u0435\u0442 \u0432\u0434\u0432\u043E\u0435 \u0431\u044B\u0441\u0442\u0440\u0435\u0435 \u0432 \u043E\u0431\u0440\u0430\u0442\u043D\u043E\u043C \u0441\u043B\u0443\u0447\u0430\u0435 (\u0434\u043E \xD71.8 \u043A \u043E\u0431\u043E\u0440\u043E\u0442\u0443 \u0438 \xD71.6 \u043A \u043F\u043E\u0442\u043E\u043B\u043A\u0443 \u043D\u0430 \u043C\u0430\u043A\u0441\u0438\u043C\u0443\u043C\u0435)."
-                  ] }),
-                  /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkFaint, marginBottom: 10 }, children: [
-                    "\u041F\u0440\u043E\u0434\u0430\u043D\u043E \u043E\u0444\u043B\u0430\u0439\u043D \u0432\u0441\u0435\u0433\u043E: ",
-                    fmt(os.totalOfflineRevenue),
-                    " \xB7 \u0441\u043B\u0435\u0434\u0443\u044E\u0449\u0438\u0439 \u0440\u0430\u0441\u0447\u0451\u0442 \u0447\u0435\u0440\u0435\u0437 ",
-                    Math.floor(secLeft / 60),
-                    ":",
-                    String(secLeft % 60).padStart(2, "0"),
-                    os.missedTicks > 0 ? ` \xB7 \u043F\u0440\u043E\u043F\u0443\u0449\u0435\u043D\u043E \u043E\u043F\u043B\u0430\u0442 \u043F\u043E\u0434\u0440\u044F\u0434: ${os.missedTicks}/${3 * OFFLINE_TICKS_PER_HOUR}` : ""
-                  ] }),
-                  /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8 }, children: [
-                    /* @__PURE__ */ jsx("button", { onClick: () => runOfflineAd(shop.id), disabled: ipCash < tier.adCost || adActive, style: { flex: 1, padding: 10, borderRadius: 10, border: `1px solid ${C.border}`, background: C.surface2, color: adActive ? C.inkFaint : C.gold, fontWeight: 700, fontSize: 12 }, children: adActive ? "\u0420\u0435\u043A\u043B\u0430\u043C\u0430 \u0430\u043A\u0442\u0438\u0432\u043D\u0430" : `\u0420\u0435\u043A\u043B\u0430\u043C\u0430 \xB7 ${fmt(tier.adCost)}` }),
-                    /* @__PURE__ */ jsx("button", { onClick: () => setConfirmCloseOffline(shop.id), style: { padding: "0 14px", borderRadius: 10, border: `1px solid ${C.border}`, background: "transparent", color: C.inkDim, fontSize: 12 }, children: "\u0417\u0430\u043A\u0440\u044B\u0442\u044C" })
-                  ] }),
-                  /* @__PURE__ */ jsxs("div", { style: { marginTop: 14, paddingTop: 14, borderTop: `1px solid ${C.border}` }, children: [
-                    /* @__PURE__ */ jsx("div", { style: { fontSize: 12.5, fontWeight: 700, marginBottom: 8 }, children: "\u041C\u0435\u043D\u0435\u0434\u0436\u0435\u0440 \u043F\u043E \u043F\u0440\u043E\u0434\u0430\u0436\u0430\u043C" }),
-                    shop.manager?.hired ? (() => {
-                      const m = shop.manager;
-                      const overdue = m.salaryDue > 0;
-                      const priceGapDraft = managerFormInputs[shop.id]?.priceGap ?? String(Number.isFinite(m.priceGap) ? m.priceGap : MANAGER_PRICE_GAP_DEFAULT);
-                      const adTier = m.adTier || "mid";
-                      const supplierId = m.supplierId || "auto";
-                      const restockDraft = managerFormInputs[shop.id]?.minStock ?? String(m.minStock);
-                      const commitMinStock = () => {
-                        const v = Math.max(1, Math.round(Number(restockDraft) || 0));
-                        updateManagerSettings(shop.id, { minStock: v });
-                        setManagerFormInputs((prev) => ({ ...prev, [shop.id]: { ...prev[shop.id], minStock: String(v) } }));
-                      };
-                      const commitPriceGap = () => {
-                        const v = Math.max(0, Number(priceGapDraft) || 0);
-                        updateManagerSettings(shop.id, { priceGap: v });
-                        setManagerFormInputs((prev) => ({ ...prev, [shop.id]: { ...prev[shop.id], priceGap: String(v) } }));
-                      };
-                      return /* @__PURE__ */ jsxs("div", { children: [
-                        /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint, marginBottom: 10, lineHeight: 1.6 }, children: [
-                          "\u0422\u0440\u0430\u0442\u0438\u0442 \u0441\u0440\u0435\u0434\u0441\u0442\u0432\u0430 \u0441\u043E \u0441\u0447\u0451\u0442\u0430 \u0418\u041F \u0441\u0430\u043C\u043E\u0441\u0442\u043E\u044F\u0442\u0435\u043B\u044C\u043D\u043E, \u043F\u043E \u043C\u0435\u0440\u0435 \u043F\u043E\u044F\u0432\u043B\u0435\u043D\u0438\u044F \u0434\u0435\u043D\u0435\u0433 \u2014 \u0434\u0430\u0436\u0435 \u0447\u0430\u0441\u0442\u0438\u0447\u043D\u043E, \u0435\u0441\u043B\u0438 \u043D\u0430 \u043F\u043E\u043B\u043D\u0443\u044E \u0437\u0430\u043A\u0443\u043F\u043A\u0443 \u043D\u0435 \u0445\u0432\u0430\u0442\u0430\u0435\u0442.",
-                          m.salaryDue >= MANAGER_SALARY * 2 && /* @__PURE__ */ jsxs(Fragment, { children: [
-                            /* @__PURE__ */ jsx("br", {}),
-                            /* @__PURE__ */ jsx("span", { style: { color: C.red }, children: "\u0415\u0449\u0451 \u0446\u0438\u043A\u043B \u0431\u0435\u0437 \u043E\u043F\u043B\u0430\u0442\u044B \u2014 \u0443\u0432\u043E\u043B\u0438\u0442\u0441\u044F \u0441\u0430\u043C." })
-                          ] })
-                        ] }),
-                        /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u0417\u0430\u0437\u043E\u0440 \u043E\u0442 \u043C\u0430\u043A\u0441. \u0440\u044B\u043D\u043E\u0447\u043D\u043E\u0439 \u0446\u0435\u043D\u044B ($)" }),
-                        /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8, marginBottom: 10 }, children: [
-                          /* @__PURE__ */ jsx("input", { type: "number", value: priceGapDraft, onChange: (e) => setManagerFormInputs((prev) => ({ ...prev, [shop.id]: { ...prev[shop.id], priceGap: e.target.value } })), onBlur: commitPriceGap, style: { flex: 1, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 16, padding: "8px 10px" } }),
-                          /* @__PURE__ */ jsx("button", { onClick: commitPriceGap, style: { padding: "0 14px", borderRadius: 8, border: `1px solid ${C.border}`, background: "transparent", color: C.inkDim, fontSize: 11.5 }, children: "OK" })
-                        ] }),
-                        /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u0420\u0435\u043A\u043B\u0430\u043C\u0430 (\u043E\u043D\u043B\u0430\u0439\u043D + \u0442\u043E\u0447\u043A\u0430)" }),
-                        /* @__PURE__ */ jsx("div", { style: { display: "flex", gap: 6, marginBottom: 10 }, children: ["min", "mid", "max"].map((k) => /* @__PURE__ */ jsx("button", { onClick: () => updateManagerSettings(shop.id, { adTier: k }), style: segStyle(adTier === k), children: MANAGER_AD_TIER_LABEL[k] }, k)) }),
-                        /* @__PURE__ */ jsxs("button", { onClick: () => updateManagerSettings(shop.id, { autoAdEnabled: !m.autoAdEnabled }), style: { width: "100%", textAlign: "left", padding: 10, borderRadius: 8, border: `1px solid ${C.border}`, background: C.surface2, color: C.ink, fontSize: 12, marginBottom: 10 }, children: [
-                          m.autoAdEnabled ? "\u2611" : "\u2610",
-                          " \u0414\u0435\u0440\u0436\u0430\u0442\u044C \u0440\u0435\u043A\u043B\u0430\u043C\u0443 \u0430\u043A\u0442\u0438\u0432\u043D\u043E\u0439 \u043F\u043E\u0441\u0442\u043E\u044F\u043D\u043D\u043E"
-                        ] }),
-                        /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u041C\u0438\u043D. \u043E\u0441\u0442\u0430\u0442\u043E\u043A (\u0434\u043E\u043A\u0443\u043F\u0430\u0435\u0442 \u0441\u0440\u0430\u0437\u0443 \u0434\u043E \u00D72)" }),
-                        /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8, marginBottom: 10 }, children: [
-                          /* @__PURE__ */ jsx("input", { type: "number", value: restockDraft, onChange: (e) => setManagerFormInputs((prev) => ({ ...prev, [shop.id]: { ...prev[shop.id], minStock: e.target.value } })), onBlur: commitMinStock, style: { flex: 1, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 16, padding: "8px 10px" } }),
-                          /* @__PURE__ */ jsx("button", { onClick: commitMinStock, style: { padding: "0 14px", borderRadius: 8, border: `1px solid ${C.border}`, background: "transparent", color: C.inkDim, fontSize: 11.5 }, children: "OK" })
-                        ] }),
-                        /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u041F\u043E\u0441\u0442\u0430\u0432\u0449\u0438\u043A" }),
-                        /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }, children: [
-                          /* @__PURE__ */ jsx("button", { onClick: () => updateManagerSettings(shop.id, { supplierId: "auto" }), style: { ...segStyle(supplierId === "auto"), flex: "0 1 auto" }, children: "\u0410\u0432\u0442\u043E (\u0434\u0435\u0448\u0435\u0432\u043B\u0435)" }),
-                          ...SUPPLIERS.map((s) => /* @__PURE__ */ jsxs("button", { onClick: () => updateManagerSettings(shop.id, { supplierId: s.id }), style: { ...segStyle(supplierId === s.id), flex: "0 1 auto" }, children: [
-                            s.flag,
-                            " ",
-                            s.quality
-                          ] }, s.id)),
-                          ...factories.map((f) => /* @__PURE__ */ jsxs("button", { onClick: () => updateManagerSettings(shop.id, { supplierId: `factory:${f.id}` }), style: { ...segStyle(supplierId === `factory:${f.id}`), flex: "0 1 auto" }, children: [
-                            "\u{1F3ED} ",
-                            f.name
-                          ] }, f.id))
-                        ] }),
-                        /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }, children: [
-                          /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: overdue ? C.red : C.inkDim }, children: [
-                            "\u0417\u0430\u0440\u043F\u043B\u0430\u0442\u0430 \u043A \u043E\u043F\u043B\u0430\u0442\u0435: ",
-                            fmt(m.salaryDue)
-                          ] }),
-                          /* @__PURE__ */ jsx("button", { onClick: () => payManagerSalary(shop.id), disabled: !overdue || ipCash <= 0, style: { padding: "7px 12px", borderRadius: 8, border: "none", fontWeight: 700, fontSize: 11.5, background: overdue ? C.gold : C.surface2, color: overdue ? "#161207" : C.inkFaint }, children: "\u0417\u0430\u043F\u043B\u0430\u0442\u0438\u0442\u044C (\u0441\u043E \u0441\u0447\u0451\u0442\u0430 \u0418\u041F)" })
-                        ] }),
-                        /* @__PURE__ */ jsx("button", { onClick: () => fireManager(shop.id), style: { width: "100%", padding: 8, borderRadius: 8, border: `1px solid ${C.border}`, background: "transparent", color: C.inkDim, fontSize: 11 }, children: "\u0423\u0432\u043E\u043B\u0438\u0442\u044C" })
-                      ] });
-                    })() : (() => {
-                      const f = managerFormInputs[shop.id] || { minStock: "20", priceGap: String(MANAGER_PRICE_GAP_DEFAULT), adTier: "mid", autoAdEnabled: true, supplierId: "auto" };
-                      const setF = (patch) => setManagerFormInputs((prev) => ({ ...prev, [shop.id]: { ...f, ...patch } }));
-                      return /* @__PURE__ */ jsxs("div", { children: [
-                        /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginBottom: 10, lineHeight: 1.6 }, children: `\u0410\u0432\u0442\u043E\u043C\u0430\u0442\u0438\u0447\u0435\u0441\u043A\u0438 \u0434\u0435\u0440\u0436\u0438\u0442 \u043E\u0441\u0442\u0430\u0442\u043E\u043A, \u0446\u0435\u043D\u0443 \u0438 \u0440\u0435\u043A\u043B\u0430\u043C\u0443. \u0417\u0430\u0440\u043F\u043B\u0430\u0442\u0430 ${fmt(MANAGER_SALARY)} \u043A\u0430\u0436\u0434\u044B\u0435 ${MANAGER_SALARY_CYCLE_MS / 6e4} \u043C\u0438\u043D \u2014 \u043D\u0430\u0447\u0438\u0441\u043B\u044F\u0435\u0442\u0441\u044F, \u043D\u043E \u0441\u043F\u0438\u0441\u044B\u0432\u0430\u0435\u0442\u0441\u044F \u0442\u043E\u043B\u044C\u043A\u043E \u043A\u043E\u0433\u0434\u0430 \u0442\u044B \u0441\u0430\u043C \u043E\u043F\u043B\u0430\u0442\u0438\u0448\u044C \u0441\u043E \u0441\u0447\u0451\u0442\u0430 \u0418\u041F.` }),
-                        /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u0417\u0430\u0437\u043E\u0440 \u043E\u0442 \u043C\u0430\u043A\u0441. \u0440\u044B\u043D\u043E\u0447\u043D\u043E\u0439 \u0446\u0435\u043D\u044B ($)" }),
-                        /* @__PURE__ */ jsx("input", { type: "number", value: f.priceGap, onChange: (e) => setF({ priceGap: e.target.value }), style: { width: "100%", marginBottom: 10, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 16, padding: "8px 10px" } }),
-                        /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u0420\u0435\u043A\u043B\u0430\u043C\u0430 (\u043E\u043D\u043B\u0430\u0439\u043D + \u0442\u043E\u0447\u043A\u0430)" }),
-                        /* @__PURE__ */ jsx("div", { style: { display: "flex", gap: 6, marginBottom: 10 }, children: ["min", "mid", "max"].map((k) => /* @__PURE__ */ jsx("button", { onClick: () => setF({ adTier: k }), style: segStyle(f.adTier === k), children: MANAGER_AD_TIER_LABEL[k] }, k)) }),
-                        /* @__PURE__ */ jsxs("button", { onClick: () => setF({ autoAdEnabled: !f.autoAdEnabled }), style: { width: "100%", textAlign: "left", padding: 10, borderRadius: 8, border: `1px solid ${C.border}`, background: C.surface2, color: C.ink, fontSize: 12, marginBottom: 10 }, children: [
-                          f.autoAdEnabled ? "\u2611" : "\u2610",
-                          " \u0414\u0435\u0440\u0436\u0430\u0442\u044C \u0440\u0435\u043A\u043B\u0430\u043C\u0443 \u0430\u043A\u0442\u0438\u0432\u043D\u043E\u0439 \u043F\u043E\u0441\u0442\u043E\u044F\u043D\u043D\u043E"
-                        ] }),
-                        /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u041C\u0438\u043D. \u043E\u0441\u0442\u0430\u0442\u043E\u043A (\u0434\u043E\u043A\u0443\u043F\u0430\u0435\u0442 \u0441\u0440\u0430\u0437\u0443 \u0434\u043E \u00D72)" }),
-                        /* @__PURE__ */ jsx("input", { type: "number", value: f.minStock, onChange: (e) => setF({ minStock: e.target.value }), style: { width: "100%", marginBottom: 10, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 16, padding: "8px 10px" } }),
-                        /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u041F\u043E\u0441\u0442\u0430\u0432\u0449\u0438\u043A" }),
-                        /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }, children: [
-                          /* @__PURE__ */ jsx("button", { onClick: () => setF({ supplierId: "auto" }), style: { ...segStyle((f.supplierId || "auto") === "auto"), flex: "0 1 auto" }, children: "\u0410\u0432\u0442\u043E (\u0434\u0435\u0448\u0435\u0432\u043B\u0435)" }),
-                          ...SUPPLIERS.map((s) => /* @__PURE__ */ jsxs("button", { onClick: () => setF({ supplierId: s.id }), style: { ...segStyle(f.supplierId === s.id), flex: "0 1 auto" }, children: [
-                            s.flag,
-                            " ",
-                            s.quality
-                          ] }, s.id)),
-                          ...factories.map((fac) => /* @__PURE__ */ jsxs("button", { onClick: () => setF({ supplierId: `factory:${fac.id}` }), style: { ...segStyle(f.supplierId === `factory:${fac.id}`), flex: "0 1 auto" }, children: [
-                            "\u{1F3ED} ",
-                            fac.name
-                          ] }, fac.id))
-                        ] }),
-                        /* @__PURE__ */ jsx("button", { onClick: () => hireManager(shop.id, f), style: { width: "100%", padding: 10, borderRadius: 10, border: "none", fontWeight: 700, fontSize: 12.5, background: C.gold, color: "#161207" }, children: "\u041D\u0430\u043D\u044F\u0442\u044C \u043C\u0435\u043D\u0435\u0434\u0436\u0435\u0440\u0430" })
-                      ] });
-                    })()
-                  ] })
-                ] });
-              })(),
-              !shop.offlineStore && (() => {
-                const restockDraft = managerFormInputs[shop.id]?.minStock;
-                return /* @__PURE__ */ jsxs("div", { style: { marginBottom: 14 }, children: [
-                  /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }, children: "\u041C\u0435\u043D\u0435\u0434\u0436\u0435\u0440 \u043F\u043E \u043F\u0440\u043E\u0434\u0430\u0436\u0430\u043C" }),
-                  shop.manager?.hired ? (() => {
-                    const m = shop.manager;
-                    const overdue = m.salaryDue > 0;
-                    const priceGapDraft = managerFormInputs[shop.id]?.priceGap ?? String(Number.isFinite(m.priceGap) ? m.priceGap : MANAGER_PRICE_GAP_DEFAULT);
-                    const adTier = m.adTier || "mid";
-                    const supplierId = m.supplierId || "auto";
-                    const draft = restockDraft ?? String(m.minStock);
-                    const commitMinStock = () => {
-                      const v = Math.max(1, Math.round(Number(draft) || 0));
-                      updateManagerSettings(shop.id, { minStock: v });
-                      setManagerFormInputs((prev) => ({ ...prev, [shop.id]: { ...prev[shop.id], minStock: String(v) } }));
-                    };
-                    const commitPriceGap = () => {
-                      const v = Math.max(0, Number(priceGapDraft) || 0);
-                      updateManagerSettings(shop.id, { priceGap: v });
-                      setManagerFormInputs((prev) => ({ ...prev, [shop.id]: { ...prev[shop.id], priceGap: String(v) } }));
-                    };
-                    return /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16 }, children: [
-                      /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint, marginBottom: 10, lineHeight: 1.6 }, children: [
-                        "\u0414\u0435\u0440\u0436\u0438\u0442 \u043E\u0441\u0442\u0430\u0442\u043E\u043A, \u0446\u0435\u043D\u0443 \u0438 \u0440\u0435\u043A\u043B\u0430\u043C\u0443 \u043D\u0430 \u043C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441\u0435 \u2014 \u0442\u0440\u0430\u0442\u0438\u0442 \u0441\u0440\u0435\u0434\u0441\u0442\u0432\u0430 \u0441\u043E \u0441\u0447\u0451\u0442\u0430 \u0418\u041F \u0441\u0430\u043C\u043E\u0441\u0442\u043E\u044F\u0442\u0435\u043B\u044C\u043D\u043E.",
-                        m.salaryDue >= MANAGER_SALARY * 2 && /* @__PURE__ */ jsxs(Fragment, { children: [
-                          /* @__PURE__ */ jsx("br", {}),
-                          /* @__PURE__ */ jsx("span", { style: { color: C.red }, children: "\u0415\u0449\u0451 \u0446\u0438\u043A\u043B \u0431\u0435\u0437 \u043E\u043F\u043B\u0430\u0442\u044B \u2014 \u0443\u0432\u043E\u043B\u0438\u0442\u0441\u044F \u0441\u0430\u043C." })
-                        ] })
-                      ] }),
-                      /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u0417\u0430\u0437\u043E\u0440 \u043E\u0442 \u043C\u0430\u043A\u0441. \u0440\u044B\u043D\u043E\u0447\u043D\u043E\u0439 \u0446\u0435\u043D\u044B ($)" }),
-                      /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8, marginBottom: 10 }, children: [
-                        /* @__PURE__ */ jsx("input", { type: "number", value: priceGapDraft, onChange: (e) => setManagerFormInputs((prev) => ({ ...prev, [shop.id]: { ...prev[shop.id], priceGap: e.target.value } })), onBlur: commitPriceGap, style: { flex: 1, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 16, padding: "8px 10px" } }),
-                        /* @__PURE__ */ jsx("button", { onClick: commitPriceGap, style: { padding: "0 14px", borderRadius: 8, border: `1px solid ${C.border}`, background: "transparent", color: C.inkDim, fontSize: 11.5 }, children: "OK" })
-                      ] }),
-                      /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u0420\u0435\u043A\u043B\u0430\u043C\u0430 \u043D\u0430 \u043C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441\u0435" }),
-                      /* @__PURE__ */ jsx("div", { style: { display: "flex", gap: 6, marginBottom: 10 }, children: ["min", "mid", "max"].map((k) => /* @__PURE__ */ jsx("button", { onClick: () => updateManagerSettings(shop.id, { adTier: k }), style: segStyle(adTier === k), children: MANAGER_AD_TIER_LABEL[k] }, k)) }),
-                      /* @__PURE__ */ jsxs("button", { onClick: () => updateManagerSettings(shop.id, { autoAdEnabled: !m.autoAdEnabled }), style: { width: "100%", textAlign: "left", padding: 10, borderRadius: 8, border: `1px solid ${C.border}`, background: C.surface2, color: C.ink, fontSize: 12, marginBottom: 10 }, children: [
-                        m.autoAdEnabled ? "\u2611" : "\u2610",
-                        " \u0414\u0435\u0440\u0436\u0430\u0442\u044C \u0440\u0435\u043A\u043B\u0430\u043C\u0443 \u0430\u043A\u0442\u0438\u0432\u043D\u043E\u0439 \u043F\u043E\u0441\u0442\u043E\u044F\u043D\u043D\u043E"
-                      ] }),
-                      /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u041C\u0438\u043D. \u043E\u0441\u0442\u0430\u0442\u043E\u043A (\u0434\u043E\u043A\u0443\u043F\u0430\u0435\u0442 \u0441\u0440\u0430\u0437\u0443 \u0434\u043E \u00D72)" }),
-                      /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8, marginBottom: 10 }, children: [
-                        /* @__PURE__ */ jsx("input", { type: "number", value: draft, onChange: (e) => setManagerFormInputs((prev) => ({ ...prev, [shop.id]: { ...prev[shop.id], minStock: e.target.value } })), onBlur: commitMinStock, style: { flex: 1, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 16, padding: "8px 10px" } }),
-                        /* @__PURE__ */ jsx("button", { onClick: commitMinStock, style: { padding: "0 14px", borderRadius: 8, border: `1px solid ${C.border}`, background: "transparent", color: C.inkDim, fontSize: 11.5 }, children: "OK" })
-                      ] }),
-                      /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u041F\u043E\u0441\u0442\u0430\u0432\u0449\u0438\u043A" }),
-                      /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }, children: [
-                        /* @__PURE__ */ jsx("button", { onClick: () => updateManagerSettings(shop.id, { supplierId: "auto" }), style: { ...segStyle(supplierId === "auto"), flex: "0 1 auto" }, children: "\u0410\u0432\u0442\u043E (\u0434\u0435\u0448\u0435\u0432\u043B\u0435)" }),
-                        ...SUPPLIERS.map((s) => /* @__PURE__ */ jsxs("button", { onClick: () => updateManagerSettings(shop.id, { supplierId: s.id }), style: { ...segStyle(supplierId === s.id), flex: "0 1 auto" }, children: [
-                          s.flag,
-                          " ",
-                          s.quality
-                        ] }, s.id)),
-                        ...factories.map((f) => /* @__PURE__ */ jsxs("button", { onClick: () => updateManagerSettings(shop.id, { supplierId: `factory:${f.id}` }), style: { ...segStyle(supplierId === `factory:${f.id}`), flex: "0 1 auto" }, children: [
-                          "\u{1F3ED} ",
-                          f.name
-                        ] }, f.id))
-                      ] }),
-                      /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }, children: [
-                        /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: overdue ? C.red : C.inkDim }, children: [
-                          "\u0417\u0430\u0440\u043F\u043B\u0430\u0442\u0430 \u043A \u043E\u043F\u043B\u0430\u0442\u0435: ",
-                          fmt(m.salaryDue)
-                        ] }),
-                        /* @__PURE__ */ jsx("button", { onClick: () => payManagerSalary(shop.id), disabled: !overdue || ipCash <= 0, style: { padding: "7px 12px", borderRadius: 8, border: "none", fontWeight: 700, fontSize: 11.5, background: overdue ? C.gold : C.surface2, color: overdue ? "#161207" : C.inkFaint }, children: "\u0417\u0430\u043F\u043B\u0430\u0442\u0438\u0442\u044C (\u0441\u043E \u0441\u0447\u0451\u0442\u0430 \u0418\u041F)" })
-                      ] }),
-                      /* @__PURE__ */ jsx("button", { onClick: () => fireManager(shop.id), style: { width: "100%", padding: 8, borderRadius: 8, border: `1px solid ${C.border}`, background: "transparent", color: C.inkDim, fontSize: 11 }, children: "\u0423\u0432\u043E\u043B\u0438\u0442\u044C" })
-                    ] });
-                  })() : (() => {
-                    const f = managerFormInputs[shop.id] || { minStock: "20", priceGap: String(MANAGER_PRICE_GAP_DEFAULT), adTier: "mid", autoAdEnabled: true, supplierId: "auto" };
-                    const setF = (patch) => setManagerFormInputs((prev) => ({ ...prev, [shop.id]: { ...f, ...patch } }));
-                    return /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16 }, children: [
-                      /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginBottom: 10, lineHeight: 1.6 }, children: `\u0410\u0432\u0442\u043E\u043C\u0430\u0442\u0438\u0447\u0435\u0441\u043A\u0438 \u0434\u0435\u0440\u0436\u0438\u0442 \u043E\u0441\u0442\u0430\u0442\u043E\u043A, \u0446\u0435\u043D\u0443 \u0438 \u0440\u0435\u043A\u043B\u0430\u043C\u0443 \u043D\u0430 \u043C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441\u0435 \u2014 \u0431\u0435\u0437 \u0444\u0438\u0437\u0438\u0447\u0435\u0441\u043A\u043E\u0439 \u0442\u043E\u0447\u043A\u0438. \u0417\u0430\u0440\u043F\u043B\u0430\u0442\u0430 ${fmt(MANAGER_SALARY)} \u043A\u0430\u0436\u0434\u044B\u0435 ${MANAGER_SALARY_CYCLE_MS / 6e4} \u043C\u0438\u043D \u2014 \u043D\u0430\u0447\u0438\u0441\u043B\u044F\u0435\u0442\u0441\u044F, \u043D\u043E \u0441\u043F\u0438\u0441\u044B\u0432\u0430\u0435\u0442\u0441\u044F \u0442\u043E\u043B\u044C\u043A\u043E \u043A\u043E\u0433\u0434\u0430 \u0442\u044B \u0441\u0430\u043C \u043E\u043F\u043B\u0430\u0442\u0438\u0448\u044C \u0441\u043E \u0441\u0447\u0451\u0442\u0430 \u0418\u041F.` }),
-                      /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u0417\u0430\u0437\u043E\u0440 \u043E\u0442 \u043C\u0430\u043A\u0441. \u0440\u044B\u043D\u043E\u0447\u043D\u043E\u0439 \u0446\u0435\u043D\u044B ($)" }),
-                      /* @__PURE__ */ jsx("input", { type: "number", value: f.priceGap, onChange: (e) => setF({ priceGap: e.target.value }), style: { width: "100%", marginBottom: 10, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 16, padding: "8px 10px" } }),
-                      /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u0420\u0435\u043A\u043B\u0430\u043C\u0430 \u043D\u0430 \u043C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441\u0435" }),
-                      /* @__PURE__ */ jsx("div", { style: { display: "flex", gap: 6, marginBottom: 10 }, children: ["min", "mid", "max"].map((k) => /* @__PURE__ */ jsx("button", { onClick: () => setF({ adTier: k }), style: segStyle(f.adTier === k), children: MANAGER_AD_TIER_LABEL[k] }, k)) }),
-                      /* @__PURE__ */ jsxs("button", { onClick: () => setF({ autoAdEnabled: !f.autoAdEnabled }), style: { width: "100%", textAlign: "left", padding: 10, borderRadius: 8, border: `1px solid ${C.border}`, background: C.surface2, color: C.ink, fontSize: 12, marginBottom: 10 }, children: [
-                        f.autoAdEnabled ? "\u2611" : "\u2610",
-                        " \u0414\u0435\u0440\u0436\u0430\u0442\u044C \u0440\u0435\u043A\u043B\u0430\u043C\u0443 \u0430\u043A\u0442\u0438\u0432\u043D\u043E\u0439 \u043F\u043E\u0441\u0442\u043E\u044F\u043D\u043D\u043E"
-                      ] }),
-                      /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u041C\u0438\u043D. \u043E\u0441\u0442\u0430\u0442\u043E\u043A (\u0434\u043E\u043A\u0443\u043F\u0430\u0435\u0442 \u0441\u0440\u0430\u0437\u0443 \u0434\u043E \u00D72)" }),
-                      /* @__PURE__ */ jsx("input", { type: "number", value: f.minStock, onChange: (e) => setF({ minStock: e.target.value }), style: { width: "100%", marginBottom: 10, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 8, color: C.ink, fontSize: 16, padding: "8px 10px" } }),
-                      /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, marginBottom: 4 }, children: "\u041F\u043E\u0441\u0442\u0430\u0432\u0449\u0438\u043A" }),
-                      /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }, children: [
-                        /* @__PURE__ */ jsx("button", { onClick: () => setF({ supplierId: "auto" }), style: { ...segStyle((f.supplierId || "auto") === "auto"), flex: "0 1 auto" }, children: "\u0410\u0432\u0442\u043E (\u0434\u0435\u0448\u0435\u0432\u043B\u0435)" }),
-                        ...SUPPLIERS.map((s) => /* @__PURE__ */ jsxs("button", { onClick: () => setF({ supplierId: s.id }), style: { ...segStyle(f.supplierId === s.id), flex: "0 1 auto" }, children: [
-                          s.flag,
-                          " ",
-                          s.quality
-                        ] }, s.id)),
-                        ...factories.map((fac) => /* @__PURE__ */ jsxs("button", { onClick: () => setF({ supplierId: `factory:${fac.id}` }), style: { ...segStyle(f.supplierId === `factory:${fac.id}`), flex: "0 1 auto" }, children: [
-                          "\u{1F3ED} ",
-                          fac.name
-                        ] }, fac.id))
-                      ] }),
-                      /* @__PURE__ */ jsx("button", { onClick: () => hireManager(shop.id, f), style: { width: "100%", padding: 10, borderRadius: 10, border: "none", fontWeight: 700, fontSize: 12.5, background: C.gold, color: "#161207" }, children: "\u041D\u0430\u043D\u044F\u0442\u044C \u043C\u0435\u043D\u0435\u0434\u0436\u0435\u0440\u0430" })
-                    ] });
-                  })()
-                ] });
-              })(),
               /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }, children: "\u041F\u043E\u0441\u0442\u0430\u0432\u0449\u0438\u043A\u0438" }),
               SUPPLIERS.map((s) => {
                 const selCat = orderCategorySel[`${shop.id}:${s.id}`] || PRODUCT_CATEGORIES[0].id;
@@ -13134,17 +12502,6 @@ function MarketSandbox() {
         /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8 }, children: [
           /* @__PURE__ */ jsx("button", { onClick: () => setConfirmCloseResell(null), style: { flex: 1, padding: 12, borderRadius: 10, border: `1px solid ${C.border}`, background: "transparent", color: C.ink }, children: "\u041E\u0442\u043C\u0435\u043D\u0430" }),
           /* @__PURE__ */ jsx("button", { onClick: () => closeResellShop(confirmCloseResell), style: { flex: 1, padding: 12, borderRadius: 10, border: "none", background: C.red, color: "#fff", fontWeight: 700 }, children: "\u0417\u0430\u043A\u0440\u044B\u0442\u044C" })
-        ] })
-      ] }) }),
-      confirmCloseOffline && resellShops.find((s) => s.id === confirmCloseOffline) && /* @__PURE__ */ jsx("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 60 }, children: /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 16, padding: 20, width: "85%", maxWidth: 320 }, children: [
-        /* @__PURE__ */ jsx("div", { style: { fontWeight: 700, fontSize: 16, marginBottom: 8 }, children: "\u0417\u0430\u043A\u0440\u044B\u0442\u044C \u043E\u0444\u043B\u0430\u0439\u043D-\u043C\u0430\u0433\u0430\u0437\u0438\u043D?" }),
-        /* @__PURE__ */ jsx("div", { style: { fontSize: 13, color: C.inkDim, marginBottom: 16 }, children: "\u0410\u0440\u0435\u043D\u0434\u0430 \u0438 \u0437\u0430\u0440\u043F\u043B\u0430\u0442\u0430 \u043F\u0435\u0440\u0435\u0441\u0442\u0430\u043D\u0443\u0442 \u0441\u043F\u0438\u0441\u044B\u0432\u0430\u0442\u044C\u0441\u044F, \u043D\u043E \u0432\u043B\u043E\u0436\u0435\u043D\u0438\u044F \u0432 \u043E\u0442\u043A\u0440\u044B\u0442\u0438\u0435 \u043D\u0435 \u0432\u0435\u0440\u043D\u0443\u0442\u0441\u044F. \u0422\u043E\u0432\u0430\u0440 \u043D\u0430 \u0441\u043A\u043B\u0430\u0434\u0435 \u043E\u0441\u0442\u0430\u043D\u0435\u0442\u0441\u044F \u2014 \u043C\u043E\u0436\u043D\u043E \u043F\u0440\u043E\u0434\u043E\u043B\u0436\u0430\u0442\u044C \u043F\u0440\u043E\u0434\u0430\u0432\u0430\u0442\u044C \u043E\u043D\u043B\u0430\u0439\u043D." }),
-        /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8 }, children: [
-          /* @__PURE__ */ jsx("button", { onClick: () => setConfirmCloseOffline(null), style: { flex: 1, padding: 12, borderRadius: 10, border: `1px solid ${C.border}`, background: "transparent", color: C.ink }, children: "\u041E\u0442\u043C\u0435\u043D\u0430" }),
-          /* @__PURE__ */ jsx("button", { onClick: () => {
-            closeOfflineStore(confirmCloseOffline);
-            setConfirmCloseOffline(null);
-          }, style: { flex: 1, padding: 12, borderRadius: 10, border: "none", background: C.red, color: "#fff", fontWeight: 700 }, children: "\u0417\u0430\u043A\u0440\u044B\u0442\u044C" })
         ] })
       ] }) }),
       confirmReset && /* @__PURE__ */ jsx("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 60 }, children: /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 16, padding: 20, width: "85%", maxWidth: 320 }, children: [
