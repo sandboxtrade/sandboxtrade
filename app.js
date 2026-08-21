@@ -1,4 +1,4 @@
-// Market Sandbox — V2.35.0 (Маркетплейс: тик разбит на живой (раз в 1с — cash/GMV/выручка капают на глазах, как ZZONE-склад) и медленный (раз в 15 мин — только рост продавцов/покупателей/доверия/кризисы/инвесторы/конкуренция с ZZONE). Раньше вся выручка от продавцов начислялась одним прыжком раз в 15 мин — отсюда ощущение «продавцы не приносят денег». Понижен потолок шанса переговоров с крупным продавцом 90%→68%, добавлен реальный штраф к доверию при провале переговоров. Добавлена реклама маркетплейса — 3 широких канала (ТВ/интернет/билборды, ТВ самый сильный по охвату и доверию), бюджет без потолка (sqrt-скейлинг), буст идёт в шанс роста продавцов + приток покупателей + временный потолок доверия.)
+// Market Sandbox — V2.36.0 (Своя монета: даже после прошлого фикса (честный fairPrice-якорь) равновесный разброс цены давал 5-10x свинги за 5 мин — шум (0.02) был непропорционально велик относительно скорости гравитации (revert 8e-4/кадр). Понижены noise 0.02→0.004 и подтянут revert 8e-4→1.4e-3 — теперь равновесный разброс ~1.5-2x за 5 мин без сделок, хайп по-прежнему затухает за ~20-30 сек. Реклама маркетплейса: добавлены прогресс-бар кампании, прогноз охвата и текущий буст — как у банковской рекламы, раньше активная кампания показывала только бюджет и таймер без деталей эффекта.)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -804,6 +804,13 @@ function marketplaceAdImpact(campaign) {
     buyerBoost: k * channel.buyerBoostK * 0.6,
     trustCeilingBoost: k * channel.trustBoostK * 0.012
   };
+}
+function marketplaceAdProgress(campaign, now) {
+  return Math.max(0, Math.min(1, (now - campaign.startedAt) / MARKETPLACE_AD_DURATION_MS));
+}
+function marketplaceAdReachTarget(campaign) {
+  const channel = marketplaceAdChannel(campaign.channel);
+  return Math.round(Math.sqrt(Math.max(0, campaign.budget)) * channel.sellerBoostK * 90);
 }
 // ---- ZZONE как NPC-бизнес: тот же пакет показателей, что и у игрока, при этом ----
 // ---- продолжает торговаться на бирже — цена реагирует на реальные действия. ----
@@ -3007,8 +3014,8 @@ function MarketSandbox() {
           // ~30-60 сек, если не подкреплён реальным притоком в пул (покупками/рекламой/инвестициями).
           const fairPrice = Math.max(1e-6, c.poolUsd / c.poolCoin);
           const dtLin = dt / 16.67;
-          const noise = gauss() * (c.vol || 1) * 0.02 * Math.sqrt(dtLin);
-          const revert = Math.min(0.25, 8e-4 * dtLin);
+          const noise = gauss() * (c.vol || 1) * 0.004 * Math.sqrt(dtLin);
+          const revert = Math.min(0.25, 1.4e-3 * dtLin);
           e.price = Math.max(1e-6, e.price * (1 + noise) * (1 - revert) + fairPrice * revert);
         } else {
           let step;
@@ -9942,22 +9949,37 @@ function MarketSandbox() {
               ] }),
               (() => {
                 const now = Date.now();
+                const fmtCountdown = (ms) => { const s = Math.max(0, Math.floor(ms / 1000)); const m = Math.floor(s / 60); return `${m}:${String(s % 60).padStart(2, "0")}`; };
                 const activeAds = (marketplace.adCampaigns || []).filter((c) => now < c.expiresAt);
                 return /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
                   /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 4, textTransform: "uppercase", letterSpacing: 1 }, children: "Реклама маркетплейса" }),
                   /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginBottom: 12, lineHeight: 1.5 }, children: "Широкий охват — не точечная реклама конкретному продавцу, а привлечение новых продавцов и покупателей на площадку в целом." }),
                   activeAds.length > 0 && /* @__PURE__ */ jsx("div", { style: { marginBottom: 12 }, children: activeAds.map((c) => {
                     const channel = marketplaceAdChannel(c.channel);
-                    const minLeft = Math.ceil((c.expiresAt - now) / 6e4);
-                    return /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 11.5, color: C.inkDim, padding: "4px 0" }, children: [
-                      /* @__PURE__ */ jsxs("span", { children: [channel.icon, " ", channel.label, " \xB7 ", fmt(c.budget)] }),
-                      /* @__PURE__ */ jsxs("span", { children: ["\u0435\u0449\u0451 ", minLeft, " \u043C\u0438\u043D"] })
+                    const progress = marketplaceAdProgress(c, now);
+                    const reachTarget = marketplaceAdReachTarget(c);
+                    const reach = Math.round(reachTarget * progress);
+                    const impact = marketplaceAdImpact(c);
+                    return /* @__PURE__ */ jsxs("div", { style: { background: C.surface2, borderRadius: 10, padding: 10, marginBottom: 8 }, children: [
+                      /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }, children: [
+                        /* @__PURE__ */ jsxs("span", { style: { fontWeight: 600 }, children: [channel.icon, " ", channel.label, " \xB7 ", fmt(c.budget)] }),
+                        /* @__PURE__ */ jsx("span", { style: { color: C.gold, fontSize: 11 }, children: "\u0410\u041A\u0422\u0418\u0412\u041D\u0410" })
+                      ] }),
+                      /* @__PURE__ */ jsx("div", { style: { height: 4, borderRadius: 2, background: C.surface, overflow: "hidden", marginBottom: 6 }, children: /* @__PURE__ */ jsx("div", { style: { height: "100%", width: `${Math.round(progress * 100)}%`, background: C.gold, transition: "width 0.6s ease" } }) }),
+                      /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 11, color: C.inkDim, marginBottom: 4 }, children: [
+                        /* @__PURE__ */ jsxs("span", { children: ["\u041E\u0445\u0432\u0430\u0442: ", reach.toLocaleString("ru-RU")] }),
+                        /* @__PURE__ */ jsxs("span", { children: [fmtCountdown(c.expiresAt - now), " \u0434\u043E \u043E\u0442\u0447\u0451\u0442\u0430"] })
+                      ] }),
+                      /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint }, children: [
+                        "\u041F\u0440\u0438 \u0440\u0435\u0448\u0435\u043D\u0438\u0438 \u043F\u043B\u043E\u0449\u0430\u0434\u043A\u0438: +", (impact.growthChanceBoost * 100).toFixed(1), "% \u0448\u0430\u043D\u0441 \u043F\u0440\u043E\u0434\u0430\u0432\u0446\u0430 \xB7 +", Math.round(impact.buyerBoost), " \u043F\u043E\u043A\u0443\u043F\u0430\u0442\u0435\u043B\u0435\u0439 \xB7 +", impact.trustCeilingBoost.toFixed(1), " \u043A \u043F\u043E\u0442\u043E\u043B\u043A\u0443 \u0434\u043E\u0432\u0435\u0440\u0438\u044F"
+                      ] })
                     ] }, c.id);
                   }) }),
                   MARKETPLACE_AD_CHANNELS.map((channel) => {
                     const budgetVal = marketplaceAdBudgetInputs[channel.id] || String(channel.minBudget);
                     const budgetNum = Math.max(0, Number(budgetVal) || 0);
                     const impact = marketplaceAdImpact({ channel: channel.id, budget: budgetNum });
+                    const forecastReach = Math.round(Math.sqrt(budgetNum) * channel.sellerBoostK * 90);
                     const disabled = ipCash < budgetNum || budgetNum < channel.minBudget || activeAds.length >= MARKETPLACE_AD_MAX_ACTIVE;
                     return /* @__PURE__ */ jsxs("div", { style: { border: `1px solid ${C.border}`, borderRadius: 12, padding: 12, marginBottom: 10 }, children: [
                       /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }, children: [
@@ -9970,7 +9992,7 @@ function MarketSandbox() {
                         /* @__PURE__ */ jsx("button", { onClick: () => launchMarketplaceAd(channel.id, budgetVal), disabled, style: { padding: "0 16px", borderRadius: 10, border: "none", fontWeight: 700, fontSize: 12.5, background: disabled ? C.surface2 : C.gold, color: disabled ? C.inkFaint : "#161207" }, children: "\u0417\u0430\u043F\u0443\u0441\u0442\u0438\u0442\u044C" })
                       ] }),
                       /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint }, children: [
-                        "+", (impact.growthChanceBoost * 100).toFixed(1), "% \u0448\u0430\u043D\u0441 \u043D\u043E\u0432\u043E\u0433\u043E \u043F\u0440\u043E\u0434\u0430\u0432\u0446\u0430 \xB7 +", Math.round(impact.buyerBoost), " \u043F\u043E\u043A\u0443\u043F\u0430\u0442\u0435\u043B\u0435\u0439 \xB7 +", impact.trustCeilingBoost.toFixed(1), " \u043A \u043F\u043E\u0442\u043E\u043B\u043A\u0443 \u0434\u043E\u0432\u0435\u0440\u0438\u044F \u043D\u0430 ", MARKETPLACE_AD_DURATION_MS / 6e4, " \u043C\u0438\u043D"
+                        "\u041F\u0440\u043E\u0433\u043D\u043E\u0437 \u043E\u0445\u0432\u0430\u0442\u0430: \u2248", forecastReach.toLocaleString("ru-RU"), " \xB7 +", (impact.growthChanceBoost * 100).toFixed(1), "% \u0448\u0430\u043D\u0441 \u043D\u043E\u0432\u043E\u0433\u043E \u043F\u0440\u043E\u0434\u0430\u0432\u0446\u0430 \xB7 +", Math.round(impact.buyerBoost), " \u043F\u043E\u043A\u0443\u043F\u0430\u0442\u0435\u043B\u0435\u0439 \xB7 +", impact.trustCeilingBoost.toFixed(1), " \u043A \u043F\u043E\u0442\u043E\u043B\u043A\u0443 \u0434\u043E\u0432\u0435\u0440\u0438\u044F \u043D\u0430 ", MARKETPLACE_AD_DURATION_MS / 6e4, " \u043C\u0438\u043D"
                       ] })
                     ] }, channel.id);
                   })
