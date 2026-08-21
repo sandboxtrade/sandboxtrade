@@ -1,4 +1,4 @@
-// Market Sandbox — V2.33.0 (Маркетплейс: убрано обязательное условие «свой магазин с оборотом от 500к» для запуска. Банк: IPO теперь гейтится по чистому капиталу (equity = активы-обязательства), а не по свободному кэшу — раньше капитал уходил в кредиты/трейдеров/портфель и порог IPO был почти недостижим. Вклады: выплата пачкой раз в 15 минут вместо поштучной по каждому вкладчику — сумма каждого вклада начисляется пропорционально времени с момента открытия. Полностью удалены менеджер магазина и офлайн-магазин (константы, хендлеры, тик-эффекты, рендер, сохранения). Реклама магазина на ZZONE: исправлен потолок — шанс продажи был захардкожен на 0.7 и насыщался уже на небольших бюджетах, из-за чего 1млн и 10к давали одинаковый эффект; теперь избыточный множитель идёт в объём продажи за один тик, без потолка.)
+// Market Sandbox — V2.35.0 (Маркетплейс: тик разбит на живой (раз в 1с — cash/GMV/выручка капают на глазах, как ZZONE-склад) и медленный (раз в 15 мин — только рост продавцов/покупателей/доверия/кризисы/инвесторы/конкуренция с ZZONE). Раньше вся выручка от продавцов начислялась одним прыжком раз в 15 мин — отсюда ощущение «продавцы не приносят денег». Понижен потолок шанса переговоров с крупным продавцом 90%→68%, добавлен реальный штраф к доверию при провале переговоров. Добавлена реклама маркетплейса — 3 широких канала (ТВ/интернет/билборды, ТВ самый сильный по охвату и доверию), бюджет без потолка (sqrt-скейлинг), буст идёт в шанс роста продавцов + приток покупателей + временный потолок доверия.)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -783,6 +783,28 @@ function marketplaceTrackCost(trackId, marketplace) {
   const level = marketplace[trackId + "Level"] || 0;
   return Math.round(track.baseCost * Math.pow(track.costGrowth, level));
 }
+// ---- Реклама маркетплейса: широкие охватные каналы (не точечные, как у банка) ----
+// ТВ — самый сильный, но дорогой канал: максимум по продавцам и доверию.
+// Интернет — дешевле, упор на покупателей. Билборды — средний бюджетный вариант.
+var MARKETPLACE_AD_CHANNELS = [
+  { id: "tv", label: "\u0420\u0435\u043A\u043B\u0430\u043C\u0430 \u043D\u0430 \u0422\u0412", icon: "\u{1F4FA}", minBudget: 5e3, sellerBoostK: 1.4, buyerBoostK: 1.15, trustBoostK: 1.5, desc: "\u041C\u0430\u043A\u0441\u0438\u043C\u0430\u043B\u044C\u043D\u044B\u0439 \u043E\u0445\u0432\u0430\u0442 \u0438 \u0434\u043E\u0432\u0435\u0440\u0438\u0435, \u043D\u043E \u0434\u043E\u0440\u043E\u0433\u043E" },
+  { id: "internet", label: "\u0418\u043D\u0442\u0435\u0440\u043D\u0435\u0442-\u0440\u0435\u043A\u043B\u0430\u043C\u0430", icon: "\u{1F310}", minBudget: 1500, sellerBoostK: 0.9, buyerBoostK: 1.6, trustBoostK: 0.8, desc: "\u0414\u0435\u0448\u0451\u0432\u043E, \u0431\u044B\u0441\u0442\u0440\u044B\u0439 \u043F\u0440\u0438\u0442\u043E\u043A \u043F\u043E\u043A\u0443\u043F\u0430\u0442\u0435\u043B\u0435\u0439" },
+  { id: "billboards", label: "\u0411\u0438\u043B\u0431\u043E\u0440\u0434\u044B", icon: "\u{1F3D9}\uFE0F", minBudget: 3e3, sellerBoostK: 0.7, buyerBoostK: 0.9, trustBoostK: 1, desc: "\u0421\u0440\u0435\u0434\u043D\u0438\u0439 \u0432\u0430\u0440\u0438\u0430\u043D\u0442, \u0440\u0430\u0432\u043D\u043E\u043C\u0435\u0440\u043D\u044B\u0439 \u044D\u0444\u0444\u0435\u043A\u0442" }
+];
+var MARKETPLACE_AD_DURATION_MS = 15 * 60 * 1e3;
+var MARKETPLACE_AD_MAX_ACTIVE = 2;
+function marketplaceAdChannel(id) {
+  return MARKETPLACE_AD_CHANNELS.find((c) => c.id === id) || MARKETPLACE_AD_CHANNELS[0];
+}
+function marketplaceAdImpact(campaign) {
+  const channel = marketplaceAdChannel(campaign.channel);
+  const k = Math.sqrt(Math.max(0, campaign.budget));
+  return {
+    growthChanceBoost: k * channel.sellerBoostK * 6e-4,
+    buyerBoost: k * channel.buyerBoostK * 0.6,
+    trustCeilingBoost: k * channel.trustBoostK * 0.012
+  };
+}
 // ---- ZZONE как NPC-бизнес: тот же пакет показателей, что и у игрока, при этом ----
 // ---- продолжает торговаться на бирже — цена реагирует на реальные действия. ----
 var MARKET_TOTAL_GMV_CYCLE = 5e7;
@@ -806,7 +828,7 @@ function bigSellerCycleGmv(seller, marketIndexVal) {
   return Math.round(seller.turnover / 12 * (marketIndexVal || 1));
 }
 function bigSellerSuccessChance(offer, seller, trustScore) {
-  return clamp01((offer.successBonus + (100 - seller.loyalty) * 0.5 + trustScore * 0.2) / 100, 0.05, 0.9);
+  return clamp01((offer.successBonus + (100 - seller.loyalty) * 0.35 + trustScore * 0.15) / 100, 0.05, 0.68);
 }
 // ---- Инвесторы маркетплейса ----
 var MARKETPLACE_INVESTORS = [
@@ -2733,11 +2755,16 @@ function MarketSandbox() {
         totalRevenue: 0,
         cyclesRun: 0,
         warehouseIds: [],
+        lastTickAt: Date.now(),
+        accumGmv: 0,
+        accumRevenue: 0,
+        accumOpex: 0,
         nextCycleAt: Date.now() + MARKETPLACE_CYCLE_MS,
         ...saved,
         staff: { dev: 0, logistics: 0, support: 0, legal: 0, marketing: 0, ...(saved.staff || {}) },
         socialProfile: { trust: 50, postLog: [], lastPostAt: 0, ...(saved.socialProfile || {}) },
-        investorRounds: Array.isArray(saved.investorRounds) ? saved.investorRounds : []
+        investorRounds: Array.isArray(saved.investorRounds) ? saved.investorRounds : [],
+        adCampaigns: Array.isArray(saved.adCampaigns) ? saved.adCampaigns : []
       };
     })() : null);
     setZzoneBiz(data.zzoneBiz && typeof data.zzoneBiz === "object" ? { marketShare: typeof data.zzoneBiz.marketShare === "number" ? data.zzoneBiz.marketShare : ZZONE_MARKET_SHARE_START, commissionRate: typeof data.zzoneBiz.commissionRate === "number" ? data.zzoneBiz.commissionRate : MARKETPLACE_FEE, baseCommission: typeof data.zzoneBiz.baseCommission === "number" ? data.zzoneBiz.baseCommission : MARKETPLACE_FEE, aggressionLevel: data.zzoneBiz.aggressionLevel || 0, reactionsTriggered: Array.isArray(data.zzoneBiz.reactionsTriggered) ? data.zzoneBiz.reactionsTriggered : [] } : { marketShare: ZZONE_MARKET_SHARE_START, commissionRate: MARKETPLACE_FEE, baseCommission: MARKETPLACE_FEE, aggressionLevel: 0, reactionsTriggered: [] });
@@ -4338,18 +4365,53 @@ function MarketSandbox() {
     if (!loaded) return;
     const id = setInterval(() => {
       const mp = marketplaceRef.current;
-      if (!mp || Date.now() < mp.nextCycleAt) return;
+      if (!mp) return;
+      const now0 = Date.now();
+      const dtMs = Math.max(0, Math.min(now0 - (mp.lastTickAt || now0), MARKETPLACE_CYCLE_MS));
+      if (dtMs <= 0) return;
+      const dtFrac = dtMs / MARKETPLACE_CYCLE_MS;
       const est = marketplaceCycleEstimate(mp, marketIndexRef.current, bigSellersRef.current);
+      const gmvDelta = est.gmv * dtFrac;
+      const revenueDelta = est.revenue * dtFrac;
+      const opexDelta = est.opex * dtFrac;
+      const netDelta = revenueDelta - opexDelta;
+      if (revenueDelta > 0) setQuarterRevenue((r) => r + revenueDelta);
+      setMarketplace((prev) => prev ? {
+        ...prev,
+        cash: Math.round((prev.cash + netDelta) * 100) / 100,
+        lastTickAt: now0,
+        accumGmv: (prev.accumGmv || 0) + gmvDelta,
+        accumRevenue: (prev.accumRevenue || 0) + revenueDelta,
+        accumOpex: (prev.accumOpex || 0) + opexDelta
+      } : prev);
+    }, 1e3);
+    return () => clearInterval(id);
+  }, [loaded]);
+  useEffect(() => {
+    if (!loaded) return;
+    const id = setInterval(() => {
+      const mp = marketplaceRef.current;
+      if (!mp || Date.now() < mp.nextCycleAt) return;
+      const now = Date.now();
+      const activeCampaigns = (mp.adCampaigns || []).filter((c) => now < c.expiresAt);
+      const adImpacts = activeCampaigns.map(marketplaceAdImpact);
+      const adGrowthBoost = adImpacts.reduce((s, a) => s + a.growthChanceBoost, 0);
+      const adBuyerBoost = adImpacts.reduce((s, a) => s + a.buyerBoost, 0);
+      const adTrustCeilingBoost = adImpacts.reduce((s, a) => s + a.trustCeilingBoost, 0);
+      const cycleGmv = mp.accumGmv || 0;
+      const cycleRevenue = mp.accumRevenue || 0;
+      const cycleOpex = mp.accumOpex || 0;
+      const cycleNet = cycleRevenue - cycleOpex;
       const growthRoll = Math.random();
-      const growthChance = clamp01(0.05 + mp.trustScore / 500 + (mp.sellersLevel || 0) * 0.01, 0, 0.5);
+      const growthChance = clamp01(0.05 + mp.trustScore / 500 + (mp.sellersLevel || 0) * 0.01 + adGrowthBoost, 0, 0.5);
       const sellerCount = mp.sellerCount < MARKETPLACE_SELLER_GROWTH_CAP && growthRoll < growthChance ? mp.sellerCount + 1 : mp.sellerCount;
       const buyerBase = mp.sellerCount * (0.5 + Math.random()) + (mp.buyersLevel || 0) * 2;
-      const buyerCount = Math.round(mp.buyerCount + Math.max(0, sellerCount - mp.sellerCount) * 40 + buyerBase);
-      const trustCeiling = Math.min(100, 60 + (mp.brandLevel || 0) * 3);
-      const trustDrift = Math.max(-1, Math.min(1, est.net > 0 ? 0.3 : -0.2));
+      const buyerCount = Math.round(mp.buyerCount + Math.max(0, sellerCount - mp.sellerCount) * 40 + buyerBase + adBuyerBoost);
+      const trustCeiling = Math.min(100, 60 + (mp.brandLevel || 0) * 3 + adTrustCeilingBoost);
+      const trustDrift = Math.max(-1, Math.min(1, cycleNet > 0 ? 0.3 : -0.2));
       const trustScore = Math.max(0, Math.min(trustCeiling, mp.trustScore + trustDrift));
       const newCyclesRun = mp.cyclesRun + 1;
-      const newTotalGmv = mp.totalGmv + est.gmv;
+      const newTotalGmv = mp.totalGmv + cycleGmv;
       let investorTrustPenalty = 0;
       let investorCashPenalty = 0;
       const roundPosts = [];
@@ -4403,28 +4465,31 @@ function MarketSandbox() {
       }
       setMarketplace((prev) => prev ? {
         ...prev,
-        cash: Math.round((prev.cash + est.net - investorCashPenalty) * 100) / 100,
+        cash: Math.round((prev.cash - investorCashPenalty) * 100) / 100,
         sellerCount,
         buyerCount,
         trustScore: trustScoreAfterInvestors,
         marketShare: newPlayerShare,
         cyclesRun: newCyclesRun,
         totalGmv: newTotalGmv,
-        totalRevenue: prev.totalRevenue + est.revenue,
+        totalRevenue: prev.totalRevenue + cycleRevenue,
         investorRounds,
         crisisPenaltyCyclesLeft,
         pendingCrisis,
-        lastCycleStats: est,
+        lastCycleStats: { gmv: cycleGmv, revenue: cycleRevenue, opex: cycleOpex, net: cycleNet },
+        accumGmv: 0,
+        accumRevenue: 0,
+        accumOpex: 0,
+        adCampaigns: activeCampaigns,
         nextCycleAt: Date.now() + MARKETPLACE_CYCLE_MS
       } : prev);
       roundPosts.forEach((text) => pushPost({ text, positive: !text.includes("\u043D\u0435\u0434\u043E\u0432\u043E\u043B\u0435\u043D"), isMacro: false, importance: 2 }));
       if (mp.ipoStatus === "public" && mp.stockCompanyId) {
-        const drift = est.net > 0 ? 0.3 + Math.random() * 0.9 : -(0.3 + Math.random() * 0.9);
+        const drift = cycleNet > 0 ? 0.3 + Math.random() * 0.9 : -(0.3 + Math.random() * 0.9);
         applyImpact(mp.stockCompanyId, drift);
       }
-      if (est.revenue > 0) setQuarterRevenue((r) => r + est.revenue);
-      logTx(`\u041C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441 \xB7 \u0432\u044B\u0440\u0443\u0447\u043A\u0430 \u0437\u0430 \u0446\u0438\u043A\u043B`, est.revenue, "in");
-      if (est.opex > 0) logTx(`\u041C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441 \xB7 \u0440\u0430\u0441\u0445\u043E\u0434\u044B \u043D\u0430 \u043E\u0431\u0441\u043B\u0443\u0436\u0438\u0432\u0430\u043D\u0438\u0435`, est.opex, "out");
+      if (cycleRevenue > 0) logTx(`\u041C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441 \xB7 \u0432\u044B\u0440\u0443\u0447\u043A\u0430 \u0437\u0430 \u0446\u0438\u043A\u043B`, Math.round(cycleRevenue), "in");
+      if (cycleOpex > 0) logTx(`\u041C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441 \xB7 \u0440\u0430\u0441\u0445\u043E\u0434\u044B \u043D\u0430 \u043E\u0431\u0441\u043B\u0443\u0436\u0438\u0432\u0430\u043D\u0438\u0435`, Math.round(cycleOpex), "out");
       setTimeout(saveGame, 50);
     }, 3e4);
     return () => clearInterval(id);
@@ -4874,10 +4939,12 @@ function MarketSandbox() {
       });
       applyImpact(companyId, impactPct);
       if (isOwnCryptoPool) {
-        // Цена уже сдвинута applyImpact выше — пересинхронизируем poolUsd под неё, чтобы
-        // гравитация в RAF-цикле не тянула к устаревшему соотношению.
-        const freshPrice = engineRef.current[companyId]?.price ?? avgExecPrice;
-        setCompanies((prev) => prev.map((c) => c.id === companyId ? { ...c, poolCoin: c.poolCoin - qty, poolUsd: Math.max(0, freshPrice * (c.poolCoin - qty)) } : c));
+        // poolUsd растёт только на реально вложенные деньги (как в органическом давлении
+        // и в рекламных кампаниях) — раньше здесь пересчитывали poolUsd = цена × poolCoin
+        // ПОСЛЕ уже пампнутой цены, из-за чего каждая сделка задирала "справедливую" цену
+        // самим фактом импакта, без реального притока капитала — снежный ком.
+        const usdIn = avgExecPrice * qty;
+        setCompanies((prev) => prev.map((c) => c.id === companyId ? { ...c, poolCoin: c.poolCoin - qty, poolUsd: c.poolUsd + usdIn } : c));
       }
       if (!useMule && !useFakeIp && sizeRatio > 0.08) flagSuspicion(sizeRatio * 35);
       logTx(`\u041F\u043E\u043A\u0443\u043F\u043A\u0430 ${company.ticker} \xD7${qty}${acctTag}`, cost, "out");
@@ -4911,11 +4978,11 @@ function MarketSandbox() {
       });
       applyImpact(companyId, -impactPct);
       if (isOwnCryptoPool) {
-        // Цена уже сдвинута applyImpact выше — пересинхронизируем poolUsd под неё, чтобы
-        // крупная продажа (выше физического poolUsd, покрытая внешней ликвидностью) не
-        // обрушила гравитацию в RAF-цикле к нулю.
-        const freshPrice = engineRef.current[companyId]?.price ?? avgExecPrice;
-        setCompanies((prev) => prev.map((c) => c.id === companyId ? { ...c, poolCoin: c.poolCoin + qty, poolUsd: Math.max(0, freshPrice * (c.poolCoin + qty)) } : c));
+        // Симметрично покупке: poolUsd уменьшается на реально выплаченные деньги, а не
+        // пересчитывается от уже упавшей цены — иначе крупная продажа обрушивала
+        // "справедливую" цену сильнее, чем реально вывели капитала из пула.
+        const usdOut = avgExecPrice * qty;
+        setCompanies((prev) => prev.map((c) => c.id === companyId ? { ...c, poolCoin: c.poolCoin + qty, poolUsd: Math.max(0, c.poolUsd - usdOut) } : c));
       }
       if (useIp) {
         setQuarterRevenue((r) => r + grossProceeds);
@@ -5511,6 +5578,7 @@ function MarketSandbox() {
     setTimeout(saveGame, 50);
   };
   const [shopAdBudget, setShopAdBudget] = useState("300");
+  const [marketplaceAdBudgetInputs, setMarketplaceAdBudgetInputs] = useState({});
   const [shopAdDuration, setShopAdDuration] = useState("mid");
   const runAdCampaign = (shopId, budgetRaw, durationId) => {
     const budget = Math.max(100, Math.round(Number(budgetRaw) || 0));
@@ -6703,6 +6771,11 @@ function MarketSandbox() {
       totalGmv: 0,
       totalRevenue: 0,
       lastCycleStats: null,
+      lastTickAt: Date.now(),
+      accumGmv: 0,
+      accumRevenue: 0,
+      accumOpex: 0,
+      adCampaigns: [],
       nextCycleAt: Date.now() + MARKETPLACE_CYCLE_MS
     };
     setMarketplace(mp);
@@ -7055,7 +7128,30 @@ function MarketSandbox() {
       pushPost({ text: `${seller.name} \u043F\u0435\u0440\u0435\u0448\u0451\u043B \u043D\u0430 \xAB${mp.name}\xBB \u2014 \u043A\u0440\u0443\u043F\u043D\u044B\u0439 \u043F\u0440\u043E\u0434\u0430\u0432\u0435\u0446 \u0441\u043C\u0435\u043D\u0438\u043B \u043F\u043B\u043E\u0449\u0430\u0434\u043A\u0443`, positive: true, isMacro: false, importance: 2 });
     } else {
       setBigSellers((prev) => prev.map((s) => s.id === sellerId ? { ...s, loyalty: Math.min(100, s.loyalty + 10) } : s));
+      setMarketplace((prev) => prev ? { ...prev, trustScore: Math.max(0, prev.trustScore - 2) } : prev);
+      pushPost({ text: `${seller.name} \u043E\u0442\u043A\u0430\u0437\u0430\u043B\u0441\u044F \u043F\u0435\u0440\u0435\u0445\u043E\u0434\u0438\u0442\u044C \u043D\u0430 \xAB${mp.name}\xBB \u2014 \u043D\u0435\u0443\u0434\u0430\u0447\u043D\u044B\u0435 \u043F\u0435\u0440\u0435\u0433\u043E\u0432\u043E\u0440\u044B \u043F\u043E\u0432\u0440\u0435\u0434\u0438\u043B\u0438 \u0440\u0435\u043F\u0443\u0442\u0430\u0446\u0438\u044E`, positive: false, isMacro: false, importance: 1 });
     }
+    setTimeout(saveGame, 50);
+  };
+  const launchMarketplaceAd = (channelId, budgetRaw) => {
+    const mp = marketplaceRef.current;
+    if (!mp) return;
+    const channel = marketplaceAdChannel(channelId);
+    const budget = Math.max(channel.minBudget, Math.round(Number(budgetRaw) || 0));
+    if ((mp.adCampaigns || []).length >= MARKETPLACE_AD_MAX_ACTIVE) {
+      notify(`\u041C\u0430\u043A\u0441\u0438\u043C\u0443\u043C ${MARKETPLACE_AD_MAX_ACTIVE} \u0430\u043A\u0442\u0438\u0432\u043D\u044B\u0435 \u043A\u0430\u043C\u043F\u0430\u043D\u0438\u0438 \u043E\u0434\u043D\u043E\u0432\u0440\u0435\u043C\u0435\u043D\u043D\u043E`);
+      return;
+    }
+    if (ipCash < budget) {
+      notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u043D\u0430 \u0418\u041F \u2014 \u043D\u0443\u0436\u043D\u043E ${fmt(budget)}`);
+      return;
+    }
+    setIpCash((c) => c - budget);
+    const now = Date.now();
+    const campaign = { id: makeId("mpad"), channel: channelId, budget, startedAt: now, expiresAt: now + MARKETPLACE_AD_DURATION_MS };
+    setMarketplace((prev) => prev ? { ...prev, adCampaigns: [...(prev.adCampaigns || []), campaign] } : prev);
+    logTx(`\u0420\u0435\u043A\u043B\u0430\u043C\u0430 \u043C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441\u0430 \xB7 ${channel.label}`, budget, "out");
+    notify(`\u0417\u0430\u043F\u0443\u0449\u0435\u043D\u0430 \u043A\u0430\u043C\u043F\u0430\u043D\u0438\u044F: ${channel.label}`, true);
     setTimeout(saveGame, 50);
   };
   const marketplaceInvestorEligible = (investor, mp) => {
@@ -9779,9 +9875,9 @@ function MarketSandbox() {
             ] });
           })(),
                     marketplace && selectedBizId === "marketplace" && (() => {
-            const est = marketplaceCycleEstimate(marketplace, marketIndex, bigSellers);
-            const stats = marketplace.lastCycleStats;
             const secLeft = Math.max(0, Math.ceil((marketplace.nextCycleAt - Date.now()) / 1e3));
+            const liveGmv = marketplace.accumGmv || 0;
+            const liveRevenue = marketplace.accumRevenue || 0;
             const linkedWarehouses = warehouses.filter((w) => (marketplace.warehouseIds || []).includes(w.id));
             const capacity = linkedWarehouses.reduce((s, w) => s + (WAREHOUSE_TIERS[w.tierId]?.throughputCapacity || 0), 0);
             const originShop = resellShops.find((s) => s.id === marketplace.originShopId);
@@ -9792,7 +9888,7 @@ function MarketSandbox() {
                     /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.gold, textTransform: "uppercase", letterSpacing: 1 }, children: "СОБСТВЕННЫЙ МАРКЕТПЛЕЙС" }),
                     /* @__PURE__ */ jsx("div", { style: { fontSize: 18, fontWeight: 700, marginTop: 4 }, children: marketplace.name }),
                     /* @__PURE__ */ jsxs("div", { style: { fontSize: 11.5, color: C.inkDim, marginTop: 2 }, children: [
-                      "Цикл через ", secLeft, " с"
+                      "Рост/решения через ", secLeft, " с"
                     ] })
                   ] }),
                   /* @__PURE__ */ jsxs("div", { style: { textAlign: "right" }, children: [
@@ -9802,12 +9898,12 @@ function MarketSandbox() {
                 ] }),
                 /* @__PURE__ */ jsxs("div", { style: { background: `${C.gold}0F`, border: `1px solid ${C.gold}33`, borderRadius: 10, padding: "10px 12px", marginBottom: 12 }, children: [
                   /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }, children: [
-                    /* @__PURE__ */ jsx("span", { style: { color: C.inkDim }, children: "GMV этого цикла (оборот продавцов)" }),
-                    /* @__PURE__ */ jsx("span", { style: { fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: C.gold }, children: fmt(stats ? stats.gmv : est.gmv) })
+                    /* @__PURE__ */ jsxs("span", { style: { color: C.inkDim }, children: ["GMV \u0441 \u043D\u0430\u0447\u0430\u043B\u0430 \u0446\u0438\u043A\u043B\u0430 ", /* @__PURE__ */ jsx("span", { style: { color: C.green }, children: "\u25CF" })] }),
+                    /* @__PURE__ */ jsx("span", { style: { fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: C.gold }, children: fmt(liveGmv) })
                   ] }),
                   /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12 }, children: [
-                    /* @__PURE__ */ jsx("span", { style: { color: C.inkDim }, children: "Выручка (комиссия)" }),
-                    /* @__PURE__ */ jsx("span", { style: { fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: C.green }, children: fmt(stats ? stats.revenue : est.revenue) })
+                    /* @__PURE__ */ jsx("span", { style: { color: C.inkDim }, children: "Выручка (комиссия), тикает" }),
+                    /* @__PURE__ */ jsx("span", { style: { fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: C.green }, children: fmt(liveRevenue) })
                   ] })
                 ] }),
                 /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginBottom: 12, lineHeight: 1.5 }, children: "GMV — это деньги продавцов, а не маркетплейса. На счёт компании попадает только комиссия." }),
@@ -9844,6 +9940,42 @@ function MarketSandbox() {
                   "Стартовая торговая база: ", /* @__PURE__ */ jsx("b", { style: { color: C.ink }, children: originShop ? originShop.name : "—" })
                 ] })
               ] }),
+              (() => {
+                const now = Date.now();
+                const activeAds = (marketplace.adCampaigns || []).filter((c) => now < c.expiresAt);
+                return /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
+                  /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 4, textTransform: "uppercase", letterSpacing: 1 }, children: "Реклама маркетплейса" }),
+                  /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginBottom: 12, lineHeight: 1.5 }, children: "Широкий охват — не точечная реклама конкретному продавцу, а привлечение новых продавцов и покупателей на площадку в целом." }),
+                  activeAds.length > 0 && /* @__PURE__ */ jsx("div", { style: { marginBottom: 12 }, children: activeAds.map((c) => {
+                    const channel = marketplaceAdChannel(c.channel);
+                    const minLeft = Math.ceil((c.expiresAt - now) / 6e4);
+                    return /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 11.5, color: C.inkDim, padding: "4px 0" }, children: [
+                      /* @__PURE__ */ jsxs("span", { children: [channel.icon, " ", channel.label, " \xB7 ", fmt(c.budget)] }),
+                      /* @__PURE__ */ jsxs("span", { children: ["\u0435\u0449\u0451 ", minLeft, " \u043C\u0438\u043D"] })
+                    ] }, c.id);
+                  }) }),
+                  MARKETPLACE_AD_CHANNELS.map((channel) => {
+                    const budgetVal = marketplaceAdBudgetInputs[channel.id] || String(channel.minBudget);
+                    const budgetNum = Math.max(0, Number(budgetVal) || 0);
+                    const impact = marketplaceAdImpact({ channel: channel.id, budget: budgetNum });
+                    const disabled = ipCash < budgetNum || budgetNum < channel.minBudget || activeAds.length >= MARKETPLACE_AD_MAX_ACTIVE;
+                    return /* @__PURE__ */ jsxs("div", { style: { border: `1px solid ${C.border}`, borderRadius: 12, padding: 12, marginBottom: 10 }, children: [
+                      /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }, children: [
+                        /* @__PURE__ */ jsxs("div", { style: { fontWeight: 700, fontSize: 13 }, children: [channel.icon, " ", channel.label] }),
+                        /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint }, children: ["\u043E\u0442 ", fmt(channel.minBudget)] })
+                      ] }),
+                      /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkDim, marginBottom: 8 }, children: channel.desc }),
+                      /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 6, marginBottom: 8 }, children: [
+                        /* @__PURE__ */ jsx("input", { type: "number", value: budgetVal, onChange: (e) => setMarketplaceAdBudgetInputs((prev) => ({ ...prev, [channel.id]: e.target.value })), style: { ...inputStyle, flex: 1 } }),
+                        /* @__PURE__ */ jsx("button", { onClick: () => launchMarketplaceAd(channel.id, budgetVal), disabled, style: { padding: "0 16px", borderRadius: 10, border: "none", fontWeight: 700, fontSize: 12.5, background: disabled ? C.surface2 : C.gold, color: disabled ? C.inkFaint : "#161207" }, children: "\u0417\u0430\u043F\u0443\u0441\u0442\u0438\u0442\u044C" })
+                      ] }),
+                      /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint }, children: [
+                        "+", (impact.growthChanceBoost * 100).toFixed(1), "% \u0448\u0430\u043D\u0441 \u043D\u043E\u0432\u043E\u0433\u043E \u043F\u0440\u043E\u0434\u0430\u0432\u0446\u0430 \xB7 +", Math.round(impact.buyerBoost), " \u043F\u043E\u043A\u0443\u043F\u0430\u0442\u0435\u043B\u0435\u0439 \xB7 +", impact.trustCeilingBoost.toFixed(1), " \u043A \u043F\u043E\u0442\u043E\u043B\u043A\u0443 \u0434\u043E\u0432\u0435\u0440\u0438\u044F \u043D\u0430 ", MARKETPLACE_AD_DURATION_MS / 6e4, " \u043C\u0438\u043D"
+                      ] })
+                    ] }, channel.id);
+                  })
+                ] });
+              })(),
               (() => {
                 const othersShare = Math.max(0, 1 - marketplace.marketShare - zzoneBiz.marketShare);
                 const rows = [
