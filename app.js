@@ -1,4 +1,4 @@
-// Market Sandbox — V2.31.0 (Фиксы по фидбеку: 1) Комиссии с карт были доминирующим источником дохода банка (линейный рост от числа клиентов, при 15k+ клиентах — $1M+/сессия против $136k с кредитов). Переведено на sqrt(clients) вместо linear — теперь при том же числе клиентов доход с карт на два порядка меньше и явно самый маленький источник, как и задумано (карты требуют меньше всего управления). 2) Убран блок «История вкладов» полностью — просто список цифр без пользы. 3) Реклама вкладов была почти бесполезна: при $200k расход давало ~13 вкладчиков/$140k (CAC $15,385, отрицательный ROI) — потому что кампания лишь домножала УЖЕ низкую базовую вероятность (BANK_DEPOSIT_LAMBDA_BASE), и множитель тонул в общей формуле. Заменено на отдельный прямой спавн-процесс кампании (bankDepositCampaignTargetCount = reach × conversion × качество ставки), не зависящий от слабой базовой линии — теперь $200k дают ≈80 вкладчиков/≈$730k (CAC ≈$2,460), на порядок эффективнее. 4) ГЛАВНОЕ: у банка не было никакого UI для купленных активов — хотя торговая модалка уже поддерживала tradeIsBank как источник оплаты (bank.holdings уже корректно обновлялся при покупке через "Счёт банка"), деньги просто "исчезали из вида". Добавлена полноценная секция «Портфель банка»: список позиций (тикер/кол-во/средняя/стоимость/P&L) с кнопками Купить/Продать, открывающими существующую торговую модалку с предустановленным источником оплаты "bank" (переиспользован существующий tradeIsBank-механизм, ничего не дублировано).)
+// Market Sandbox — V2.32.0 (Новый внутренний счёт банка: ДЕПОЗИТНЫЙ СЧЁТ (bank.depositReserve). Раньше деньги новых вкладчиков сразу падали на основной счёт банка (bank.capital) и были мгновенно доступны для кредитов/трейдинга/рекламы. Теперь деньги вкладчиков (и органические, и от рекламных кампаний) зачисляются на отдельный bank.depositReserve — использовать их напрямую нельзя, нужно вручную перевести на «Счёт банка» (transferDepositReserveToCapital) или на «ООО» (transferDepositReserveToIp, использует тот же ipCash что и ИП). Выплаты по вкладам (payDueDeposits) по-прежнему списываются только с bank.capital — то есть если не перевести деньги из резерва вовремя, выплатить вкладчикам нечем, несмотря на то что деньги формально «в банке». Это осознанное усиление банковской механики ликвидности. bankBalanceSheet().assets теперь включает depositReserve (это всё ещё деньги банка, просто на другом счету), в панели «Баланс и ликвидность» добавлена строка «Депозитный счёт (не переведено)». Новый блок «ДЕПОЗИТНЫЙ СЧЁТ» в вкладке Вклады с полем суммы и двумя кнопками перевода. Миграция: старым сейвам просто ставится depositReserve:0 — их прошлые вклады уже физически лежат в capital, ничего мигрировать не нужно.)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -1000,7 +1000,8 @@ function bankBalanceSheet(bank, companies) {
   const tradingCapital = (bank.traders || []).reduce((s, t) => s + t.allocation, 0);
   const creditReserve = bank.creditPoolAllocated || 0;
   const creditOutstanding = bank.creditOutstanding || 0;
-  const assets = bank.capital + creditReserve + creditOutstanding + tradingCapital + portfolioValue;
+  const depositReserve = bank.depositReserve || 0;
+  const assets = bank.capital + creditReserve + creditOutstanding + tradingCapital + portfolioValue + depositReserve;
   const liabilities = (bank.deposits || []).reduce((s, d) => s + Math.max(0, (d.total ?? d.principal) - (d.paidAmount || 0)), 0);
   const equity = assets - liabilities;
   const now = Date.now();
@@ -1011,7 +1012,7 @@ function bankBalanceSheet(bank, companies) {
     const ratio = freeLiquidity / owedNow;
     liqStatus = ratio >= 2 ? "green" : ratio >= 1 ? "yellow" : ratio >= 0.5 ? "orange" : "red";
   }
-  return { portfolioValue, tradingCapital, creditReserve, creditOutstanding, assets, liabilities, equity, owedNow, freeLiquidity, liqStatus };
+  return { portfolioValue, tradingCapital, creditReserve, creditOutstanding, depositReserve, assets, liabilities, equity, owedNow, freeLiquidity, liqStatus };
 }
 var BANK_TRADERS_POOL = [
   { id: "t_junior", name: "\u0410\u043D\u0442\u043E\u043D \u041A\u043E\u043D\u044C\u043A\u043E\u0432", tier: "\u0421\u0442\u0430\u0436\u0451\u0440", winRate: 0.5, risk: 0.03, allocation: 2e5 },
@@ -2051,6 +2052,7 @@ function MarketSandbox() {
   const [bankMktStrategy, setBankMktStrategy] = useState("standard");
   const [depositShowAll, setDepositShowAll] = useState(false);
   const [depositSearch, setDepositSearch] = useState("");
+  const [depositReserveTransferAmount, setDepositReserveTransferAmount] = useState("");
   const [bankNameInput, setBankNameInput] = useState("\u041C\u043E\u0439 \u0431\u0430\u043D\u043A");
   const [bankTransferAmount, setBankTransferAmount] = useState("");
   const [bankCreditInvestAmount, setBankCreditInvestAmount] = useState("");
@@ -2731,7 +2733,7 @@ function MarketSandbox() {
         return { ...d, rate, total, payment, paidAmount: Math.round((d.cyclesPaid || 0) * payment), cyclesTotal: BANK_DEPOSIT_TERM_CYCLES };
       })());
     }
-    setBank(data.bank && typeof data.bank === "object" ? { trust: 50, reputation: 50, quarterRevenue: 0, quarterEndsAt: Date.now() + QUARTER_MS, totalDefaulted: 0, defaultedSinceCycle: 0, maxCapitalReached: data.bank.capital || BANK_MIN_CAPITAL, holdings: {}, creditPoolAllocated: 0, depositRate: BANK_NPC_AVG_DEPOSIT_RATE, deposits: [], totalDepositInterestPaid: 0, totalDepositPrincipalReturned: 0, totalDepositsOpened: 0, totalDepositsAmount: 0, totalLoansIssuedCount: 0, totalLoansIssuedAmount: 0, marketingCampaigns: [], marketingHistory: [], missedDepositPayments: 0, lastCycleBreakdown: null, creditOutstanding: 0, lastTickAt: Date.now(), accum: { creditIncome: 0, newLoansIssued: 0, principalRepaid: 0, tradingPnl: 0, cardIncome: 0, depositInflow: 0, depositInterestPaid: 0, depositPrincipalReturned: 0 }, ...data.bank } : null);
+    setBank(data.bank && typeof data.bank === "object" ? { trust: 50, reputation: 50, quarterRevenue: 0, quarterEndsAt: Date.now() + QUARTER_MS, totalDefaulted: 0, defaultedSinceCycle: 0, maxCapitalReached: data.bank.capital || BANK_MIN_CAPITAL, holdings: {}, creditPoolAllocated: 0, depositReserve: 0, depositRate: BANK_NPC_AVG_DEPOSIT_RATE, deposits: [], totalDepositInterestPaid: 0, totalDepositPrincipalReturned: 0, totalDepositsOpened: 0, totalDepositsAmount: 0, totalLoansIssuedCount: 0, totalLoansIssuedAmount: 0, marketingCampaigns: [], marketingHistory: [], missedDepositPayments: 0, lastCycleBreakdown: null, creditOutstanding: 0, lastTickAt: Date.now(), accum: { creditIncome: 0, newLoansIssued: 0, principalRepaid: 0, tradingPnl: 0, cardIncome: 0, depositInflow: 0, depositInterestPaid: 0, depositPrincipalReturned: 0 }, ...data.bank } : null);
     setMarketplace(data.marketplace && typeof data.marketplace === "object" ? (() => {
       const saved = data.marketplace;
       return {
@@ -4715,7 +4717,7 @@ function MarketSandbox() {
         return sum + t.allocation * (t.winRate * winMid - (1 - t.winRate) * lossMid);
       }, 0) * dtFrac);
       const cardIncome = Math.round(Math.sqrt(Math.max(0, b.clients)) * BANK_CARD_BASE_TRANSFER_VOL * b.cardFeeRate * dtFrac);
-      let depositCapitalDelta = 0;
+      let depositReserveDelta = 0;
       let depositInflow = 0;
       const missedDeposits = [];
       const survivingDeposits = [];
@@ -4736,11 +4738,11 @@ function MarketSandbox() {
         const total = Math.round(principal * (1 + depRate));
         const payment = Math.round(total / BANK_DEPOSIT_TERM_CYCLES);
         survivingDeposits.push({ id: makeId("dep"), npcName: DEPOSIT_NPC_NAMES[Math.floor(Math.random() * DEPOSIT_NPC_NAMES.length)], principal, rate: depRate, total, payment, cyclesTotal: BANK_DEPOSIT_TERM_CYCLES, cyclesPaid: 0, paidAmount: 0, openedAt: now, nextPayoutAt: now + BANK_CYCLE_MS, overdueSince: null, escalated: false });
-        depositCapitalDelta += principal;
+        depositReserveDelta += principal;
         depositInflow += principal;
         depositsOpenedThisTick += 1;
         depositsAmountThisTick += principal;
-        logTx(`Вклад НПС \xB7 открытие`, principal, "in");
+        logTx(`Вклад НПС \xB7 зачислен на депозитный счёт`, principal, "in");
       }
       const activeDepositCampaign = activeCampaigns.find((c) => c.product === "deposits");
       if (activeDepositCampaign) {
@@ -4751,11 +4753,11 @@ function MarketSandbox() {
           const total = Math.round(principal * (1 + depRate));
           const payment = Math.round(total / BANK_DEPOSIT_TERM_CYCLES);
           survivingDeposits.push({ id: makeId("dep"), npcName: DEPOSIT_NPC_NAMES[Math.floor(Math.random() * DEPOSIT_NPC_NAMES.length)], principal, rate: depRate, total, payment, cyclesTotal: BANK_DEPOSIT_TERM_CYCLES, cyclesPaid: 0, paidAmount: 0, openedAt: now, nextPayoutAt: now + BANK_CYCLE_MS, overdueSince: null, escalated: false });
-          depositCapitalDelta += principal;
+          depositReserveDelta += principal;
           depositInflow += principal;
           depositsOpenedThisTick += 1;
           depositsAmountThisTick += principal;
-          logTx(`Вклад по рекламе \xB7 открытие`, principal, "in");
+          logTx(`Вклад по рекламе \xB7 зачислен на депозитный счёт`, principal, "in");
         }
       }
       let cardsClientsGained = 0;
@@ -4763,7 +4765,7 @@ function MarketSandbox() {
         const cardsProb = 0.02 * cardsCampaignBoost * dtFrac * 1e3;
         if (Math.random() < cardsProb) cardsClientsGained = 1 + (Math.random() < 0.25 ? 1 : 0);
       }
-      const capitalDelta = principalRepaid + creditIncome + tradingPnl + cardIncome + depositCapitalDelta;
+      const capitalDelta = principalRepaid + creditIncome + tradingPnl + cardIncome;
       const newCapital = b.capital + capitalDelta;
       const turnoverGain = creditIncome + cardIncome + Math.max(0, tradingPnl);
       const escalatedCount = missedDeposits.length;
@@ -4795,6 +4797,7 @@ function MarketSandbox() {
         creditOutstanding: newOutstanding,
         creditPoolAllocated: newIdlePool,
         deposits: survivingDeposits,
+        depositReserve: (prev.depositReserve || 0) + depositReserveDelta,
         quarterRevenue: (prev.quarterRevenue || 0) + turnoverGain,
         totalDefaulted: (prev.totalDefaulted || 0) + defaulted,
         defaultedSinceCycle: (prev.defaultedSinceCycle || 0) + defaulted,
@@ -7070,6 +7073,7 @@ function MarketSandbox() {
       maxCapitalReached: BANK_MIN_CAPITAL,
       holdings: transferredHoldings,
       creditPoolAllocated: 0,
+      depositReserve: 0,
       depositRate: BANK_NPC_AVG_DEPOSIT_RATE,
       deposits: [],
       totalDepositInterestPaid: 0,
@@ -7185,6 +7189,23 @@ function MarketSandbox() {
     setIpCash((c) => c - amt);
     setBank((prev) => prev ? { ...prev, capital: prev.capital + amt } : prev);
     logTx("Внесение на счёт банка \xB7 с ИП", amt, "out");
+    setTimeout(saveGame, 50);
+  };
+  const transferDepositReserveToCapital = (amount) => {
+    const b = bankRef.current;
+    const amt = Math.round(Number(amount) || 0);
+    if (!b || amt <= 0 || amt > (b.depositReserve || 0)) return;
+    setBank((prev) => prev ? { ...prev, depositReserve: (prev.depositReserve || 0) - amt, capital: prev.capital + amt } : prev);
+    logTx("Депозитный счёт \xB7 на счёт банка", amt, "out");
+    setTimeout(saveGame, 50);
+  };
+  const transferDepositReserveToIp = (amount) => {
+    const b = bankRef.current;
+    const amt = Math.round(Number(amount) || 0);
+    if (!b || amt <= 0 || amt > (b.depositReserve || 0)) return;
+    setBank((prev) => prev ? { ...prev, depositReserve: (prev.depositReserve || 0) - amt } : prev);
+    setIpCash((c) => c + amt);
+    logTx("Депозитный счёт \xB7 на ООО", amt, "out");
     setTimeout(saveGame, 50);
   };
   const payDueDeposits = () => {
@@ -9765,6 +9786,7 @@ function MarketSandbox() {
                     ["\u041E\u0431\u044F\u0437\u0430\u0442\u0435\u043B\u044C\u0441\u0442\u0432\u0430 (\u0432\u043A\u043B\u0430\u0434\u044B)", -bs.liabilities],
                     ["\u0427\u0438\u0441\u0442\u044B\u0439 \u043A\u0430\u043F\u0438\u0442\u0430\u043B", bs.equity],
                     ["\u0421\u0432\u043E\u0431\u043E\u0434\u043D\u0430\u044F \u043B\u0438\u043A\u0432\u0438\u0434\u043D\u043E\u0441\u0442\u044C", bs.freeLiquidity],
+                    ["\u0414\u0435\u043F\u043E\u0437\u0438\u0442\u043D\u044B\u0439 \u0441\u0447\u0451\u0442 (\u043D\u0435 \u043F\u0435\u0440\u0435\u0432\u0435\u0434\u0435\u043D\u043E)", bs.depositReserve],
                     ["\u041A \u0432\u044B\u043F\u043B\u0430\u0442\u0435 \u0441\u0435\u0439\u0447\u0430\u0441", -bs.owedNow]
                   ].map(([label, v]) => /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, padding: "3px 0" }, children: [
                     /* @__PURE__ */ jsx("span", { style: { color: C.inkDim }, children: label }),
@@ -9973,6 +9995,18 @@ function MarketSandbox() {
                         /* @__PURE__ */ jsxs("span", { style: { color: C.red }, children: ["\u0414\u0435\u0444\u0438\u0446\u0438\u0442: ", fmt(dueSum - bank.capital)] })
                       ] })
                     ] }) : /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkFaint, textAlign: "center", padding: 8 }, children: "\u041D\u0435\u0447\u0435\u0433\u043E \u0432\u044B\u043F\u043B\u0430\u0447\u0438\u0432\u0430\u0442\u044C \u043F\u0440\u044F\u043C\u043E \u0441\u0435\u0439\u0447\u0430\u0441" })
+                  ] }),
+                  /* @__PURE__ */ jsxs("div", { style: { background: C.surface2, borderRadius: 12, padding: 12, marginBottom: 14 }, children: [
+                    /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 11, color: C.inkDim, marginBottom: 8 }, children: [
+                      /* @__PURE__ */ jsx("span", { children: "\u0414\u0415\u041F\u041E\u0417\u0418\u0422\u041D\u042B\u0419 \u0421\u0427\u0401\u0422" }),
+                      /* @__PURE__ */ jsx("span", { style: { color: C.ink, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace" }, children: fmt(bank.depositReserve || 0) })
+                    ] }),
+                    /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginBottom: 8 }, children: "\u0421\u044E\u0434\u0430 \u043F\u0440\u0438\u0445\u043E\u0434\u044F\u0442 \u0434\u0435\u043D\u044C\u0433\u0438 \u043D\u043E\u0432\u044B\u0445 \u0432\u043A\u043B\u0430\u0434\u0447\u0438\u043A\u043E\u0432 \u2014 \u043E\u0442\u0434\u0435\u043B\u044C\u043D\u043E \u043E\u0442 \u043E\u0441\u043D\u043E\u0432\u043D\u043E\u0433\u043E \u0441\u0447\u0451\u0442\u0430, \u043D\u0435 \u0443\u0447\u0430\u0441\u0442\u0432\u0443\u0435\u0442 \u0432 \u0432\u044B\u043F\u043B\u0430\u0442\u0430\u0445 \u0431\u0435\u0437 \u043F\u0435\u0440\u0435\u0432\u043E\u0434\u0430" }),
+                    /* @__PURE__ */ jsx("input", { type: "number", value: depositReserveTransferAmount, onChange: (e) => setDepositReserveTransferAmount(e.target.value), onFocus: (e) => e.target.select(), placeholder: "\u0421\u0443\u043C\u043C\u0430", style: { ...inputStyle, marginBottom: 8, fontFamily: "'JetBrains Mono', monospace" } }),
+                    /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8 }, children: [
+                      /* @__PURE__ */ jsx("button", { onClick: () => { transferDepositReserveToCapital(depositReserveTransferAmount); setDepositReserveTransferAmount(""); }, disabled: !(Number(depositReserveTransferAmount) > 0) || Number(depositReserveTransferAmount) > (bank.depositReserve || 0), style: { ...actionBtnStyle(Number(depositReserveTransferAmount) > 0 && Number(depositReserveTransferAmount) <= (bank.depositReserve || 0)), flex: 1, marginBottom: 0 }, children: "\u041D\u0430 \u0441\u0447\u0451\u0442 \u0431\u0430\u043D\u043A\u0430" }),
+                      /* @__PURE__ */ jsx("button", { onClick: () => { transferDepositReserveToIp(depositReserveTransferAmount); setDepositReserveTransferAmount(""); }, disabled: !(Number(depositReserveTransferAmount) > 0) || Number(depositReserveTransferAmount) > (bank.depositReserve || 0), style: { ...actionBtnStyle(Number(depositReserveTransferAmount) > 0 && Number(depositReserveTransferAmount) <= (bank.depositReserve || 0), C.violet), flex: 1, marginBottom: 0 }, children: "\u041D\u0430 \u041E\u041E\u041E" })
+                    ] })
                   ] }),
                   /* @__PURE__ */ jsxs("div", { style: { marginBottom: 14 }, children: [
                     /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, color: C.inkDim, marginBottom: 4 }, children: [
