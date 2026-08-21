@@ -1,4 +1,4 @@
-// Market Sandbox — V2.37.0 (Своя монета: предыдущая правка держала равновесный разброс за 5 минут в норме, но короткие интервалы (2-3 сек) всё ещё давали 15-25% свинги при типичной vol=1.6 — шум масштабируется как sqrt(dt), поэтому даже небольшой коэффициент даёт заметные скачки на коротких окнах. Понижен noise 0.004→0.0016 — теперь максимум ~5-6% за 2 сек в худшем случае, 5-минутный разброс ~1.3x. Заодно устранена жалоба на скачущий «Капитал» в банке/кабинете/картах — это не отдельный баг, а прямое следствие: netWorth и bankBalanceSheet.portfolioValue считают holdings по live-цене движка (обновление раз в 250мс), так что шум монеты напрямую бился в эти цифры — с более гладкой ценой они теперь тоже стабильны.)
+// Market Sandbox — V2.38.0 (Ввод денежных сумм: все 13 денежных полей ввода (переводы, кредиты банка, реклама банка/маркетплейса/магазина, депозитный резерв, аллокация трейдеров, тендеры, стартовый капитал и supply своей монеты) теперь показывают разделители разрядов прямо во время печати — не нужно считать нули. Добавлены fmtInputNumber/parseInputNumber в 01_constants.js: value отображается с запятыми, а в state всегда хранятся чистые цифры, так что все хендлеры (Number(state)) работают без изменений. Поля-проценты/десятичные (ставка вклада, цена монеты, доли распределения токенов) не тронуты — там разделители не нужны.)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -1638,6 +1638,14 @@ function fmt(n) {
   const abs = Math.abs(n);
   if (abs >= 1e3) return "$" + n.toLocaleString("en-US", { maximumFractionDigits: 0 });
   return "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: abs < 5 ? 4 : 2 });
+}
+function fmtInputNumber(raw) {
+  const digits = String(raw ?? "").replace(/[^\d]/g, "");
+  if (!digits) return "";
+  return Number(digits).toLocaleString("en-US");
+}
+function parseInputNumber(displayStr) {
+  return String(displayStr ?? "").replace(/[^\d]/g, "");
 }
 function seedCandles(price, vol) {
   const candles = [];
@@ -8160,7 +8168,7 @@ function MarketSandbox() {
                 "\u0421\u0443\u043C\u043C\u0430 \xB7 \u043A\u043E\u043C\u0438\u0441\u0441\u0438\u044F ",
                 feeNote
               ] }),
-              /* @__PURE__ */ jsx("input", { type: "number", value: transferForm.amount, onChange: (e) => setTransferForm((f) => ({ ...f, amount: e.target.value })), placeholder: `\u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E ${fmt(fromBal)}`, style: { width: "100%", background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, color: C.ink, fontSize: 16, padding: "10px 10px", fontFamily: "'JetBrains Mono', monospace" } }),
+              /* @__PURE__ */ jsx("input", { type: "text", inputMode: "numeric", value: fmtInputNumber(transferForm.amount), onChange: (e) => setTransferForm((f) => ({ ...f, amount: parseInputNumber(e.target.value) })), placeholder: `\u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E ${fmt(fromBal)}`, style: { width: "100%", background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, color: C.ink, fontSize: 16, padding: "10px 10px", fontFamily: "'JetBrains Mono', monospace" } }),
               xferFeedback && /* @__PURE__ */ jsx("div", { style: { marginTop: 10, fontSize: 12, color: xferFeedback.ok ? C.green : C.red }, children: xferFeedback.msg }),
               /* @__PURE__ */ jsx("button", { onClick: doTransfer, disabled: !canSend, style: { width: "100%", padding: 12, borderRadius: 10, border: "none", fontWeight: 700, fontSize: 13.5, marginTop: 14, background: canSend ? C.violet : C.surface2, color: canSend ? "#fff" : C.inkFaint }, children: "\u041F\u0435\u0440\u0435\u0432\u0435\u0441\u0442\u0438" })
             ] }),
@@ -8764,9 +8772,10 @@ function MarketSandbox() {
                 /* @__PURE__ */ jsx("div", { style: { display: "flex", gap: 8, marginTop: 10 }, children: /* @__PURE__ */ jsx(
                   "input",
                   {
-                    type: "number",
-                    value: bidStr,
-                    onChange: (e) => setBidInputs((f) => ({ ...f, [t.id]: e.target.value })),
+                    type: "text",
+                    inputMode: "numeric",
+                    value: fmtInputNumber(bidStr),
+                    onChange: (e) => setBidInputs((f) => ({ ...f, [t.id]: parseInputNumber(e.target.value) })),
                     placeholder: `\u0426\u0435\u043D\u0430 (${fmt(Math.round(t.budget * 0.6))}\u2013${fmt(Math.round(t.budget * 1.1))})`,
                     style: { flex: 1, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, color: C.ink, fontSize: 12, padding: "9px 10px" }
                   }
@@ -9244,7 +9253,7 @@ function MarketSandbox() {
                 Math.round(playerVenture.reserveAllocation || 0).toLocaleString()
               ] }),
               playerVenture.reserveAllocation > 0 && /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 6, marginTop: 6 }, children: [
-                /* @__PURE__ */ jsx("input", { type: "number", value: liquidityTopUp, onChange: (e) => setLiquidityTopUp(e.target.value), style: { ...inputStyle, flex: 1, padding: "6px 8px", fontSize: 12 } }),
+                /* @__PURE__ */ jsx("input", { type: "text", inputMode: "numeric", value: fmtInputNumber(liquidityTopUp), onChange: (e) => setLiquidityTopUp(parseInputNumber(e.target.value)), style: { ...inputStyle, flex: 1, padding: "6px 8px", fontSize: 12 } }),
                 /* @__PURE__ */ jsx("button", { onClick: addLiquidityFromReserve, disabled: resolvedBal < (Number(liquidityTopUp) || 0), style: { padding: "6px 10px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.surface2, color: C.ink, fontSize: 11.5, fontWeight: 600, whiteSpace: "nowrap" }, children: "\u041F\u043E\u043F\u043E\u043B\u043D\u0438\u0442\u044C \u043F\u0443\u043B \u0438\u0437 \u0440\u0435\u0437\u0435\u0440\u0432\u0430" })
               ] }),
               (playerVenture.vestingLockedTotal || 0) > (playerVenture.vestingReleased || 0) && /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.gold, marginTop: 4 }, children: [
@@ -9342,7 +9351,7 @@ function MarketSandbox() {
                   /* @__PURE__ */ jsx("input", { value: adForm.headline, onChange: (e) => setAdForm((f) => ({ ...f, headline: e.target.value })), placeholder: "\u0417\u0430\u0433\u043E\u043B\u043E\u0432\u043E\u043A", style: { ...inputStyle, marginBottom: 6 } }),
                   /* @__PURE__ */ jsx("textarea", { value: adForm.description, onChange: (e) => setAdForm((f) => ({ ...f, description: e.target.value })), placeholder: "\u041E\u043F\u0438\u0441\u0430\u043D\u0438\u0435 \u043F\u0440\u043E\u0435\u043A\u0442\u0430 \u2014 \u0447\u0435\u043C \u043E\u043D \u043F\u043E\u043B\u0435\u0437\u0435\u043D \u0438\u043D\u0432\u0435\u0441\u0442\u043E\u0440\u0430\u043C", rows: 2, style: { ...inputStyle, marginBottom: 6, resize: "vertical" } }),
                   /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 6, marginBottom: 8 }, children: [
-                    /* @__PURE__ */ jsx("input", { type: "number", value: adForm.budget, onChange: (e) => setAdForm((f) => ({ ...f, budget: e.target.value })), style: { ...inputStyle, flex: 1 } }),
+                    /* @__PURE__ */ jsx("input", { type: "text", inputMode: "numeric", value: fmtInputNumber(adForm.budget), onChange: (e) => setAdForm((f) => ({ ...f, budget: parseInputNumber(e.target.value) })), style: { ...inputStyle, flex: 1 } }),
                     /* @__PURE__ */ jsx("select", { value: adForm.duration, onChange: (e) => setAdForm((f) => ({ ...f, duration: e.target.value })), style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, color: C.ink, fontSize: 13, padding: "0 10px" }, children: AD_DURATIONS.map((d) => /* @__PURE__ */ jsx("option", { value: d.id, children: d.label }, d.id)) })
                   ] }),
                   /* @__PURE__ */ jsxs("button", { onClick: launchAdCampaign, disabled: resolvedBal < adCampaignCost || !adTextValid, style: actionBtnStyle(resolvedBal >= adCampaignCost && adTextValid), children: [
@@ -9522,7 +9531,7 @@ function MarketSandbox() {
                   /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.violet, textTransform: "uppercase", letterSpacing: 1, fontWeight: 700 }, children: "\u0421\u0447\u0451\u0442 \u0431\u0430\u043D\u043A\u0430" }),
                   /* @__PURE__ */ jsxs("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 13, color: C.inkFaint }, children: ["\u041D\u0430 \u0418\u041F: ", fmt(ipCash)] })
                 ] }),
-                /* @__PURE__ */ jsx("input", { type: "number", value: bankTransferAmount, onChange: (e) => setBankTransferAmount(e.target.value), onFocus: (e) => e.target.select(), placeholder: "\u0421\u0443\u043C\u043C\u0430", style: { ...inputStyle, marginBottom: 8, fontFamily: "'JetBrains Mono', monospace" } }),
+                /* @__PURE__ */ jsx("input", { type: "text", inputMode: "numeric", value: fmtInputNumber(bankTransferAmount), onChange: (e) => setBankTransferAmount(parseInputNumber(e.target.value)), onFocus: (e) => e.target.select(), placeholder: "\u0421\u0443\u043C\u043C\u0430", style: { ...inputStyle, marginBottom: 8, fontFamily: "'JetBrains Mono', monospace" } }),
                 /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8 }, children: [
                   /* @__PURE__ */ jsx("button", { onClick: () => { depositToBankCapital(bankTransferAmount); setBankTransferAmount(""); }, disabled: !(Number(bankTransferAmount) > 0) || Number(bankTransferAmount) > ipCash, style: { ...actionBtnStyle(Number(bankTransferAmount) > 0 && Number(bankTransferAmount) <= ipCash), flex: 1, marginBottom: 0 }, children: "\u0412\u043D\u0435\u0441\u0442\u0438 \u0441 \u0418\u041F" }),
                   /* @__PURE__ */ jsx("button", { onClick: () => { withdrawBankCapital(bankTransferAmount); setBankTransferAmount(""); }, disabled: !(Number(bankTransferAmount) > 0) || Number(bankTransferAmount) > bank.capital, style: { ...actionBtnStyle(Number(bankTransferAmount) > 0 && Number(bankTransferAmount) <= bank.capital, C.violet), flex: 1, marginBottom: 0 }, children: "\u0421\u043D\u044F\u0442\u044C \u043D\u0430 \u0418\u041F" })
@@ -9675,7 +9684,7 @@ function MarketSandbox() {
                   /* @__PURE__ */ jsxs("span", { children: ["\u0417\u0430\u043D\u044F\u0442\u043E: ", /* @__PURE__ */ jsx("b", { style: { color: C.gold }, children: fmt(bank.creditOutstanding || 0) })] }),
                   /* @__PURE__ */ jsxs("span", { children: ["\u0421\u0432\u043E\u0431\u043E\u0434\u043D\u043E: ", /* @__PURE__ */ jsx("b", { style: { color: C.green }, children: fmt(bank.creditPoolAllocated || 0) })] })
                 ] }),
-                /* @__PURE__ */ jsx("input", { type: "number", value: bankCreditInvestAmount, onChange: (e) => setBankCreditInvestAmount(e.target.value), onFocus: (e) => e.target.select(), placeholder: "\u0421\u0443\u043C\u043C\u0430", style: { ...inputStyle, marginBottom: 8, fontFamily: "'JetBrains Mono', monospace" } }),
+                /* @__PURE__ */ jsx("input", { type: "text", inputMode: "numeric", value: fmtInputNumber(bankCreditInvestAmount), onChange: (e) => setBankCreditInvestAmount(parseInputNumber(e.target.value)), onFocus: (e) => e.target.select(), placeholder: "\u0421\u0443\u043C\u043C\u0430", style: { ...inputStyle, marginBottom: 8, fontFamily: "'JetBrains Mono', monospace" } }),
                 /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8 }, children: [
                   /* @__PURE__ */ jsx("button", { onClick: () => { investInCredits(bankCreditInvestAmount); setBankCreditInvestAmount(""); }, disabled: !(Number(bankCreditInvestAmount) > 0) || Number(bankCreditInvestAmount) > bank.capital, style: { ...actionBtnStyle(Number(bankCreditInvestAmount) > 0 && Number(bankCreditInvestAmount) <= bank.capital), flex: 1, marginBottom: 0 }, children: "\u0418\u043D\u0432\u0435\u0441\u0442\u0438\u0440\u043E\u0432\u0430\u0442\u044C" }),
                   /* @__PURE__ */ jsx("button", { onClick: () => { withdrawFromCreditPool(bankCreditInvestAmount); setBankCreditInvestAmount(""); }, disabled: !(Number(bankCreditInvestAmount) > 0) || Number(bankCreditInvestAmount) > (bank.creditPoolAllocated || 0), style: { ...actionBtnStyle(Number(bankCreditInvestAmount) > 0 && Number(bankCreditInvestAmount) <= (bank.creditPoolAllocated || 0), C.violet), flex: 1, marginBottom: 0 }, children: "\u0412\u044B\u0432\u0435\u0441\u0442\u0438" })
@@ -9735,7 +9744,7 @@ function MarketSandbox() {
                   }) }),
                   selectedProduct && /* @__PURE__ */ jsxs("div", { style: { background: C.surface2, borderRadius: 12, padding: 12 }, children: [
                     /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8, marginBottom: 8 }, children: [
-                      /* @__PURE__ */ jsx("input", { type: "number", value: bankMktBudget, onChange: (e) => setBankMktBudget(e.target.value), onFocus: (e) => e.target.select(), placeholder: "\u0411\u044E\u0434\u0436\u0435\u0442", style: { ...inputStyle, flex: 1, marginBottom: 0, fontFamily: "'JetBrains Mono', monospace" } }),
+                      /* @__PURE__ */ jsx("input", { type: "text", inputMode: "numeric", value: fmtInputNumber(bankMktBudget), onChange: (e) => setBankMktBudget(parseInputNumber(e.target.value)), onFocus: (e) => e.target.select(), placeholder: "\u0411\u044E\u0434\u0436\u0435\u0442", style: { ...inputStyle, flex: 1, marginBottom: 0, fontFamily: "'JetBrains Mono', monospace" } }),
                       /* @__PURE__ */ jsx("select", { value: bankMktStrategy, onChange: (e) => setBankMktStrategy(e.target.value), style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, color: C.ink, fontSize: 12.5, padding: "0 8px" }, children: BANK_MARKETING_STRATEGIES.map((s) => /* @__PURE__ */ jsx("option", { value: s.id, children: s.label }, s.id)) })
                     ] }),
                     /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkDim, marginBottom: 10 }, children: ["\u041F\u0440\u043E\u0433\u043D\u043E\u0437 \u043E\u0445\u0432\u0430\u0442\u0430: \u2248", forecastReach.toLocaleString("ru-RU"), " \u2014 \u043D\u0435 \u0433\u0430\u0440\u0430\u043D\u0442\u0438\u044F, \u0440\u0435\u0430\u043B\u044C\u043D\u044B\u0439 \u0440\u0435\u0437\u0443\u043B\u044C\u0442\u0430\u0442 \u0437\u0430\u0432\u0438\u0441\u0438\u0442 \u043E\u0442 \u0440\u0435\u043F\u0443\u0442\u0430\u0446\u0438\u0438, \u0441\u0442\u0430\u0432\u043E\u043A \u0438 \u044D\u043A\u043E\u043D\u043E\u043C\u0438\u043A\u0438"] }),
@@ -9806,7 +9815,7 @@ function MarketSandbox() {
                       /* @__PURE__ */ jsx("span", { style: { color: C.ink, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace" }, children: fmt(bank.depositReserve || 0) })
                     ] }),
                     /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginBottom: 8 }, children: "\u0421\u044E\u0434\u0430 \u043F\u0440\u0438\u0445\u043E\u0434\u044F\u0442 \u0434\u0435\u043D\u044C\u0433\u0438 \u043D\u043E\u0432\u044B\u0445 \u0432\u043A\u043B\u0430\u0434\u0447\u0438\u043A\u043E\u0432 \u2014 \u043E\u0442\u0434\u0435\u043B\u044C\u043D\u043E \u043E\u0442 \u043E\u0441\u043D\u043E\u0432\u043D\u043E\u0433\u043E \u0441\u0447\u0451\u0442\u0430, \u043D\u0435 \u0443\u0447\u0430\u0441\u0442\u0432\u0443\u0435\u0442 \u0432 \u0432\u044B\u043F\u043B\u0430\u0442\u0430\u0445 \u0431\u0435\u0437 \u043F\u0435\u0440\u0435\u0432\u043E\u0434\u0430" }),
-                    /* @__PURE__ */ jsx("input", { type: "number", value: depositReserveTransferAmount, onChange: (e) => setDepositReserveTransferAmount(e.target.value), onFocus: (e) => e.target.select(), placeholder: "\u0421\u0443\u043C\u043C\u0430", style: { ...inputStyle, marginBottom: 8, fontFamily: "'JetBrains Mono', monospace" } }),
+                    /* @__PURE__ */ jsx("input", { type: "text", inputMode: "numeric", value: fmtInputNumber(depositReserveTransferAmount), onChange: (e) => setDepositReserveTransferAmount(parseInputNumber(e.target.value)), onFocus: (e) => e.target.select(), placeholder: "\u0421\u0443\u043C\u043C\u0430", style: { ...inputStyle, marginBottom: 8, fontFamily: "'JetBrains Mono', monospace" } }),
                     /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8 }, children: [
                       /* @__PURE__ */ jsx("button", { onClick: () => { transferDepositReserveToCapital(depositReserveTransferAmount); setDepositReserveTransferAmount(""); }, disabled: !(Number(depositReserveTransferAmount) > 0) || Number(depositReserveTransferAmount) > (bank.depositReserve || 0), style: { ...actionBtnStyle(Number(depositReserveTransferAmount) > 0 && Number(depositReserveTransferAmount) <= (bank.depositReserve || 0)), flex: 1, marginBottom: 0 }, children: "\u041D\u0430 \u0441\u0447\u0451\u0442 \u0431\u0430\u043D\u043A\u0430" }),
                       /* @__PURE__ */ jsx("button", { onClick: () => { transferDepositReserveToIp(depositReserveTransferAmount); setDepositReserveTransferAmount(""); }, disabled: !(Number(depositReserveTransferAmount) > 0) || Number(depositReserveTransferAmount) > (bank.depositReserve || 0), style: { ...actionBtnStyle(Number(depositReserveTransferAmount) > 0 && Number(depositReserveTransferAmount) <= (bank.depositReserve || 0), C.violet), flex: 1, marginBottom: 0 }, children: "\u041D\u0430 \u041E\u041E\u041E" })
@@ -9859,7 +9868,7 @@ function MarketSandbox() {
                     /* @__PURE__ */ jsx("button", { onClick: () => fireBankTrader(t.id), style: { padding: "6px 10px", borderRadius: 8, border: `1px solid ${C.border}`, background: "transparent", color: C.red, fontSize: 11.5, flexShrink: 0 }, children: "\u0423\u0432\u043E\u043B\u0438\u0442\u044C" })
                   ] }),
                   /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 6, alignItems: "center" }, children: [
-                    /* @__PURE__ */ jsx("input", { type: "number", value: t.allocation || "", onChange: (e) => setBankTraderAllocation(t.id, e.target.value), onFocus: (e) => e.target.select(), placeholder: "0", style: { ...inputStyle, flex: 1, marginBottom: 0, fontSize: 12.5, fontFamily: "'JetBrains Mono', monospace" } }),
+                    /* @__PURE__ */ jsx("input", { type: "text", inputMode: "numeric", value: fmtInputNumber(t.allocation || ""), onChange: (e) => setBankTraderAllocation(t.id, parseInputNumber(e.target.value)), onFocus: (e) => e.target.select(), placeholder: "0", style: { ...inputStyle, flex: 1, marginBottom: 0, fontSize: 12.5, fontFamily: "'JetBrains Mono', monospace" } }),
                     /* @__PURE__ */ jsx("span", { style: { fontSize: 10.5, color: C.inkFaint, flexShrink: 0 }, children: "\u0432\u044B\u0434\u0435\u043B\u0435\u043D\u043E \u0432 \u0442\u043E\u0440\u0433\u0438" })
                   ] }),
                   owed > 0 && /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8 }, children: [
@@ -9988,7 +9997,7 @@ function MarketSandbox() {
                       ] }),
                       /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkDim, marginBottom: 8 }, children: channel.desc }),
                       /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 6, marginBottom: 8 }, children: [
-                        /* @__PURE__ */ jsx("input", { type: "number", value: budgetVal, onChange: (e) => setMarketplaceAdBudgetInputs((prev) => ({ ...prev, [channel.id]: e.target.value })), style: { ...inputStyle, flex: 1 } }),
+                        /* @__PURE__ */ jsx("input", { type: "text", inputMode: "numeric", value: fmtInputNumber(budgetVal), onChange: (e) => setMarketplaceAdBudgetInputs((prev) => ({ ...prev, [channel.id]: parseInputNumber(e.target.value) })), style: { ...inputStyle, flex: 1 } }),
                         /* @__PURE__ */ jsx("button", { onClick: () => launchMarketplaceAd(channel.id, budgetVal), disabled, style: { padding: "0 16px", borderRadius: 10, border: "none", fontWeight: 700, fontSize: 12.5, background: disabled ? C.surface2 : C.gold, color: disabled ? C.inkFaint : "#161207" }, children: "\u0417\u0430\u043F\u0443\u0441\u0442\u0438\u0442\u044C" })
                       ] }),
                       /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint }, children: [
@@ -10282,7 +10291,7 @@ function MarketSandbox() {
                   const previewMult = computeAdBudgetMult(budgetNum);
                   return /* @__PURE__ */ jsxs("div", { children: [
                     /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 6, marginBottom: 8 }, children: [
-                      /* @__PURE__ */ jsx("input", { type: "number", value: shopAdBudget, onChange: (e) => setShopAdBudget(e.target.value), style: { ...inputStyle, flex: 1 } }),
+                      /* @__PURE__ */ jsx("input", { type: "text", inputMode: "numeric", value: fmtInputNumber(shopAdBudget), onChange: (e) => setShopAdBudget(parseInputNumber(e.target.value)), style: { ...inputStyle, flex: 1 } }),
                       /* @__PURE__ */ jsx("select", { value: shopAdDuration, onChange: (e) => setShopAdDuration(e.target.value), style: { background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, color: C.ink, fontSize: 13, padding: "0 10px" }, children: AD_DURATIONS.map((d) => /* @__PURE__ */ jsx("option", { value: d.id, children: d.label }, d.id)) })
                     ] }),
                     /* @__PURE__ */ jsxs("div", { style: { fontSize: 11.5, color: C.inkDim, marginBottom: 8 }, children: [
@@ -11047,7 +11056,7 @@ function MarketSandbox() {
               /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8, marginBottom: 10 }, children: [
                 /* @__PURE__ */ jsxs("div", { style: { flex: 1 }, children: [
                   /* @__PURE__ */ jsx("label", { style: { fontSize: 10.5, color: C.inkDim }, children: "\u041E\u0431\u0449\u0438\u0439 \u0432\u044B\u043F\u0443\u0441\u043A (Total Supply)" }),
-                  /* @__PURE__ */ jsx("input", { type: "number", value: form.cryptoSupply, onChange: (e) => setForm((f) => ({ ...f, cryptoSupply: e.target.value })), inputMode: "numeric", style: inputStyle })
+                  /* @__PURE__ */ jsx("input", { type: "text", inputMode: "numeric", value: fmtInputNumber(form.cryptoSupply), onChange: (e) => setForm((f) => ({ ...f, cryptoSupply: parseInputNumber(e.target.value) })), style: inputStyle })
                 ] }),
                 /* @__PURE__ */ jsxs("div", { style: { flex: 1 }, children: [
                   /* @__PURE__ */ jsx("label", { style: { fontSize: 10.5, color: C.inkDim }, children: "\u0421\u0442\u0430\u0440\u0442\u043E\u0432\u0430\u044F \u0446\u0435\u043D\u0430, $" }),
@@ -11076,7 +11085,7 @@ function MarketSandbox() {
               const seedNum = Math.max(0, Number(form.seedAmount) || 0);
               return /* @__PURE__ */ jsxs("div", { style: { marginBottom: 14 }, children: [
                 /* @__PURE__ */ jsx("label", { style: { fontSize: 11, color: C.inkDim, textTransform: "uppercase", letterSpacing: 1 }, children: "\u0421\u0442\u0430\u0440\u0442\u043E\u0432\u0430\u044F \u043B\u0438\u043A\u0432\u0438\u0434\u043D\u043E\u0441\u0442\u044C \u0441\u043E \u0441\u0447\u0451\u0442\u0430 \u0418\u041F (\u043D\u0435\u043E\u0431\u044F\u0437\u0430\u0442\u0435\u043B\u044C\u043D\u043E)" }),
-                /* @__PURE__ */ jsx("input", { type: "number", value: form.seedAmount, onChange: (e) => setForm((f) => ({ ...f, seedAmount: e.target.value })), placeholder: "0", inputMode: "numeric", style: inputStyle }),
+                /* @__PURE__ */ jsx("input", { type: "text", inputMode: "numeric", value: fmtInputNumber(form.seedAmount), onChange: (e) => setForm((f) => ({ ...f, seedAmount: parseInputNumber(e.target.value) })), placeholder: "0", style: inputStyle }),
                 /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: seedNum > ipCash ? C.red : C.inkFaint, marginTop: 4 }, children: [
                   "\u0414\u043E\u0441\u0442\u0443\u043F\u043D\u043E \u043D\u0430 \u0418\u041F: ",
                   fmt(ipCash),
