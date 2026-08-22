@@ -1,4 +1,4 @@
-// Market Sandbox — V2.45.0 (Доработка рыночного шока (V2.44) + капитализация в карточке сделки. 1) Мгновенная новость теперь называет актора сделки: marketShockActorLabel(flags) различает "Банк игрока"/"Неизвестный крупный игрок" (серый счёт)/"Крупный частный инвестор" (ИП)/"Клиент крупного банка"/"Частный трейдер" — по факту использованного счёта в executeTrade/openLeveragedPosition. Текст в духе "Банк игрока распродал крупный пакет BTC — рынок отреагировал падением", как просили. 2) Реакция остального крипторынка на этот шок раньше срабатывала МГНОВЕННО в том же тике — теперь через существующий scheduleEvent/resolveScheduledEvent механизм (тот же, что и у social_post_correction) каждый крипто-сиблинг реагирует с индивидуальной случайной задержкой 8-35 сек и отдельной новостью "ТИКЕР снижается вслед за/растёт на фоне ИСТОЧНИК" — рынок "заражается" плавно, а не одним пакетным импактом. 3) В модалку покупки/продажи добавлена ненавязчивая строка капитализации (price × supply) сразу под ценой, мелким серым текстом. esbuild чист.)
+// Market Sandbox — V2.46.0 (Капитализация банков/крипты/поставщиков увеличена в 20x через supply в NPC_SEED — раньше капитализация была $50-130M (ZZONE — $1.2B), и $10M сделки хватало почти на предельный импакт (92%), т.е. с капиталом даже в 10 млн можно было "крутить рынком как угодно". Теперь капитализация $1-2.5B (ZZONE — $24B): та же 6%-я реакция (порог рыночного шока из V2.44) требует уже ~$60-100M сделки, а $10M даёт лишь ~0.5-1% движения цены — заметно, но не разрушительно. Цены компаний не менялись, только supply (impactPct = sizeRatio×150 обратно пропорционален капитализации при неизменном price). Для уже открытых сохранений добавлена одноразовая миграция в applyLoadedData: NPC-компания (не игрока) с supply, точно совпадающим со старым значением из NPC_SEED_LEGACY_SUPPLY, получает новый supply из актуального NPC_SEED — цена и все холдинги игрока (qty×price) при этом не искажаются, меняется только допустимый импакт будущих сделок. esbuild чист.)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -22,30 +22,37 @@ var C = {
   inkFaint: "#4A5261"
 };
 var SECTORS = ["\u0422\u0435\u0445\u043D\u043E\u043B\u043E\u0433\u0438\u0438", "\u042D\u043D\u0435\u0440\u0433\u0435\u0442\u0438\u043A\u0430", "\u0411\u0438\u043E\u0442\u0435\u0445", "\u041A\u0440\u0438\u043F\u0442\u043E", "\u041F\u043E\u0442\u0440\u0435\u0431\u0442\u043E\u0432\u0430\u0440\u044B", "\u0424\u0438\u043D\u0430\u043D\u0441\u044B"];
+// Supply увеличен в 20x относительно исходных значений (V2.46.0) — при старых значениях
+// капитализация банков/крипты была $50-130M, и $10M сделки хватало почти на предельный
+// импакт (92%). Теперь капитализация $1-2.5B — то же движение цены требует $60M+ сделки.
 var NPC_SEED = [
-  { name: "\u041B\u0435\u0434\u0436\u0435\u0440 \u041F\u0440\u043E\u0442\u043E\u043A\u043E\u043B", ticker: "LEDG", sector: "\u041A\u0440\u0438\u043F\u0442\u043E", price: 3.2, vol: 1.35, supply: 4e7 },
-  { name: "\u041E\u043F\u0430\u043B \u0427\u0435\u0439\u043D", ticker: "OPAL", sector: "\u041A\u0440\u0438\u043F\u0442\u043E", price: 0.85, vol: 1.6, supply: 12e7 },
-  { name: "\u0422\u0435\u0442\u0435\u0440 \u041A\u043E\u043C\u043F\u0430\u043D\u0438", ticker: "TEHER", sector: "\u041A\u0440\u0438\u043F\u0442\u043E", price: 1, vol: 0.03, supply: 8e7 },
+  { name: "\u041B\u0435\u0434\u0436\u0435\u0440 \u041F\u0440\u043E\u0442\u043E\u043A\u043E\u043B", ticker: "LEDG", sector: "\u041A\u0440\u0438\u043F\u0442\u043E", price: 3.2, vol: 1.35, supply: 8e8 },
+  { name: "\u041E\u043F\u0430\u043B \u0427\u0435\u0439\u043D", ticker: "OPAL", sector: "\u041A\u0440\u0438\u043F\u0442\u043E", price: 0.85, vol: 1.6, supply: 24e8 },
+  { name: "\u0422\u0435\u0442\u0435\u0440 \u041A\u043E\u043C\u043F\u0430\u043D\u0438", ticker: "TEHER", sector: "\u041A\u0440\u0438\u043F\u0442\u043E", price: 1, vol: 0.03, supply: 16e8 },
   // Банки и поставщики — тоже торгуются на бирже, их состояние влияет на условия кредитов и закупок
-  { name: "\u0411\u044B\u0441\u0442\u0440\u043E\u0414\u0435\u043D\u044C\u0433\u0438", ticker: "MFOX", sector: "\u0424\u0438\u043D\u0430\u043D\u0441\u044B", price: 6, vol: 0.25, supply: 8e6 },
-  { name: "\u0427\u0430\u0441\u0442\u0411\u0430\u043D\u043A", ticker: "PRIV", sector: "\u0424\u0438\u043D\u0430\u043D\u0441\u044B", price: 45, vol: 0.18, supply: 2e6 },
-  { name: "\u0424\u0435\u0434\u0411\u0430\u043D\u043A", ticker: "FEDB", sector: "\u0424\u0438\u043D\u0430\u043D\u0441\u044B", price: 210, vol: 0.12, supply: 6e5 },
-  { name: "\u0411\u0438\u0437\u043D\u0435\u0441\u041A\u0440\u0435\u0434\u0438\u0442", ticker: "BZKR", sector: "\u0424\u0438\u043D\u0430\u043D\u0441\u044B", price: 30, vol: 0.2, supply: 18e5 },
-  { name: "\u0421\u0435\u0432\u0435\u0440\u0420\u0435\u0437\u0435\u0440\u0432", ticker: "SVRB", sector: "\u0424\u0438\u043D\u0430\u043D\u0441\u044B", price: 38, vol: 0.15, supply: 16e5 },
-  { name: "\u041D\u0435\u043E\u0411\u0430\u043D\u043A", ticker: "NEOB", sector: "\u0424\u0438\u043D\u0430\u043D\u0441\u044B", price: 17, vol: 0.22, supply: 42e5 },
+  { name: "\u0411\u044B\u0441\u0442\u0440\u043E\u0414\u0435\u043D\u044C\u0433\u0438", ticker: "MFOX", sector: "\u0424\u0438\u043D\u0430\u043D\u0441\u044B", price: 6, vol: 0.25, supply: 16e7 },
+  { name: "\u0427\u0430\u0441\u0442\u0411\u0430\u043D\u043A", ticker: "PRIV", sector: "\u0424\u0438\u043D\u0430\u043D\u0441\u044B", price: 45, vol: 0.18, supply: 4e7 },
+  { name: "\u0424\u0435\u0434\u0411\u0430\u043D\u043A", ticker: "FEDB", sector: "\u0424\u0438\u043D\u0430\u043D\u0441\u044B", price: 210, vol: 0.12, supply: 12e6 },
+  { name: "\u0411\u0438\u0437\u043D\u0435\u0441\u041A\u0440\u0435\u0434\u0438\u0442", ticker: "BZKR", sector: "\u0424\u0438\u043D\u0430\u043D\u0441\u044B", price: 30, vol: 0.2, supply: 36e6 },
+  { name: "\u0421\u0435\u0432\u0435\u0440\u0420\u0435\u0437\u0435\u0440\u0432", ticker: "SVRB", sector: "\u0424\u0438\u043D\u0430\u043D\u0441\u044B", price: 38, vol: 0.15, supply: 32e6 },
+  { name: "\u041D\u0435\u043E\u0411\u0430\u043D\u043A", ticker: "NEOB", sector: "\u0424\u0438\u043D\u0430\u043D\u0441\u044B", price: 17, vol: 0.22, supply: 84e6 },
   // Азия Импэкс — объединяет бывших Гуанчжоу Трейд (Китай) и Стамбул Текстиль (Турция): дешёвый и средний сегмент, долгая доставка
-  { name: "\u0410\u0437\u0438\u044F \u0418\u043C\u043F\u044D\u043A\u0441", ticker: "ASIM", sector: "\u041F\u043E\u0442\u0440\u0435\u0431\u0442\u043E\u0432\u0430\u0440\u044B", price: 18, vol: 1, supply: 4e6 },
+  { name: "\u0410\u0437\u0438\u044F \u0418\u043C\u043F\u044D\u043A\u0441", ticker: "ASIM", sector: "\u041F\u043E\u0442\u0440\u0435\u0431\u0442\u043E\u0432\u0430\u0440\u044B", price: 18, vol: 1, supply: 8e7 },
   // Вест Логистика — объединяет бывших Дойче Варенхандель (премиум) и Локальный Склад (без границы): быстрый и премиальный сегмент
-  { name: "\u0412\u0435\u0441\u0442 \u041B\u043E\u0433\u0438\u0441\u0442\u0438\u043A\u0430", ticker: "VSLG", sector: "\u041F\u043E\u0442\u0440\u0435\u0431\u0442\u043E\u0432\u0430\u0440\u044B", price: 55, vol: 0.5, supply: 12e5 },
+  { name: "\u0412\u0435\u0441\u0442 \u041B\u043E\u0433\u0438\u0441\u0442\u0438\u043A\u0430", ticker: "VSLG", sector: "\u041F\u043E\u0442\u0440\u0435\u0431\u0442\u043E\u0432\u0430\u0440\u044B", price: 55, vol: 0.5, supply: 24e6 },
   // ZZONE — прямой конкурент будущего маркетплейса игрока: торгуется на бирже как обычная
   // компания, при этом его партнёрские склады открываются, а магазины перепродажи торгуют
   // именно на нём. В будущих фазах получит собственный пакет NPC-бизнеса (GMV/продавцы/склады).
-  { name: "ZZONE", ticker: "ZZONE", sector: "\u0422\u0435\u0445\u043D\u043E\u043B\u043E\u0433\u0438\u0438", price: 24, vol: 0.6, supply: 5e7 },
+  { name: "ZZONE", ticker: "ZZONE", sector: "\u0422\u0435\u0445\u043D\u043E\u043B\u043E\u0433\u0438\u0438", price: 24, vol: 0.6, supply: 1e9 },
   // Нефть — сырьевой тикер, не двигается общим гаусс-шумом. Его цена — прямой выход
   // MacroEconomyEngine (баланс спроса/предложения + инерционный тренд ожиданий), см. RAF
   // price loop и macroTick. isCommodity исключает его из обычных случайных новостей.
   { name: "\u041D\u0435\u0444\u0442\u044C", ticker: "OIL", sector: "\u042D\u043D\u0435\u0440\u0433\u0435\u0442\u0438\u043A\u0430", price: 70, vol: 0.5, supply: 1e9, isCommodity: true }
 ];
+// Старые значения supply (до V2.46.0) — используются только для миграции уже сохранённых игр:
+// у существующих сохранений компании создаются один раз при первом запуске и supply дальше
+// никогда не меняется движком, поэтому нужно один раз подтянуть его на загрузке.
+var NPC_SEED_LEGACY_SUPPLY = { LEDG: 4e7, OPAL: 12e7, TEHER: 8e7, MFOX: 8e6, PRIV: 2e6, FEDB: 6e5, BZKR: 18e5, SVRB: 16e5, NEOB: 42e5, ASIM: 4e6, VSLG: 12e5, ZZONE: 5e7 };
 var MACRO_ACCOUNT = { handle: "@FinVestnik", name: "Финансовый Вестник", color: "#E8B14C", verified: true };
 var GOVERNMENT_ACCOUNT = { handle: "@GovPress", name: "Пресс-служба правительства", color: "#5AA9E6", verified: true };
 var NEWS_ACCOUNTS = [GOVERNMENT_ACCOUNT, MACRO_ACCOUNT];
@@ -2888,9 +2895,13 @@ function MarketSandbox() {
     });
     const restoredRaw = (data.companies || []).map((c) => {
       let candles = Array.isArray(c.candles) && c.candles.length >= 2 ? c.candles : seedCandles(c.price, c.vol || 1).candles;
+      const legacySupply = !c.isPlayer && NPC_SEED_LEGACY_SUPPLY[c.ticker];
+      const supplyMigrated = legacySupply && c.supply === legacySupply;
+      const seedMatch = supplyMigrated && NPC_SEED.find((s) => s.ticker === c.ticker);
       return {
         ...c,
         candles,
+        supply: seedMatch ? seedMatch.supply : c.supply,
         marketingLevel: c.marketingLevel || 0,
         rdLevel: c.rdLevel || 0,
         hypeLevel: c.hypeLevel || 0,
