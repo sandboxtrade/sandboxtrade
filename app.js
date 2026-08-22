@@ -1,4 +1,4 @@
-// Market Sandbox — V2.40.0 (Полная переработка «Работы по найму»: 4 карьерных трека (Банк/Закупки/Логистика/Технологии) по 6 уровней вместо плоских 3 должностей; 6 работодателей (FEDB/PRIV/MFOX/ASIM/VSLG/ZZONE) вместо 3. Репутация (0–200) растёт от задач, переносится между работодателями через jobRepByTrack (40% при смене места) — специалист имеет рыночную ценность. Состояние компании — jobCompanyHealth(perfPct, sentiment, demandIndex) на основе companyRecentPerfPct — даёт growing/stable/crisis, двигает payrollMult (±28%) и блокирует повышение в кризис. Рынок труда: раз в JOB_MARKET_TICK_MS входящие офферы от других компаний (до 2 одновременно, TTL 3 мин) при достаточной репутации; в кризис — риск увольнения, зависящий от репутации. Переговоры о зарплате (шанс от репутации/health/уровня, кулдаун 3 мин, бонус до +55%). Редкие рабочие события каждые 7 смен (2–3 варианта выбора, влияют на репутацию/премию). Премии при растущей компании (22% шанс, +35% к смене). Все числа — константы (JOB_*), проверено симуляцией карьерного пути. POSITIONS/EMPLOYER_TICKERS-константа удалены/заменены, старые сохранения с job.positionId сбрасываются как legacy.)
+// Market Sandbox — V2.41.0 (Ликвидация "кликерности" работы, этап 1-2 из 5: (1) Фоновая смена — клик по задаче больше не блокирует ожиданием: job.activeShift{taskId,startedAt,endsAt} запускается и разрешается автоматически по реальному времени (resolveShift, тик на useEffect + догоняющая проверка при загрузке, если игрок был вне вкладки дольше длительности смены) — можно уйти в другой раздел игры, деньги придут сами. (2) Живой пул задач — jobAvailableTasks(level, health) вместо статичных 3 кнопок каждый раз: третий слот подставляется контекстно (кризис компании → "Оптимизация издержек", рост → "Крупный клиент", ур.2+ в штиль → "Наставничество", иначе — рискованный "Срочный проект"). (3) Инвестиции в карьеру — платная кнопка "Курс" (JOB_COURSE_BASE_COST × (level+1) × scale работодателя, кулдаун 4 мин) даёт мгновенную репутацию — экономический выбор "вложить в карьеру vs копить", проверено по деньгам не читерский (цена курса ≈ доход от пропущенных смен). Очередь: тендеры для завязки бонусов, автопилот для топ-уровней, подчинённые для менеджеров — следующими заходами.)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -397,7 +397,7 @@ var EMPLOYERS = [
 ];
 var EMPLOYER_TICKERS = EMPLOYERS.map((e) => e.ticker);
 var JOB_REP_MAX = 200;
-var JOB_REP_TASK_GAIN = { normal: 1.2, overtime: 1.8, rush_win: 3.5, rush_lose: -2 };
+var JOB_REP_TASK_GAIN = { rush_win: 3.5, rush_lose: -2 };
 var JOB_REP_CARRY_RATIO = 0.4;
 var JOB_EVENT_EVERY_SHIFTS = 7;
 var JOB_MARKET_TICK_MS = 5e4;
@@ -407,6 +407,9 @@ var JOB_OFFER_TTL_MS = 3 * 60 * 1e3;
 var JOB_LAYOFF_BASE_CHANCE = 0.06;
 var JOB_NEGOTIATION_COOLDOWN_MS = 3 * 60 * 1e3;
 var JOB_NEGOTIATION_STEP = 0.12;
+var JOB_COURSE_BASE_COST = 220;
+var JOB_COURSE_REP_GAIN_BASE = 7;
+var JOB_COURSE_COOLDOWN_MS = 4 * 60 * 1e3;
 var JOB_NEGOTIATION_MAX_BONUS = 0.55;
 var JOB_BONUS_CHANCE_GROWING = 0.22;
 var JOB_BONUS_MULT = 0.35;
@@ -445,10 +448,21 @@ function jobRequiredShifts(track, levelIdx, hasPriorExp) {
   return hasPriorExp ? Math.ceil(lvl.minShifts * 0.5) : lvl.minShifts;
 }
 var TASK_OPTIONS = [
-  { id: "normal", name: "\u041E\u0431\u044B\u0447\u043D\u0430\u044F \u0437\u0430\u0434\u0430\u0447\u0430", icon: "\u{1F4CB}", payMult: 1, cooldownMult: 1, risky: false, desc: "\u0421\u0442\u0430\u0431\u0438\u043B\u044C\u043D\u043E, \u0431\u0435\u0437 \u0441\u044E\u0440\u043F\u0440\u0438\u0437\u043E\u0432." },
-  { id: "overtime", name: "\u041F\u0435\u0440\u0435\u0440\u0430\u0431\u043E\u0442\u043A\u0430", icon: "\u{1F319}", payMult: 1.6, cooldownMult: 1.8, risky: false, desc: "\u041F\u043B\u0430\u0442\u044F\u0442 \u0431\u043E\u043B\u044C\u0448\u0435, \u043D\u043E \u0434\u043E\u043B\u044C\u0448\u0435 \u043E\u0442\u0434\u044B\u0445\u0430\u0442\u044C \u043F\u043E\u0442\u043E\u043C." },
-  { id: "rush", name: "\u0421\u0440\u043E\u0447\u043D\u044B\u0439 \u043F\u0440\u043E\u0435\u043A\u0442", icon: "\u{1F3B2}", payMult: 1, cooldownMult: 1, risky: true, desc: "50/50: \u043B\u0438\u0431\u043E \u0431\u043E\u043D\u0443\u0441 \xD72.2, \u043B\u0438\u0431\u043E \u0432\u0441\u0435\u0433\u043E 40% \u043E\u043A\u043B\u0430\u0434\u0430." }
+  { id: "normal", name: "Обычная задача", icon: "\u{1F4CB}", payMult: 1, cooldownMult: 1, risky: false, repGain: 1.2, desc: "Стабильно, без сюрпризов." },
+  { id: "overtime", name: "Переработка", icon: "\u{1F319}", payMult: 1.6, cooldownMult: 1.8, risky: false, repGain: 1.8, desc: "Платят больше, но дольше отдыхать потом." },
+  { id: "rush", name: "Срочный проект", icon: "\u{1F3B2}", payMult: 1, cooldownMult: 1, risky: true, repGain: 0, desc: "50/50: либо бонус \xD72.2, либо всего 40% оклада." },
+  { id: "crisis_save", name: "Оптимизация издержек", icon: "\u{1F9EF}", payMult: 0.85, cooldownMult: 1, risky: false, repGain: 3, context: "crisis", desc: "Помочь компании пережить трудный период — платят меньше, но это заметят." },
+  { id: "big_client", name: "Крупный клиент", icon: "\u{1F4C8}", payMult: 1.5, cooldownMult: 1.3, risky: false, repGain: 2.5, context: "growing", desc: "Закрыть крупную сделку на волне роста компании." },
+  { id: "mentor", name: "Наставничество", icon: "\u{1F393}", payMult: 0.8, cooldownMult: 1, risky: false, repGain: 3, context: "mentor", minLevel: 2, desc: "Помочь новичку — небольшие деньги, но ценится руководством." }
 ];
+function jobAvailableTasks(level, health) {
+  let third;
+  if (health.status === "crisis") third = TASK_OPTIONS.find((t) => t.context === "crisis");
+  else if (health.status === "growing") third = TASK_OPTIONS.find((t) => t.context === "growing");
+  else if (level >= 2) third = TASK_OPTIONS.find((t) => t.context === "mentor");
+  else third = TASK_OPTIONS.find((t) => t.id === "rush");
+  return [TASK_OPTIONS[0], TASK_OPTIONS[1], third];
+}
 var BANKS = [
   { id: "mfo", name: "\u0411\u044B\u0441\u0442\u0440\u043E\u0414\u0435\u043D\u044C\u0433\u0438", type: "\u041C\u0424\u041E", ticker: "MFOX", baseMax: 400, cashMult: 0.5, assetMult: 0.08, ratePerTick: 7e-3, minNetWorth: 0, requiresExperience: false, desc: "\u041E\u0434\u043E\u0431\u0440\u044F\u044E\u0442 \u043F\u043E\u0447\u0442\u0438 \u0432\u0441\u0435\u043C, \u043D\u043E \u0441\u0442\u0430\u0432\u043A\u0430 \u0433\u0440\u0430\u0431\u0438\u0442\u0435\u043B\u044C\u0441\u043A\u0430\u044F \u2014 \u0434\u043E\u043B\u0433 \u0440\u0430\u0441\u0442\u0451\u0442 \u0431\u044B\u0441\u0442\u0440\u0435\u0435 \u043E\u0441\u0442\u0430\u043B\u044C\u043D\u044B\u0445. \u041B\u0438\u043C\u0438\u0442 \u0440\u0430\u0441\u0442\u0451\u0442 \u0432\u043C\u0435\u0441\u0442\u0435 \u0441 \u0442\u0432\u043E\u0438\u043C \u0431\u0430\u043B\u0430\u043D\u0441\u043E\u043C." },
   { id: "priv", name: "\u0427\u0430\u0441\u0442\u0411\u0430\u043D\u043A", type: "\u0427\u0430\u0441\u0442\u043D\u044B\u0439 \u0431\u0430\u043D\u043A", ticker: "PRIV", baseMax: 1200, cashMult: 0.8, assetMult: 0.3, ratePerTick: 25e-4, minNetWorth: 800, requiresExperience: false, desc: "\u0421\u0442\u0430\u0432\u043A\u0430 \u0443\u043C\u0435\u0440\u0435\u043D\u043D\u0435\u0435, \u043B\u0438\u043C\u0438\u0442 \u0437\u0430\u0432\u0438\u0441\u0438\u0442 \u043E\u0442 \u0431\u0430\u043B\u0430\u043D\u0441\u0430 \u0438 \u0430\u043A\u0442\u0438\u0432\u043E\u0432. \u041D\u0443\u0436\u0435\u043D \u043C\u0438\u043D\u0438\u043C\u0430\u043B\u044C\u043D\u044B\u0439 \u043A\u0430\u043F\u0438\u0442\u0430\u043B." },
@@ -3963,10 +3977,26 @@ function MarketSandbox() {
     return () => clearInterval(id);
   }, [loaded]);
   useEffect(() => {
-    if (jobCooldown <= 0) return;
-    const id = setInterval(() => setJobCooldown((s) => Math.max(0, s - 1)), 1e3);
+    if (!job || !job.activeShift) return;
+    const tick = () => {
+      const jj = jobRef.current;
+      if (!jj || !jj.activeShift) return;
+      const remaining = jj.activeShift.endsAt - Date.now();
+      if (remaining <= 0) {
+        resolveShift();
+      } else {
+        setJobCooldown(Math.ceil(remaining / 1e3));
+      }
+    };
+    tick();
+    const id = setInterval(tick, 1e3);
     return () => clearInterval(id);
-  }, [jobCooldown]);
+  }, [job && job.activeShift && job.activeShift.endsAt]);
+  useEffect(() => {
+    if (!loaded) return;
+    const jj = jobRef.current;
+    if (jj && jj.activeShift && Date.now() >= jj.activeShift.endsAt) resolveShift();
+  }, [loaded]);
   useEffect(() => {
     if (!loaded) return;
     const id = setInterval(() => {
@@ -7593,7 +7623,7 @@ function MarketSandbox() {
     if (!company || !employer || !track || job) return;
     const priorRep = jobRepByTrackRef.current[trackId] || 0;
     const startRep = Math.round(priorRep * JOB_REP_CARRY_RATIO);
-    setJob({ companyId, trackId, level: 0, reputation: startRep, tenureShifts: 0, shiftsSinceEvent: 0, negoBonusMult: 0, lastNegoAt: 0, hasPriorExp: priorRep > 0 });
+    setJob({ companyId, trackId, level: 0, reputation: startRep, tenureShifts: 0, shiftsSinceEvent: 0, negoBonusMult: 0, lastNegoAt: 0, lastCourseAt: 0, hasPriorExp: priorRep > 0, activeShift: null });
     setJobCooldown(0);
     setJobOffers((offs) => offs.filter((o) => o.companyId !== companyId));
     setTimeout(saveGame, 50);
@@ -7657,7 +7687,7 @@ function MarketSandbox() {
       setJobRepByTrack((r) => ({ ...r, [trackId]: Math.max(r[trackId] || 0, rep) }));
     }
     const priorRep = jobRepByTrackRef.current[offer.trackId] || 0;
-    setJob({ companyId: offer.companyId, trackId: offer.trackId, level: offer.level, reputation: Math.max(Math.round(priorRep * JOB_REP_CARRY_RATIO), offer.level * 10), tenureShifts: 0, shiftsSinceEvent: 0, negoBonusMult: 0, lastNegoAt: 0, hasPriorExp: priorRep > 0 });
+    setJob({ companyId: offer.companyId, trackId: offer.trackId, level: offer.level, reputation: Math.max(Math.round(priorRep * JOB_REP_CARRY_RATIO), offer.level * 10), tenureShifts: 0, shiftsSinceEvent: 0, negoBonusMult: 0, lastNegoAt: 0, lastCourseAt: 0, hasPriorExp: priorRep > 0, activeShift: null });
     setJobOffers((offs) => offs.filter((o) => o.id !== offerId));
     setJobCooldown(0);
     notify("\u041D\u043E\u0432\u0430\u044F \u0434\u043E\u043B\u0436\u043D\u043E\u0441\u0442\u044C \u043F\u0440\u0438\u043D\u044F\u0442\u0430", true);
@@ -7666,19 +7696,58 @@ function MarketSandbox() {
   const declineJobOffer = (offerId) => {
     setJobOffers((offs) => offs.filter((o) => o.id !== offerId));
   };
-  const workShift = (taskId) => {
-    if (!job || jobCooldown > 0 || pendingWorkEvent) return;
+  const takeCourse = () => {
+    if (!job) return;
+    const now = Date.now();
+    if (job.lastCourseAt && now - job.lastCourseAt < JOB_COURSE_COOLDOWN_MS) {
+      notify("Курс ещё не окончен", false);
+      return;
+    }
     const company = companiesRef.current.find((c) => c.id === job.companyId);
     const employer = company && EMPLOYERS.find((e) => e.ticker === company.ticker && e.trackId === job.trackId);
+    if (!company || !employer) return;
+    const cost = Math.round(JOB_COURSE_BASE_COST * (job.level + 1) * employer.scale);
+    const src = resolvedPayFrom;
+    if (getAccountBalance(src) < cost) {
+      notify(`Недостаточно средств — нужно ${fmt(cost)}`, false);
+      return;
+    }
+    adjustAccountBalance(src, -cost);
+    logTx("Курс повышения квалификации", cost, "out");
+    const repGain = Math.round(JOB_COURSE_REP_GAIN_BASE + job.level * 2);
+    setJob((j) => j && ({ ...j, reputation: Math.max(0, Math.min(JOB_REP_MAX, j.reputation + repGain)), lastCourseAt: now }));
+    notify(`Курс пройден: +${repGain} репутации`, true);
+    setTimeout(saveGame, 50);
+  };
+  const workShift = (taskId) => {
+    if (!job || job.activeShift || pendingWorkEvent) return;
+    const company = companiesRef.current.find((c) => c.id === job.companyId);
     const track = CAREER_TRACKS[job.trackId];
-    const task = TASK_OPTIONS.find((t) => t.id === taskId) || TASK_OPTIONS[0];
-    if (!company || !employer || !track) return;
+    if (!company || !track) return;
     const health = jobCompanyHealth(companyRecentPerfPct(companiesRef.current, company.ticker, 20), sentimentRef.current, demandIndexRef.current);
-    let pay = jobEffectivePay(track, job.level, employer, health, job.negoBonusMult) * task.payMult;
-    let repGain = JOB_REP_TASK_GAIN[taskId] ?? JOB_REP_TASK_GAIN.normal;
+    const task = jobAvailableTasks(job.level, health).find((t) => t.id === taskId);
+    if (!task) return;
+    const durationMs = Math.round((40 + job.level * 6) * task.cooldownMult) * 1e3;
+    setJob((j) => j && ({ ...j, activeShift: { taskId, startedAt: Date.now(), endsAt: Date.now() + durationMs } }));
+    setTimeout(saveGame, 50);
+  };
+  const resolveShift = () => {
+    const j = jobRef.current;
+    if (!j || !j.activeShift) return;
+    const company = companiesRef.current.find((c) => c.id === j.companyId);
+    const employer = company && EMPLOYERS.find((e) => e.ticker === company.ticker && e.trackId === j.trackId);
+    const track = CAREER_TRACKS[j.trackId];
+    if (!company || !employer || !track) {
+      setJob((jj) => jj && ({ ...jj, activeShift: null }));
+      return;
+    }
+    const health = jobCompanyHealth(companyRecentPerfPct(companiesRef.current, company.ticker, 20), sentimentRef.current, demandIndexRef.current);
+    const task = jobAvailableTasks(j.level, health).find((t) => t.id === j.activeShift.taskId) || TASK_OPTIONS[0];
+    let pay = jobEffectivePay(track, j.level, employer, health, j.negoBonusMult) * task.payMult;
+    let repGain = task.repGain || 0;
     if (task.risky) {
       const lucky = Math.random() < 0.5;
-      pay = jobEffectivePay(track, job.level, employer, health, job.negoBonusMult) * (lucky ? 2.2 : 0.4);
+      pay = jobEffectivePay(track, j.level, employer, health, j.negoBonusMult) * (lucky ? 2.2 : 0.4);
       repGain = lucky ? JOB_REP_TASK_GAIN.rush_win : JOB_REP_TASK_GAIN.rush_lose;
     }
     let bonusNote = "";
@@ -7688,25 +7757,25 @@ function MarketSandbox() {
     }
     pay = Math.round(pay);
     adjustAccountBalance(resolvedPayFrom, pay);
-    setJobHistory((h) => ({ ...h, [job.companyId]: (h[job.companyId] || 0) + 1 }));
-    setJobCooldown(Math.round((40 + job.level * 6) * task.cooldownMult));
+    setJobHistory((h) => ({ ...h, [j.companyId]: (h[j.companyId] || 0) + 1 }));
     accrueTax("\u041D\u0414\u0424\u041B \u0441 \u0437\u0430\u0440\u043F\u043B\u0430\u0442\u044B", Math.round(pay * 0.13));
-    logTx(`\u0417\u0430\u0440\u043F\u043B\u0430\u0442\u0430 \xB7 ${track.levels[job.level].name}${bonusNote}`, pay, "in");
-    const willFireEvent = (job.shiftsSinceEvent + 1) % JOB_EVENT_EVERY_SHIFTS === 0;
-    setJob((j) => {
-      if (!j) return j;
-      const reputation = Math.max(0, Math.min(JOB_REP_MAX, j.reputation + repGain));
-      const tenureShifts = j.tenureShifts + 1;
-      const shiftsSinceEvent = willFireEvent ? 0 : j.shiftsSinceEvent + 1;
-      let level = j.level;
+    logTx(`\u0417\u0430\u0440\u043F\u043B\u0430\u0442\u0430 \xB7 ${track.levels[j.level].name}${bonusNote}`, pay, "in");
+    const willFireEvent = (j.shiftsSinceEvent + 1) % JOB_EVENT_EVERY_SHIFTS === 0;
+    setJob((jj) => {
+      if (!jj) return jj;
+      const reputation = Math.max(0, Math.min(JOB_REP_MAX, jj.reputation + repGain));
+      const tenureShifts = jj.tenureShifts + 1;
+      const shiftsSinceEvent = willFireEvent ? 0 : jj.shiftsSinceEvent + 1;
+      let level = jj.level;
       const nextLvl = track.levels[level + 1];
-      const carOk = !jobNeedsCar(job.trackId, level + 1) || hasCarProperty();
-      if (nextLvl && carOk && health.status !== "crisis" && reputation >= nextLvl.repReq && tenureShifts >= jobRequiredShifts(track, level + 1, j.hasPriorExp)) {
+      const carOk = !jobNeedsCar(jj.trackId, level + 1) || hasCarProperty();
+      if (nextLvl && carOk && health.status !== "crisis" && reputation >= nextLvl.repReq && tenureShifts >= jobRequiredShifts(track, level + 1, jj.hasPriorExp)) {
         level += 1;
         setTimeout(() => notify(`\u041F\u043E\u0432\u044B\u0448\u0435\u043D\u0438\u0435! \u0422\u0435\u043F\u0435\u0440\u044C \u0432\u044B: ${nextLvl.name}`, true), 60);
       }
-      return { ...j, reputation, tenureShifts, shiftsSinceEvent, level };
+      return { ...jj, reputation, tenureShifts, shiftsSinceEvent, level, activeShift: null };
     });
+    notify(`\u0421\u043C\u0435\u043D\u0430 \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043D\u0430: ${fmt(pay)}${bonusNote}`, true);
     if (willFireEvent) {
       const ev = JOB_WORK_EVENTS[Math.floor(Math.random() * JOB_WORK_EVENTS.length)];
       setTimeout(() => setPendingWorkEvent(ev), 300);
@@ -8960,6 +9029,8 @@ function MarketSandbox() {
           const healthLabel = { growing: "\u0420\u0430\u0441\u0442\u0451\u0442", stable: "\u0421\u0442\u0430\u0431\u0438\u043B\u044C\u043D\u0430", crisis: "\u041A\u0440\u0438\u0437\u0438\u0441" };
           const healthColor = { growing: C.green, stable: C.inkDim, crisis: C.red };
           const negoLocked = job && job.lastNegoAt && Date.now() - job.lastNegoAt < JOB_NEGOTIATION_COOLDOWN_MS;
+          const courseLocked = job && job.lastCourseAt && Date.now() - job.lastCourseAt < JOB_COURSE_COOLDOWN_MS;
+          const courseCost = job && jobEmployerObj ? Math.round(JOB_COURSE_BASE_COST * (job.level + 1) * jobEmployerObj.scale) : 0;
           return jsxs("div", { children: [
             pendingWorkEvent && jsxs("div", { style: { background: C.surface, border: `1px solid ${C.violet}66`, borderRadius: 14, padding: 16, marginBottom: 16 }, children: [
               jsx("div", { style: { fontSize: 11, color: C.violet, textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }, children: "\u0420\u0430\u0431\u043E\u0447\u0430\u044F \u0441\u0438\u0442\u0443\u0430\u0446\u0438\u044F" }),
@@ -8983,7 +9054,17 @@ function MarketSandbox() {
                 jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint, marginBottom: 3 }, children: ["\u0414\u043E \xAB", nextLvl.name, "\xBB: ", Math.round(job.reputation), "/", nextLvl.repReq, " \u0440\u0435\u043F\u0443\u0442\u0430\u0446\u0438\u0438", jobNeedsCar(job.trackId, job.level + 1) && !hasCarProperty() ? " \xB7 \u043D\u0443\u0436\u0435\u043D \u0441\u0432\u043E\u0439 \u0430\u0432\u0442\u043E\u043C\u043E\u0431\u0438\u043B\u044C" : ""] }),
                 jsx("div", { style: { height: 4, borderRadius: 2, background: C.border, overflow: "hidden" }, children: jsx("div", { style: { height: "100%", width: `${Math.min(100, job.reputation / nextLvl.repReq * 100)}%`, background: C.violet } }) })
               ] }),
-              jobCooldown > 0 ? jsxs("div", { style: { textAlign: "center", padding: "12px 0", color: C.inkFaint, fontSize: 14, fontWeight: 600, marginBottom: 8 }, children: ["\u041E\u0442\u0434\u044B\u0445\u2026 ", jobCooldown, "\u0441"] }) : jsx("div", { style: { display: "flex", flexDirection: "column", gap: 8, marginBottom: 8 }, children: TASK_OPTIONS.map((t) => jsxs("button", { onClick: () => workShift(t.id), style: { display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 10, border: `1px solid ${C.border}`, background: C.surface2, color: C.ink, textAlign: "left" }, children: [
+              job.activeShift ? (() => {
+                const totalMs = job.activeShift.endsAt - job.activeShift.startedAt;
+                const elapsedMs = Date.now() - job.activeShift.startedAt;
+                const pct = totalMs > 0 ? Math.min(100, Math.max(0, elapsedMs / totalMs * 100)) : 100;
+                const activeTaskName = (jobAvailableTasks(job.level, jobHealth).find((t) => t.id === job.activeShift.taskId) || {}).name || "";
+                return jsxs("div", { style: { marginBottom: 8 }, children: [
+                  jsxs("div", { style: { textAlign: "center", color: C.inkDim, fontSize: 13, fontWeight: 600, marginBottom: 6 }, children: [`\u0421\u043C\u0435\u043D\u0430 \u0438\u0434\u0451\u0442: ${activeTaskName} \xB7 `, jobCooldown, "\u0441"] }),
+                  jsx("div", { style: { height: 6, borderRadius: 3, background: C.border, overflow: "hidden" }, children: jsx("div", { style: { height: "100%", width: `${pct}%`, background: C.gold, transition: "width .3s linear" } }) }),
+                  jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, textAlign: "center", marginTop: 6 }, children: "\u041C\u043E\u0436\u043D\u043E \u0437\u0430\u043D\u0438\u043C\u0430\u0442\u044C\u0441\u044F \u0434\u0440\u0443\u0433\u0438\u043C\u0438 \u0434\u0435\u043B\u0430\u043C\u0438 \u2014 \u0441\u043C\u0435\u043D\u0430 \u0437\u0430\u0432\u0435\u0440\u0448\u0438\u0442\u0441\u044F \u0441\u0430\u043C\u0430" })
+                ] });
+              })() : jsx("div", { style: { display: "flex", flexDirection: "column", gap: 8, marginBottom: 8 }, children: jobAvailableTasks(job.level, jobHealth).map((t) => jsxs("button", { onClick: () => workShift(t.id), style: { display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 10, border: `1px solid ${t.context ? C.violet + "66" : C.border}`, background: C.surface2, color: C.ink, textAlign: "left" }, children: [
                 jsx("div", { style: { fontSize: 20 }, children: t.icon }),
                 jsxs("div", { style: { flex: 1, minWidth: 0 }, children: [
                   jsx("div", { style: { fontWeight: 700, fontSize: 13 }, children: t.name }),
@@ -8993,6 +9074,7 @@ function MarketSandbox() {
               ] }, t.id)) }),
               jsxs("div", { style: { display: "flex", gap: 8 }, children: [
                 jsx("button", { onClick: negotiateSalary, disabled: negoLocked, style: { flex: 1, padding: 10, borderRadius: 10, border: `1px solid ${C.border}`, background: negoLocked ? "transparent" : C.surface2, color: negoLocked ? C.inkFaint : C.ink, fontSize: 12.5, fontWeight: 600 }, children: "\u041F\u0435\u0440\u0435\u0433\u043E\u0432\u043E\u0440\u044B" }),
+                jsx("button", { onClick: takeCourse, disabled: courseLocked, style: { flex: 1, padding: 10, borderRadius: 10, border: `1px solid ${C.border}`, background: courseLocked ? "transparent" : C.surface2, color: courseLocked ? C.inkFaint : C.ink, fontSize: 12.5, fontWeight: 600 }, children: `\u041A\u0443\u0440\u0441 \xB7 ${fmt(courseCost)}` }),
                 jsx("button", { onClick: quitJob, style: { flex: 1, padding: 10, borderRadius: 10, border: `1px solid ${C.border}`, background: "transparent", color: C.inkDim, fontSize: 12.5 }, children: "\u0423\u0432\u043E\u043B\u0438\u0442\u044C\u0441\u044F" })
               ] })
             ] }),
