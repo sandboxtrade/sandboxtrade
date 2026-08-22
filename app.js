@@ -1,4 +1,4 @@
-// Market Sandbox — V2.41.0 (Ликвидация "кликерности" работы, этап 1-2 из 5: (1) Фоновая смена — клик по задаче больше не блокирует ожиданием: job.activeShift{taskId,startedAt,endsAt} запускается и разрешается автоматически по реальному времени (resolveShift, тик на useEffect + догоняющая проверка при загрузке, если игрок был вне вкладки дольше длительности смены) — можно уйти в другой раздел игры, деньги придут сами. (2) Живой пул задач — jobAvailableTasks(level, health) вместо статичных 3 кнопок каждый раз: третий слот подставляется контекстно (кризис компании → "Оптимизация издержек", рост → "Крупный клиент", ур.2+ в штиль → "Наставничество", иначе — рискованный "Срочный проект"). (3) Инвестиции в карьеру — платная кнопка "Курс" (JOB_COURSE_BASE_COST × (level+1) × scale работодателя, кулдаун 4 мин) даёт мгновенную репутацию — экономический выбор "вложить в карьеру vs копить", проверено по деньгам не читерский (цена курса ≈ доход от пропущенных смен). Очередь: тендеры для завязки бонусов, автопилот для топ-уровней, подчинённые для менеджеров — следующими заходами.)
+// Market Sandbox — V2.43.0 (UI-редизайн блока "Крупные продавцы" в разделе Мой бизнес. Раньше "Уже на площадке" был сплошной строкой через запятую — при 20-30+ выигранных продавцах (пул имён всего 6, так что дубли неизбежны) превращался в нечитаемую простыню текста. Теперь: сгруппированные бейджи по имени с счётчиком (например "ГаджетХаб ×5" вместо 5 отдельных повторов), сводка "На площадке: N · GMV/цикл ≈ $X" сверху. Карточки кандидатов-переговоров тоже переработаны: оборот/год вынесен отдельным числом, лояльность к ZZONE — прогресс-бар вместо голого %, а на каждой кнопке офера теперь считается и показывается bigSellerSuccessChance(offer, seller, trustScore) в % — раньше кнопки были голыми лейблами без единого числа, приходилось действовать вслепую. Чисто визуальная правка, экономика/формулы не менялись, esbuild чист.)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -846,16 +846,36 @@ var MARKETPLACE_SELLER_TURNOVER_REQ = 5e5;
 var MARKETPLACE_CYCLE_MS = WAREHOUSE_CYCLE_MS;
 var MARKETPLACE_BASE_COMMISSION = 0.045;
 var MARKETPLACE_SELLER_GROWTH_CAP = 5e3;
+var MARKETPLACE_OWN_WAREHOUSE_TIERS = {
+  small: { name: "Малый склад", cost: 150000, capacity: 3e6, wage: 3800 },
+  large: { name: "Большой склад", cost: 250000, capacity: 6e6, wage: 6800 }
+};
+function marketplaceOwnCapacity(own) {
+  const o = own || { small: 0, large: 0 };
+  return o.small * MARKETPLACE_OWN_WAREHOUSE_TIERS.small.capacity + o.large * MARKETPLACE_OWN_WAREHOUSE_TIERS.large.capacity;
+}
+function marketplaceOwnWarehouseWageTotal(own) {
+  const o = own || { small: 0, large: 0 };
+  return o.small * MARKETPLACE_OWN_WAREHOUSE_TIERS.small.wage + o.large * MARKETPLACE_OWN_WAREHOUSE_TIERS.large.wage;
+}
+var MARKETPLACE_COMMISSION_MIN = 0.01;
+var MARKETPLACE_COMMISSION_MAX = 0.12;
+function marketplaceCommissionElasticity(commissionRate) {
+  const diff = MARKETPLACE_BASE_COMMISSION - commissionRate;
+  return Math.max(0.55, Math.min(1.55, 1 + diff * 9));
+}
 function marketplaceGmvPerSeller(trustScore, marketIndexVal, techLevel, devStaff) {
   const techMult = 1 + Math.min(0.6, (techLevel || 0) * 0.05 + (devStaff || 0) * 0.015);
   return 5e3 * (0.7 + clamp01(trustScore, 0, 100) / 100 * 0.6) * (marketIndexVal || 1) * techMult;
 }
-function marketplaceCycleEstimate(marketplace, marketIndexVal, bigSellers, demandIndexVal) {
+function marketplaceCycleEstimate(marketplace, marketIndexVal, bigSellers, demandIndexVal, capacityCap) {
   if (!marketplace) return { gmv: 0, revenue: 0, opex: 0, net: 0 };
   const demandMult = macroClamp(typeof demandIndexVal === "number" ? demandIndexVal : 1, 0.6, 1.3);
   const staff = marketplace.staff || {};
   const crisisMult = (marketplace.crisisPenaltyCyclesLeft || 0) > 0 ? 0.8 : 1;
-  const baseGmv = Math.round(marketplace.sellerCount * marketplaceGmvPerSeller(marketplace.trustScore, marketIndexVal, marketplace.techLevel, staff.dev) * crisisMult * demandMult);
+  const commissionElasticity = marketplaceCommissionElasticity(marketplace.commissionRate);
+  const rawBaseGmv = Math.round(marketplace.sellerCount * marketplaceGmvPerSeller(marketplace.trustScore, marketIndexVal, marketplace.techLevel, staff.dev) * crisisMult * demandMult * commissionElasticity);
+  const baseGmv = typeof capacityCap === "number" ? Math.min(rawBaseGmv, capacityCap) : rawBaseGmv;
   const wonSellers = (bigSellers || []).filter((s) => s.platform === "player");
   let bigGmv = 0;
   let bigRevenue = 0;
@@ -867,7 +887,7 @@ function marketplaceCycleEstimate(marketplace, marketIndexVal, bigSellers, deman
   const gmv = baseGmv + bigGmv;
   const revenue = Math.round(baseGmv * marketplace.commissionRate) + bigRevenue;
   const logisticsDiscount = clamp01(1 - (marketplace.logisticsLevel || 0) * 0.04 - (staff.logistics || 0) * 0.015, 0.4, 1);
-  const opex = Math.round((1200 + marketplace.sellerCount * 40) * logisticsDiscount) + marketplaceStaffWageTotal(staff);
+  const opex = Math.round((1200 + marketplace.sellerCount * 40) * logisticsDiscount) + marketplaceStaffWageTotal(staff) + marketplaceOwnWarehouseWageTotal(marketplace.ownWarehouses);
   return { gmv, revenue, opex, net: revenue - opex };
 }
 // ---- Развитие маркетплейса: 5 веток, каждая двигает конкретный коэффициент ----
@@ -2971,6 +2991,7 @@ function MarketSandbox() {
         accumOpex: 0,
         nextCycleAt: Date.now() + MARKETPLACE_CYCLE_MS,
         ...saved,
+        ownWarehouses: { small: 0, large: 0, ...(saved.ownWarehouses || {}) },
         staff: { dev: 0, logistics: 0, support: 0, legal: 0, marketing: 0, ...(saved.staff || {}) },
         socialProfile: { trust: 50, postLog: [], lastPostAt: 0, ...(saved.socialProfile || {}) },
         investorRounds: Array.isArray(saved.investorRounds) ? saved.investorRounds : [],
@@ -4702,7 +4723,9 @@ function MarketSandbox() {
       const dtMs = Math.max(0, Math.min(now0 - (mp.lastTickAt || now0), MARKETPLACE_CYCLE_MS));
       if (dtMs <= 0) return;
       const dtFrac = dtMs / MARKETPLACE_CYCLE_MS;
-      const est = marketplaceCycleEstimate(mp, marketIndexRef.current, bigSellersRef.current, demandIndexRef.current);
+      const linkedCap = warehousesRef.current.filter((w) => (mp.warehouseIds || []).includes(w.id)).reduce((s, w) => s + (WAREHOUSE_TIERS[w.tierId]?.throughputCapacity || 0), 0);
+      const capacityCap = linkedCap + marketplaceOwnCapacity(mp.ownWarehouses);
+      const est = marketplaceCycleEstimate(mp, marketIndexRef.current, bigSellersRef.current, demandIndexRef.current, capacityCap);
       const gmvDelta = est.gmv * dtFrac;
       const revenueDelta = est.revenue * dtFrac;
       const opexDelta = est.opex * dtFrac;
@@ -4735,9 +4758,11 @@ function MarketSandbox() {
       const cycleOpex = mp.accumOpex || 0;
       const cycleNet = cycleRevenue - cycleOpex;
       const growthRoll = Math.random();
-      const growthChance = clamp01(0.05 + mp.trustScore / 500 + (mp.sellersLevel || 0) * 0.01 + adGrowthBoost, 0, 0.5);
+      const commissionElasticity = marketplaceCommissionElasticity(mp.commissionRate);
+      const commissionGrowthTerm = Math.max(-0.05, Math.min(0.08, (commissionElasticity - 1) * 0.15));
+      const growthChance = clamp01(0.05 + mp.trustScore / 500 + (mp.sellersLevel || 0) * 0.01 + adGrowthBoost + commissionGrowthTerm, 0, 0.5);
       const sellerCount = mp.sellerCount < MARKETPLACE_SELLER_GROWTH_CAP && growthRoll < growthChance ? mp.sellerCount + 1 : mp.sellerCount;
-      const buyerBase = mp.sellerCount * (0.5 + Math.random()) + (mp.buyersLevel || 0) * 2;
+      const buyerBase = (mp.sellerCount * (0.5 + Math.random()) + (mp.buyersLevel || 0) * 2) * commissionElasticity;
       const buyerCount = Math.round(mp.buyerCount + Math.max(0, sellerCount - mp.sellerCount) * 40 + buyerBase + adBuyerBoost);
       const trustCeiling = Math.min(100, 60 + (mp.brandLevel || 0) * 3 + adTrustCeilingBoost);
       const trustDrift = Math.max(-1, Math.min(1, cycleNet > 0 ? 0.3 : -0.2));
@@ -7107,6 +7132,7 @@ function MarketSandbox() {
       stockTicker: null,
       socialProfile: { trust: 50, postLog: [], lastPostAt: 0 },
       warehouseIds: chosenWarehouseIds,
+      ownWarehouses: { small: 0, large: 0 },
       originShopId: qualifyingShop ? qualifyingShop.id : null,
       cyclesRun: 0,
       totalGmv: 0,
@@ -7420,6 +7446,23 @@ function MarketSandbox() {
     logTx(`\u041C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441 \xAB${mp.name}\xBB \u2192 \u0418\u041F`, amount, "in");
     setTimeout(saveGame, 50);
   };
+  const setMarketplaceCommission = (rate) => {
+    const clamped = Math.max(MARKETPLACE_COMMISSION_MIN, Math.min(MARKETPLACE_COMMISSION_MAX, rate));
+    setMarketplace((prev) => prev ? { ...prev, commissionRate: clamped } : prev);
+  };
+  const buyMarketplaceWarehouse = (tierId) => {
+    const mp = marketplaceRef.current;
+    const tier = MARKETPLACE_OWN_WAREHOUSE_TIERS[tierId];
+    if (!mp || !tier) return;
+    if (ipCashRef.current < tier.cost) {
+      notify(`Недостаточно средств — нужно ${fmt(tier.cost)}`);
+      return;
+    }
+    setIpCash((c) => c - tier.cost);
+    logTx(`Маркетплейс · ${tier.name}`, tier.cost, "out");
+    setMarketplace((prev) => prev ? { ...prev, ownWarehouses: { small: prev.ownWarehouses?.small || 0, large: prev.ownWarehouses?.large || 0, [tierId]: (prev.ownWarehouses?.[tierId] || 0) + 1 } } : prev);
+    setTimeout(saveGame, 50);
+  };
   const investMarketplaceTrack = (trackId) => {
     const mp = marketplaceRef.current;
     const track = MARKETPLACE_GROWTH_TRACKS[trackId];
@@ -7479,20 +7522,21 @@ function MarketSandbox() {
     if (!mp) return;
     const channel = marketplaceAdChannel(channelId);
     const budget = Math.max(channel.minBudget, Math.round(Number(budgetRaw) || 0));
-    if ((mp.adCampaigns || []).length >= MARKETPLACE_AD_MAX_ACTIVE) {
-      notify(`\u041C\u0430\u043A\u0441\u0438\u043C\u0443\u043C ${MARKETPLACE_AD_MAX_ACTIVE} \u0430\u043A\u0442\u0438\u0432\u043D\u044B\u0435 \u043A\u0430\u043C\u043F\u0430\u043D\u0438\u0438 \u043E\u0434\u043D\u043E\u0432\u0440\u0435\u043C\u0435\u043D\u043D\u043E`);
+    const now = Date.now();
+    const activeNow = (mp.adCampaigns || []).filter((c) => now < c.expiresAt);
+    if (activeNow.length >= MARKETPLACE_AD_MAX_ACTIVE) {
+      notify(`Максимум ${MARKETPLACE_AD_MAX_ACTIVE} активные кампании одновременно`);
       return;
     }
     if (ipCash < budget) {
-      notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u043D\u0430 \u0418\u041F \u2014 \u043D\u0443\u0436\u043D\u043E ${fmt(budget)}`);
+      notify(`Недостаточно средств на ИП — нужно ${fmt(budget)}`);
       return;
     }
     setIpCash((c) => c - budget);
-    const now = Date.now();
     const campaign = { id: makeId("mpad"), channel: channelId, budget, startedAt: now, expiresAt: now + MARKETPLACE_AD_DURATION_MS };
-    setMarketplace((prev) => prev ? { ...prev, adCampaigns: [...(prev.adCampaigns || []), campaign] } : prev);
-    logTx(`\u0420\u0435\u043A\u043B\u0430\u043C\u0430 \u043C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441\u0430 \xB7 ${channel.label}`, budget, "out");
-    notify(`\u0417\u0430\u043F\u0443\u0449\u0435\u043D\u0430 \u043A\u0430\u043C\u043F\u0430\u043D\u0438\u044F: ${channel.label}`, true);
+    setMarketplace((prev) => prev ? { ...prev, adCampaigns: [...activeNow, campaign] } : prev);
+    logTx(`Реклама маркетплейса · ${channel.label}`, budget, "out");
+    notify(`Запущена кампания: ${channel.label}`, true);
     setTimeout(saveGame, 50);
   };
   const marketplaceInvestorEligible = (investor, mp) => {
@@ -10397,7 +10441,8 @@ function MarketSandbox() {
             const liveGmv = marketplace.accumGmv || 0;
             const liveRevenue = marketplace.accumRevenue || 0;
             const linkedWarehouses = warehouses.filter((w) => (marketplace.warehouseIds || []).includes(w.id));
-            const capacity = linkedWarehouses.reduce((s, w) => s + (WAREHOUSE_TIERS[w.tierId]?.throughputCapacity || 0), 0);
+            const capacity = linkedWarehouses.reduce((s, w) => s + (WAREHOUSE_TIERS[w.tierId]?.throughputCapacity || 0), 0) + marketplaceOwnCapacity(marketplace.ownWarehouses);
+            const ownWh = marketplace.ownWarehouses || { small: 0, large: 0 };
             const originShop = resellShops.find((s) => s.id === marketplace.originShopId);
             return /* @__PURE__ */ jsxs("div", { style: { marginBottom: 22 }, children: [
               /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.gold}55`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
@@ -10449,14 +10494,30 @@ function MarketSandbox() {
               /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
                 /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }, children: "Инфраструктура" }),
                 /* @__PURE__ */ jsxs("div", { style: { fontSize: 12.5, color: C.inkDim, marginBottom: 6 }, children: [
-                  "Склады: ", /* @__PURE__ */ jsx("b", { style: { color: C.ink }, children: linkedWarehouses.map((w) => w.name).join(", ") || "—" })
+                  "Склады: ", /* @__PURE__ */ jsx("b", { style: { color: C.ink }, children: linkedWarehouses.map((w) => w.name).join(", ") || "—" }),
+                  ownWh.small > 0 || ownWh.large > 0 ? ` + ${[ownWh.small > 0 ? `${ownWh.small}\xD7\u041C\u0430\u043B\u044B\u0439` : "", ownWh.large > 0 ? `${ownWh.large}\xD7\u0411\u043E\u043B\u044C\u0448\u043E\u0439` : ""].filter(Boolean).join(", ")}` : ""
                 ] }),
                 /* @__PURE__ */ jsxs("div", { style: { fontSize: 12.5, color: C.inkDim, marginBottom: 6 }, children: [
                   "Суммарная пропускная способность: ", /* @__PURE__ */ jsx("b", { style: { color: C.ink }, children: fmt(capacity) })
                 ] }),
-                /* @__PURE__ */ jsxs("div", { style: { fontSize: 12.5, color: C.inkDim }, children: [
+                /* @__PURE__ */ jsxs("div", { style: { fontSize: 12.5, color: C.inkDim, marginBottom: 12 }, children: [
                   "Стартовая торговая база: ", /* @__PURE__ */ jsx("b", { style: { color: C.ink }, children: originShop ? originShop.name : "—" })
-                ] })
+                ] }),
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginBottom: 8 }, children: "Собственные склады маркетплейса — без управления персоналом, но добавляют ФОТ каждый цикл" }),
+                /* @__PURE__ */ jsx("div", { style: { display: "flex", gap: 8 }, children: Object.entries(MARKETPLACE_OWN_WAREHOUSE_TIERS).map(([tid, tier]) => /* @__PURE__ */ jsxs("button", { onClick: () => buyMarketplaceWarehouse(tid), disabled: ipCash < tier.cost, style: { flex: 1, padding: "10px 8px", borderRadius: 10, border: `1px solid ${C.border}`, background: ipCash >= tier.cost ? C.surface2 : "transparent", color: ipCash >= tier.cost ? C.ink : C.inkFaint, fontSize: 11.5, textAlign: "center" }, children: [
+                  /* @__PURE__ */ jsx("div", { style: { fontWeight: 700, marginBottom: 2 }, children: tier.name }),
+                  /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace" }, children: fmt(tier.cost) }),
+                  /* @__PURE__ */ jsxs("div", { style: { fontSize: 10, color: C.inkFaint, marginTop: 2 }, children: ["+", fmt(tier.capacity), " \xB7 -", fmt(tier.wage), "/\u0446\u0438\u043A\u043B"] })
+                ] }, tid)) })
+              ] }),
+              /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }, children: "Комиссия с продавцов" }),
+                /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }, children: [
+                  /* @__PURE__ */ jsxs("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 22, fontWeight: 700 }, children: [(marketplace.commissionRate * 100).toFixed(1), "%"] }),
+                  /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: marketplaceCommissionElasticity(marketplace.commissionRate) >= 1 ? C.green : C.red }, children: `${marketplaceCommissionElasticity(marketplace.commissionRate) >= 1 ? "+" : ""}${Math.round((marketplaceCommissionElasticity(marketplace.commissionRate) - 1) * 100)}% \u043A \u0441\u043F\u0440\u043E\u0441\u0443` })
+                ] }),
+                /* @__PURE__ */ jsx("input", { type: "range", min: MARKETPLACE_COMMISSION_MIN * 1000, max: MARKETPLACE_COMMISSION_MAX * 1000, step: 1, value: Math.round(marketplace.commissionRate * 1000), onChange: (e) => setMarketplaceCommission(Number(e.target.value) / 1000), style: { width: "100%", marginBottom: 8 } }),
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, lineHeight: 1.5 }, children: "Ниже комиссия — продавцам выгоднее ставить цены ниже, растёт спрос и число покупателей, но меньше твоя доля с каждой сделки. Выше комиссия — доход с оборота больше, но продавцы и покупатели растут медленнее." })
               ] }),
               (() => {
                 const now = Date.now();
@@ -10487,7 +10548,7 @@ function MarketSandbox() {
                     ] }, c.id);
                   }) }),
                   MARKETPLACE_AD_CHANNELS.map((channel) => {
-                    const budgetVal = marketplaceAdBudgetInputs[channel.id] || String(channel.minBudget);
+                    const budgetVal = marketplaceAdBudgetInputs[channel.id] ?? String(channel.minBudget);
                     const budgetNum = Math.max(0, Number(budgetVal) || 0);
                     const impact = marketplaceAdImpact({ channel: channel.id, budget: budgetNum });
                     const forecastReach = Math.round(Math.sqrt(budgetNum) * channel.sellerBoostK * 90);
@@ -10549,20 +10610,51 @@ function MarketSandbox() {
               (() => {
                 const zzoneSellers = bigSellers.filter((s) => s.platform === "zzone");
                 const wonSellers = bigSellers.filter((s) => s.platform === "player");
+                const wonGrouped = Object.values(wonSellers.reduce((acc, s) => {
+                  if (!acc[s.name]) acc[s.name] = { name: s.name, count: 0, turnover: 0 };
+                  acc[s.name].count += 1;
+                  acc[s.name].turnover += s.turnover;
+                  return acc;
+                }, {}));
+                const wonTotalTurnover = wonSellers.reduce((s, w) => s + w.turnover, 0);
                 return /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
                   /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }, children: [
                     /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, textTransform: "uppercase", letterSpacing: 1 }, children: "Крупные продавцы" }),
                     /* @__PURE__ */ jsx("button", { onClick: spawnBigSellerCandidates, style: { fontSize: 11, color: C.inkDim, background: "none", border: `1px solid ${C.border}`, borderRadius: 8, padding: "4px 8px" }, children: "Обновить" })
                   ] }),
-                  wonSellers.length > 0 && /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.green, marginBottom: 8 }, children: `Уже на площадке: ${wonSellers.map((s) => s.name).join(", ")}` }),
-                  zzoneSellers.length === 0 && /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkFaint, textAlign: "center", padding: "10px 0" }, children: "Нет кандидатов — нажми «Обновить»" }),
-                  zzoneSellers.map((seller) => /* @__PURE__ */ jsxs("div", { style: { padding: "10px 0", borderBottom: `1px solid ${C.border}` }, children: [
-                    /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 6 }, children: [
-                      /* @__PURE__ */ jsxs("span", { style: { fontWeight: 600 }, children: [seller.name, " \xB7 \u043D\u0430 ZZONE"] }),
-                      /* @__PURE__ */ jsx("span", { style: { color: C.inkDim }, children: fmt(seller.turnover) })
+                  wonSellers.length > 0 && /* @__PURE__ */ jsxs("div", { style: { background: C.surface2, borderRadius: 10, padding: "10px 12px", marginBottom: 12 }, children: [
+                    /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 8 }, children: [
+                      /* @__PURE__ */ jsxs("span", { style: { color: C.inkDim }, children: ["На площадке: ", /* @__PURE__ */ jsx("b", { style: { color: C.green }, children: wonSellers.length })] }),
+                      /* @__PURE__ */ jsxs("span", { style: { color: C.inkFaint, fontSize: 10.5 }, children: ["GMV/цикл \u2248 ", fmt(Math.round(wonTotalTurnover / 12))] })
                     ] }),
-                    /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint, marginBottom: 8 }, children: ["\u041B\u043E\u044F\u043B\u044C\u043D\u043E\u0441\u0442\u044C \u043A ZZONE: ", seller.loyalty, "%"] }),
-                    /* @__PURE__ */ jsx("div", { style: { display: "flex", flexWrap: "wrap", gap: 6 }, children: BIG_SELLER_OFFERS.map((offer) => /* @__PURE__ */ jsx("button", { onClick: () => negotiateBigSeller(seller.id, offer.id), style: { padding: "6px 10px", borderRadius: 8, border: `1px solid ${C.border}`, background: "transparent", color: C.ink, fontSize: 11 }, children: offer.label }, offer.id)) })
+                    /* @__PURE__ */ jsx("div", { style: { display: "flex", flexWrap: "wrap", gap: 6 }, children: wonGrouped.map((g) => /* @__PURE__ */ jsxs("span", { style: { fontSize: 11, fontWeight: 600, padding: "4px 10px", borderRadius: 999, background: `${C.green}1A`, color: C.green, border: `1px solid ${C.green}44` }, children: [g.name, g.count > 1 ? ` \xD7${g.count}` : ""] }, g.name)) })
+                  ] }),
+                  zzoneSellers.length === 0 && /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkFaint, textAlign: "center", padding: "10px 0" }, children: "Нет кандидатов — нажми «Обновить»" }),
+                  zzoneSellers.map((seller) => /* @__PURE__ */ jsxs("div", { style: { background: C.surface2, borderRadius: 12, padding: "12px 14px", marginBottom: 8 }, children: [
+                    /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }, children: [
+                      /* @__PURE__ */ jsxs("div", { children: [
+                        /* @__PURE__ */ jsx("div", { style: { fontWeight: 700, fontSize: 13.5 }, children: seller.name }),
+                        /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint }, children: "сейчас на ZZONE" })
+                      ] }),
+                      /* @__PURE__ */ jsxs("div", { style: { textAlign: "right" }, children: [
+                        /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkFaint }, children: "оборот/год" }),
+                        /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, fontSize: 13 }, children: fmt(seller.turnover) })
+                      ] })
+                    ] }),
+                    /* @__PURE__ */ jsxs("div", { style: { marginBottom: 10 }, children: [
+                      /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 10.5, color: C.inkFaint, marginBottom: 3 }, children: [
+                        /* @__PURE__ */ jsx("span", { children: "Лояльность к ZZONE" }),
+                        /* @__PURE__ */ jsxs("span", { children: [seller.loyalty, "%"] })
+                      ] }),
+                      /* @__PURE__ */ jsx("div", { style: { height: 4, borderRadius: 2, background: C.border, overflow: "hidden" }, children: /* @__PURE__ */ jsx("div", { style: { height: "100%", width: `${seller.loyalty}%`, background: C.red } }) })
+                    ] }),
+                    /* @__PURE__ */ jsx("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }, children: BIG_SELLER_OFFERS.map((offer) => {
+                      const chance = Math.round(bigSellerSuccessChance(offer, seller, marketplace.trustScore) * 100);
+                      return /* @__PURE__ */ jsxs("button", { onClick: () => negotiateBigSeller(seller.id, offer.id), style: { padding: "8px 9px", borderRadius: 9, border: `1px solid ${C.border}`, background: C.surface, color: C.ink, fontSize: 10.5, textAlign: "left" }, children: [
+                        /* @__PURE__ */ jsx("div", { style: { fontWeight: 700, marginBottom: 2 }, children: offer.label }),
+                        /* @__PURE__ */ jsxs("div", { style: { color: C.inkFaint }, children: [offer.costType === "cash" ? fmt(offer.costValue) : `-${Math.round(offer.costValue * 100)}% комиссии`, " \xB7 ", chance, "% шанс"] })
+                      ] }, offer.id);
+                    }) })
                   ] }, seller.id))
                 ] });
               })(),
