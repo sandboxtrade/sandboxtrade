@@ -1,4 +1,4 @@
-// Market Sandbox — V2.39.1 (Панель экономики на вкладке "Рынок": настроение рынка/спрос/ключевая ставка/инфляция/нефть/риск дефолта — компактные тайлы вверху списка. Калибровка govBudget: GOV_TAX_TO_DEBT_SCALE снижен с 2e6 до 5e4 (единичный налоговый платёж $50k теперь даёт заметную поправку ~0.5 из клампа ±12, а не 0.025 как раньше); свёртка cycleTaxIn→balanceEma перенесена с каждого 5-секундного макро-тика на раз в GOV_BUDGET_FOLD_MS=5 минут — иначе разовый платёж мгновенно спайковал и затухал за секунды, не успевая ощутимо сдвинуть govDebt. Теперь платёж даёт эффект, спадающий за ~20-30 игровых минут.)
+// Market Sandbox — V2.40.0 (Полная переработка «Работы по найму»: 4 карьерных трека (Банк/Закупки/Логистика/Технологии) по 6 уровней вместо плоских 3 должностей; 6 работодателей (FEDB/PRIV/MFOX/ASIM/VSLG/ZZONE) вместо 3. Репутация (0–200) растёт от задач, переносится между работодателями через jobRepByTrack (40% при смене места) — специалист имеет рыночную ценность. Состояние компании — jobCompanyHealth(perfPct, sentiment, demandIndex) на основе companyRecentPerfPct — даёт growing/stable/crisis, двигает payrollMult (±28%) и блокирует повышение в кризис. Рынок труда: раз в JOB_MARKET_TICK_MS входящие офферы от других компаний (до 2 одновременно, TTL 3 мин) при достаточной репутации; в кризис — риск увольнения, зависящий от репутации. Переговоры о зарплате (шанс от репутации/health/уровня, кулдаун 3 мин, бонус до +55%). Редкие рабочие события каждые 7 смен (2–3 варианта выбора, влияют на репутацию/премию). Премии при растущей компании (22% шанс, +35% к смене). Все числа — константы (JOB_*), проверено симуляцией карьерного пути. POSITIONS/EMPLOYER_TICKERS-константа удалены/заменены, старые сохранения с job.positionId сбрасываются как legacy.)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -353,12 +353,97 @@ var USER_CHATTER = [
   "\u041D\u0443, \u043F\u043E\u0441\u043C\u043E\u0442\u0440\u0438\u043C \u0447\u0442\u043E \u0431\u0443\u0434\u0435\u0442 \u0434\u0430\u043B\u044C\u0448\u0435.",
   "\u041A\u0430\u0436\u0435\u0442\u0441\u044F, \u044D\u0442\u043E \u0442\u043E\u043B\u044C\u043A\u043E \u043D\u0430\u0447\u0430\u043B\u043E."
 ];
-var POSITIONS = [
-  { id: "intern", name: "\u0421\u0442\u0430\u0436\u0451\u0440", salary: 40, cooldown: 40, minShifts: 0 },
-  { id: "specialist", name: "\u0421\u043F\u0435\u0446\u0438\u0430\u043B\u0438\u0441\u0442", salary: 90, cooldown: 60, minShifts: 5 },
-  { id: "manager", name: "\u041C\u0435\u043D\u0435\u0434\u0436\u0435\u0440", salary: 200, cooldown: 80, minShifts: 15 }
+var CAREER_TRACKS = {
+  bank: { name: "Банк", levels: [
+    { name: "Операционист", salaryBase: 40, repReq: 0, minShifts: 0 },
+    { name: "Кредитный специалист", salaryBase: 88, repReq: 18, minShifts: 5 },
+    { name: "Старший специалист", salaryBase: 165, repReq: 42, minShifts: 12 },
+    { name: "Менеджер отдела", salaryBase: 290, repReq: 72, minShifts: 22 },
+    { name: "Руководитель отдела", salaryBase: 480, repReq: 108, minShifts: 34 },
+    { name: "Директор филиала", salaryBase: 760, repReq: 150, minShifts: 48 }
+  ] },
+  trade: { name: "Закупки", needsCarFrom: 3, levels: [
+    { name: "Стажёр по закупкам", salaryBase: 36, repReq: 0, minShifts: 0 },
+    { name: "Менеджер по закупкам", salaryBase: 78, repReq: 18, minShifts: 5 },
+    { name: "Старший закупщик", salaryBase: 145, repReq: 42, minShifts: 12 },
+    { name: "Категорийный менеджер", salaryBase: 255, repReq: 72, minShifts: 22 },
+    { name: "Руководитель закупок", salaryBase: 420, repReq: 108, minShifts: 34 },
+    { name: "Директор по закупкам", salaryBase: 660, repReq: 150, minShifts: 48 }
+  ] },
+  logistics: { name: "Логистика", needsCarFrom: 3, levels: [
+    { name: "Кладовщик", salaryBase: 38, repReq: 0, minShifts: 0 },
+    { name: "Оператор склада", salaryBase: 82, repReq: 18, minShifts: 5 },
+    { name: "Старший оператор", salaryBase: 152, repReq: 42, minShifts: 12 },
+    { name: "Координатор логистики", salaryBase: 268, repReq: 72, minShifts: 22 },
+    { name: "Менеджер склада", salaryBase: 440, repReq: 108, minShifts: 34 },
+    { name: "Директор логистики", salaryBase: 690, repReq: 150, minShifts: 48 }
+  ] },
+  tech: { name: "Технологии", levels: [
+    { name: "Junior-аналитик", salaryBase: 46, repReq: 0, minShifts: 0 },
+    { name: "Аналитик данных", salaryBase: 98, repReq: 18, minShifts: 5 },
+    { name: "Продуктовый специалист", salaryBase: 180, repReq: 42, minShifts: 12 },
+    { name: "Старший продакт", salaryBase: 315, repReq: 72, minShifts: 22 },
+    { name: "Руководитель направления", salaryBase: 520, repReq: 108, minShifts: 34 },
+    { name: "Директор по продукту", salaryBase: 820, repReq: 150, minShifts: 48 }
+  ] }
+};
+var EMPLOYERS = [
+  { ticker: "FEDB", trackId: "bank", scale: 1 },
+  { ticker: "PRIV", trackId: "bank", scale: 1.35 },
+  { ticker: "MFOX", trackId: "bank", scale: 0.55 },
+  { ticker: "ASIM", trackId: "trade", scale: 0.95 },
+  { ticker: "VSLG", trackId: "logistics", scale: 1.1 },
+  { ticker: "ZZONE", trackId: "tech", scale: 1.3 }
 ];
-var EMPLOYER_TICKERS = ["FEDB", "ASIM", "VSLG"];
+var EMPLOYER_TICKERS = EMPLOYERS.map((e) => e.ticker);
+var JOB_REP_MAX = 200;
+var JOB_REP_TASK_GAIN = { normal: 1.2, overtime: 1.8, rush_win: 3.5, rush_lose: -2 };
+var JOB_REP_CARRY_RATIO = 0.4;
+var JOB_EVENT_EVERY_SHIFTS = 7;
+var JOB_MARKET_TICK_MS = 5e4;
+var JOB_OFFER_BASE_CHANCE = 0.1;
+var JOB_OFFER_MAX_ACTIVE = 2;
+var JOB_OFFER_TTL_MS = 3 * 60 * 1e3;
+var JOB_LAYOFF_BASE_CHANCE = 0.06;
+var JOB_NEGOTIATION_COOLDOWN_MS = 3 * 60 * 1e3;
+var JOB_NEGOTIATION_STEP = 0.12;
+var JOB_NEGOTIATION_MAX_BONUS = 0.55;
+var JOB_BONUS_CHANCE_GROWING = 0.22;
+var JOB_BONUS_MULT = 0.35;
+var JOB_WORK_EVENTS = [
+  { id: "extra_shift", text: "Компания получила крупный заказ — нужна дополнительная смена.", choices: [
+    { label: "Взять нагрузку", repDelta: 4, bonusMult: 0.4 },
+    { label: "Отказаться", repDelta: -1, bonusMult: 0 },
+    { label: "Предложить оптимизацию", repDelta: 6, bonusMult: 0.15 }
+  ] },
+  { id: "efficiency_drop", text: "Эффективность подразделения просела — руководство ждёт реакции.", choices: [
+    { label: "Работать интенсивнее", repDelta: 3, bonusMult: 0 },
+    { label: "Предложить изменения", repDelta: 5, bonusMult: 0 },
+    { label: "Ничего не делать", repDelta: -3, bonusMult: 0 }
+  ] },
+  { id: "conflict", text: "Конфликт с коллегой из-за распределения задач.", choices: [
+    { label: "Уступить", repDelta: 1, bonusMult: 0 },
+    { label: "Отстоять позицию", repDelta: 4, bonusMult: 0 },
+    { label: "Эскалировать руководству", repDelta: -2, bonusMult: 0 }
+  ] }
+];
+function jobCompanyHealth(perfPct, sentimentVal, demandVal) {
+  const score = perfPct * 0.6 + sentimentVal * 0.25 + (demandVal - 1) * 100 * 0.5;
+  const status = score > 12 ? "growing" : score < -12 ? "crisis" : "stable";
+  const clamped = Math.max(-40, Math.min(40, score));
+  const payrollMult = 1 + clamped / 40 * 0.28;
+  return { score, status, payrollMult };
+}
+function jobEffectivePay(track, levelIdx, employer, health, negoBonusMult) {
+  const lvl = track.levels[levelIdx];
+  const base = lvl.salaryBase * employer.scale;
+  return base * health.payrollMult * (1 + (negoBonusMult || 0));
+}
+function jobRequiredShifts(track, levelIdx, hasPriorExp) {
+  const lvl = track.levels[levelIdx];
+  if (!lvl) return Infinity;
+  return hasPriorExp ? Math.ceil(lvl.minShifts * 0.5) : lvl.minShifts;
+}
 var TASK_OPTIONS = [
   { id: "normal", name: "\u041E\u0431\u044B\u0447\u043D\u0430\u044F \u0437\u0430\u0434\u0430\u0447\u0430", icon: "\u{1F4CB}", payMult: 1, cooldownMult: 1, risky: false, desc: "\u0421\u0442\u0430\u0431\u0438\u043B\u044C\u043D\u043E, \u0431\u0435\u0437 \u0441\u044E\u0440\u043F\u0440\u0438\u0437\u043E\u0432." },
   { id: "overtime", name: "\u041F\u0435\u0440\u0435\u0440\u0430\u0431\u043E\u0442\u043A\u0430", icon: "\u{1F319}", payMult: 1.6, cooldownMult: 1.8, risky: false, desc: "\u041F\u043B\u0430\u0442\u044F\u0442 \u0431\u043E\u043B\u044C\u0448\u0435, \u043D\u043E \u0434\u043E\u043B\u044C\u0448\u0435 \u043E\u0442\u0434\u044B\u0445\u0430\u0442\u044C \u043F\u043E\u0442\u043E\u043C." },
@@ -2096,6 +2181,9 @@ function MarketSandbox() {
   const [job, setJob] = useState(null);
   const [jobHistory, setJobHistory] = useState({});
   const [jobCooldown, setJobCooldown] = useState(0);
+  const [jobRepByTrack, setJobRepByTrack] = useState({});
+  const [jobOffers, setJobOffers] = useState([]);
+  const [pendingWorkEvent, setPendingWorkEvent] = useState(null);
   const [warehouseTick, setWarehouseTick] = useState(0);
   const [taxOwed, setTaxOwed] = useState(0);
   const [taxOverdueSince, setTaxOverdueSince] = useState(null);
@@ -2271,6 +2359,8 @@ function MarketSandbox() {
   const ipBankRatingRef = useRef(ipBankRating);
   const jobRef = useRef(job);
   const jobHistoryRef = useRef(jobHistory);
+  const jobRepByTrackRef = useRef(jobRepByTrack);
+  const jobOffersRef = useRef(jobOffers);
   const storiesByIdRef = useRef({});
   const scheduledEventsRef = useRef([]);
   const feedPostsRef = useRef([]);
@@ -2389,6 +2479,12 @@ function MarketSandbox() {
   useEffect(() => {
     jobHistoryRef.current = jobHistory;
   }, [jobHistory]);
+  useEffect(() => {
+    jobRepByTrackRef.current = jobRepByTrack;
+  }, [jobRepByTrack]);
+  useEffect(() => {
+    jobOffersRef.current = jobOffers;
+  }, [jobOffers]);
   useEffect(() => {
     feedPostsRef.current = feedPosts;
   }, [feedPosts]);
@@ -2806,8 +2902,12 @@ function MarketSandbox() {
     setLoans(Array.isArray(data.loans) ? data.loans : []);
     const oldJobCompany = data.job ? oldCompaniesById[data.job.companyId] : null;
     const jobStale = data.job && oldJobCompany && REMOVED_EMPLOYER_TICKERS.includes(oldJobCompany.ticker);
-    setJob(jobStale ? null : data.job || null);
+    const jobLegacyFormat = data.job && typeof data.job.positionId !== "undefined";
+    const jobEmployerGone = data.job && oldJobCompany && !EMPLOYERS.some((e) => e.ticker === oldJobCompany.ticker && e.trackId === data.job.trackId);
+    setJob(jobStale || jobLegacyFormat || jobEmployerGone ? null : data.job || null);
     setJobHistory(data.jobHistory || {});
+    setJobRepByTrack(data.jobRepByTrack && typeof data.jobRepByTrack === "object" ? data.jobRepByTrack : {});
+    setJobOffers(Array.isArray(data.jobOffers) ? data.jobOffers.filter((o) => o.expiresAt > Date.now()) : []);
     setTaxOwed(typeof data.taxOwed === "number" ? data.taxOwed : 0);
     setTaxOverdueSince(typeof data.taxOverdueSince === "number" ? data.taxOverdueSince : null);
     setTaxHistory(Array.isArray(data.taxHistory) ? data.taxHistory : []);
@@ -2970,6 +3070,8 @@ function MarketSandbox() {
     loans: loansRef.current,
     job: jobRef.current,
     jobHistory: jobHistoryRef.current,
+    jobRepByTrack: jobRepByTrackRef.current,
+    jobOffers: jobOffersRef.current,
     taxOwed: taxOwedRef.current,
     taxOverdueSince: taxOverdueSinceRef.current,
     taxHistory: taxHistoryRef.current,
@@ -3865,6 +3967,52 @@ function MarketSandbox() {
     const id = setInterval(() => setJobCooldown((s) => Math.max(0, s - 1)), 1e3);
     return () => clearInterval(id);
   }, [jobCooldown]);
+  useEffect(() => {
+    if (!loaded) return;
+    const id = setInterval(() => {
+      const curJob = jobRef.current;
+      if (curJob) {
+        const company = companiesRef.current.find((c) => c.id === curJob.companyId);
+        if (company) {
+          const health = jobCompanyHealth(companyRecentPerfPct(companiesRef.current, company.ticker, 20), sentimentRef.current, demandIndexRef.current);
+          if (health.status === "crisis") {
+            const riskMult = Math.max(0.25, 1 - curJob.reputation / 220);
+            if (Math.random() < JOB_LAYOFF_BASE_CHANCE * riskMult) {
+              setJobRepByTrack((r) => ({ ...r, [curJob.trackId]: Math.max(r[curJob.trackId] || 0, Math.round(curJob.reputation * 0.7)) }));
+              setJob(null);
+              setJobCooldown(0);
+              notify(`\u0421\u043E\u043A\u0440\u0430\u0449\u0435\u043D\u0438\u0435 \u0432 \xAB${company.name}\xBB \u2014 \u0432\u044B \u043F\u043E\u043F\u0430\u043B\u0438 \u043F\u043E\u0434 \u0432\u043E\u043B\u043D\u0443 \u0443\u0432\u043E\u043B\u044C\u043D\u0435\u043D\u0438\u0439`, false);
+              setTimeout(saveGame, 50);
+            }
+          }
+        }
+      }
+      setJobOffers((offs) => {
+        let next = offs.filter((o) => o.expiresAt > Date.now());
+        const repPool = Object.values(jobRepByTrackRef.current || {});
+        const bestRep = Math.max(curJob ? curJob.reputation : 0, ...repPool, 0);
+        if (next.length < JOB_OFFER_MAX_ACTIVE && bestRep >= 15 && Math.random() < JOB_OFFER_BASE_CHANCE * (1 + bestRep / 150)) {
+          const curTicker = curJob ? companiesRef.current.find((c) => c.id === curJob.companyId)?.ticker : null;
+          const candidates = EMPLOYERS.filter((e) => e.ticker !== curTicker);
+          const emp = candidates[Math.floor(Math.random() * candidates.length)];
+          const targetCompany = emp && companiesRef.current.find((c) => c.ticker === emp.ticker);
+          const track = emp && CAREER_TRACKS[emp.trackId];
+          if (emp && targetCompany && track) {
+            const health = jobCompanyHealth(companyRecentPerfPct(companiesRef.current, emp.ticker, 20), sentimentRef.current, demandIndexRef.current);
+            const trackRep = jobRepByTrackRef.current[emp.trackId] || 0;
+            let level = 0;
+            for (let i = track.levels.length - 1; i >= 0; i--) {
+              if (track.levels[i].repReq <= trackRep * 0.6) { level = i; break; }
+            }
+            const salary = Math.round(track.levels[level].salaryBase * emp.scale * health.payrollMult);
+            next = [...next, { id: makeId("offer"), companyId: targetCompany.id, companyName: targetCompany.name, trackId: emp.trackId, trackName: track.name, level, levelName: track.levels[level].name, salary, healthStatus: health.status, expiresAt: Date.now() + JOB_OFFER_TTL_MS }];
+          }
+        }
+        return next;
+      });
+    }, JOB_MARKET_TICK_MS);
+    return () => clearInterval(id);
+  }, [loaded]);
   useEffect(() => {
     if (!loaded) return;
     const id = setInterval(() => setWarehouseTick((t) => t + 1), 1e4);
@@ -7434,38 +7582,135 @@ function MarketSandbox() {
     setTimeout(saveGame, 50);
     return { ok: true };
   };
-  const takeJob = (companyId, positionId) => {
-    const position = POSITIONS.find((p) => p.id === positionId);
-    const shiftsAtCompany = jobHistory[companyId] || 0;
-    if (!position || shiftsAtCompany < position.minShifts) return;
-    const company = companies.find((c) => c.id === companyId);
-    const requiresCar = positionId === "manager" && company && ["ASIM", "VSLG"].includes(company.ticker);
-    if (requiresCar && !hasCarProperty()) return;
-    setJob({ companyId, positionId });
+  const jobNeedsCar = (trackId, levelIdx) => {
+    const track = CAREER_TRACKS[trackId];
+    return track && typeof track.needsCarFrom === "number" && levelIdx >= track.needsCarFrom;
+  };
+  const takeJob = (companyId, trackId) => {
+    const company = companiesRef.current.find((c) => c.id === companyId);
+    const employer = EMPLOYERS.find((e) => e.ticker === company?.ticker && e.trackId === trackId);
+    const track = CAREER_TRACKS[trackId];
+    if (!company || !employer || !track || job) return;
+    const priorRep = jobRepByTrackRef.current[trackId] || 0;
+    const startRep = Math.round(priorRep * JOB_REP_CARRY_RATIO);
+    setJob({ companyId, trackId, level: 0, reputation: startRep, tenureShifts: 0, shiftsSinceEvent: 0, negoBonusMult: 0, lastNegoAt: 0, hasPriorExp: priorRep > 0 });
     setJobCooldown(0);
+    setJobOffers((offs) => offs.filter((o) => o.companyId !== companyId));
     setTimeout(saveGame, 50);
   };
   const quitJob = () => {
+    if (job) {
+      const trackId = job.trackId, rep = job.reputation;
+      setJobRepByTrack((r) => ({ ...r, [trackId]: Math.max(r[trackId] || 0, rep) }));
+    }
     setJob(null);
     setJobCooldown(0);
     setTimeout(saveGame, 50);
   };
+  const resolveWorkEventChoice = (choiceIdx) => {
+    if (!pendingWorkEvent || !job) return;
+    const choice = pendingWorkEvent.choices[choiceIdx];
+    if (!choice) return;
+    if (choice.bonusMult > 0) {
+      const company = companiesRef.current.find((c) => c.id === job.companyId);
+      const employer = company && EMPLOYERS.find((e) => e.ticker === company.ticker && e.trackId === job.trackId);
+      const track = CAREER_TRACKS[job.trackId];
+      if (company && employer && track) {
+        const health = jobCompanyHealth(companyRecentPerfPct(companiesRef.current, company.ticker, 20), sentimentRef.current, demandIndexRef.current);
+        const pay = jobEffectivePay(track, job.level, employer, health, job.negoBonusMult);
+        const bonus = Math.round(pay * choice.bonusMult);
+        adjustAccountBalance(resolvedPayFrom, bonus);
+        logTx(`\u0411\u043E\u043D\u0443\u0441 \xB7 ${track.levels[job.level].name}`, bonus, "in");
+      }
+    }
+    setJob((j) => j && ({ ...j, reputation: Math.max(0, Math.min(JOB_REP_MAX, j.reputation + choice.repDelta)) }));
+    notify(choice.repDelta >= 0 ? "Решение пошло на пользу репутации" : "Решение снизило репутацию", choice.repDelta >= 0);
+    setPendingWorkEvent(null);
+    setTimeout(saveGame, 50);
+  };
+  const negotiateSalary = () => {
+    if (!job) return;
+    const now = Date.now();
+    if (job.lastNegoAt && now - job.lastNegoAt < JOB_NEGOTIATION_COOLDOWN_MS) {
+      notify("\u0420\u0430\u043D\u043E \u0434\u043B\u044F \u043D\u043E\u0432\u044B\u0445 \u043F\u0435\u0440\u0435\u0433\u043E\u0432\u043E\u0440\u043E\u0432", false);
+      return;
+    }
+    const company = companiesRef.current.find((c) => c.id === job.companyId);
+    if (!company) return;
+    const health = jobCompanyHealth(companyRecentPerfPct(companiesRef.current, company.ticker, 20), sentimentRef.current, demandIndexRef.current);
+    const chance = Math.max(0.05, Math.min(0.85, 0.15 + job.reputation / 250 + health.score / 200 - job.level * 0.03));
+    const success = Math.random() < chance;
+    if (success) {
+      setJob((j) => j && ({ ...j, negoBonusMult: Math.min(JOB_NEGOTIATION_MAX_BONUS, (j.negoBonusMult || 0) + JOB_NEGOTIATION_STEP), lastNegoAt: now }));
+      notify("\u041A\u043E\u043C\u043F\u0430\u043D\u0438\u044F \u0441\u043E\u0433\u043B\u0430\u0441\u0438\u043B\u0430\u0441\u044C \u043F\u043E\u0434\u043D\u044F\u0442\u044C \u0437\u0430\u0440\u043F\u043B\u0430\u0442\u0443", true);
+    } else {
+      setJob((j) => j && ({ ...j, lastNegoAt: now }));
+      notify(health.status === "crisis" ? "\u0421\u0435\u0439\u0447\u0430\u0441 \u043A\u043E\u043C\u043F\u0430\u043D\u0438\u044F \u043D\u0435 \u043C\u043E\u0436\u0435\u0442 \u0443\u0432\u0435\u043B\u0438\u0447\u0438\u0442\u044C \u0444\u043E\u043D\u0434 \u043E\u043F\u043B\u0430\u0442\u044B \u0442\u0440\u0443\u0434\u0430" : "\u041E\u0442\u043A\u0430\u0437 \u2014 \u043F\u043E\u043F\u0440\u043E\u0431\u0443\u0439\u0442\u0435 \u043F\u043E\u0437\u0436\u0435", false);
+    }
+    setTimeout(saveGame, 50);
+  };
+  const acceptJobOffer = (offerId) => {
+    const offer = jobOffersRef.current.find((o) => o.id === offerId);
+    if (!offer) return;
+    if (job) {
+      const trackId = job.trackId, rep = job.reputation;
+      setJobRepByTrack((r) => ({ ...r, [trackId]: Math.max(r[trackId] || 0, rep) }));
+    }
+    const priorRep = jobRepByTrackRef.current[offer.trackId] || 0;
+    setJob({ companyId: offer.companyId, trackId: offer.trackId, level: offer.level, reputation: Math.max(Math.round(priorRep * JOB_REP_CARRY_RATIO), offer.level * 10), tenureShifts: 0, shiftsSinceEvent: 0, negoBonusMult: 0, lastNegoAt: 0, hasPriorExp: priorRep > 0 });
+    setJobOffers((offs) => offs.filter((o) => o.id !== offerId));
+    setJobCooldown(0);
+    notify("\u041D\u043E\u0432\u0430\u044F \u0434\u043E\u043B\u0436\u043D\u043E\u0441\u0442\u044C \u043F\u0440\u0438\u043D\u044F\u0442\u0430", true);
+    setTimeout(saveGame, 50);
+  };
+  const declineJobOffer = (offerId) => {
+    setJobOffers((offs) => offs.filter((o) => o.id !== offerId));
+  };
   const workShift = (taskId) => {
-    if (!job || jobCooldown > 0) return;
-    const position = POSITIONS.find((p) => p.id === job.positionId);
+    if (!job || jobCooldown > 0 || pendingWorkEvent) return;
+    const company = companiesRef.current.find((c) => c.id === job.companyId);
+    const employer = company && EMPLOYERS.find((e) => e.ticker === company.ticker && e.trackId === job.trackId);
+    const track = CAREER_TRACKS[job.trackId];
     const task = TASK_OPTIONS.find((t) => t.id === taskId) || TASK_OPTIONS[0];
-    if (!position) return;
-    let pay = position.salary * task.payMult;
+    if (!company || !employer || !track) return;
+    const health = jobCompanyHealth(companyRecentPerfPct(companiesRef.current, company.ticker, 20), sentimentRef.current, demandIndexRef.current);
+    let pay = jobEffectivePay(track, job.level, employer, health, job.negoBonusMult) * task.payMult;
+    let repGain = JOB_REP_TASK_GAIN[taskId] ?? JOB_REP_TASK_GAIN.normal;
     if (task.risky) {
       const lucky = Math.random() < 0.5;
-      pay = position.salary * (lucky ? 2.2 : 0.4);
+      pay = jobEffectivePay(track, job.level, employer, health, job.negoBonusMult) * (lucky ? 2.2 : 0.4);
+      repGain = lucky ? JOB_REP_TASK_GAIN.rush_win : JOB_REP_TASK_GAIN.rush_lose;
+    }
+    let bonusNote = "";
+    if (health.status === "growing" && Math.random() < JOB_BONUS_CHANCE_GROWING) {
+      pay += Math.round(pay * JOB_BONUS_MULT);
+      bonusNote = " +\u043F\u0440\u0435\u043C\u0438\u044F";
     }
     pay = Math.round(pay);
     adjustAccountBalance(resolvedPayFrom, pay);
     setJobHistory((h) => ({ ...h, [job.companyId]: (h[job.companyId] || 0) + 1 }));
-    setJobCooldown(Math.round(position.cooldown * task.cooldownMult));
+    setJobCooldown(Math.round((40 + job.level * 6) * task.cooldownMult));
     accrueTax("\u041D\u0414\u0424\u041B \u0441 \u0437\u0430\u0440\u043F\u043B\u0430\u0442\u044B", Math.round(pay * 0.13));
-    logTx(`\u0417\u0430\u0440\u043F\u043B\u0430\u0442\u0430 \xB7 ${position.name}`, pay, "in");
+    logTx(`\u0417\u0430\u0440\u043F\u043B\u0430\u0442\u0430 \xB7 ${track.levels[job.level].name}${bonusNote}`, pay, "in");
+    const willFireEvent = (job.shiftsSinceEvent + 1) % JOB_EVENT_EVERY_SHIFTS === 0;
+    setJob((j) => {
+      if (!j) return j;
+      const reputation = Math.max(0, Math.min(JOB_REP_MAX, j.reputation + repGain));
+      const tenureShifts = j.tenureShifts + 1;
+      const shiftsSinceEvent = willFireEvent ? 0 : j.shiftsSinceEvent + 1;
+      let level = j.level;
+      const nextLvl = track.levels[level + 1];
+      const carOk = !jobNeedsCar(job.trackId, level + 1) || hasCarProperty();
+      if (nextLvl && carOk && health.status !== "crisis" && reputation >= nextLvl.repReq && tenureShifts >= jobRequiredShifts(track, level + 1, j.hasPriorExp)) {
+        level += 1;
+        setTimeout(() => notify(`\u041F\u043E\u0432\u044B\u0448\u0435\u043D\u0438\u0435! \u0422\u0435\u043F\u0435\u0440\u044C \u0432\u044B: ${nextLvl.name}`, true), 60);
+      }
+      return { ...j, reputation, tenureShifts, shiftsSinceEvent, level };
+    });
+    if (willFireEvent) {
+      const ev = JOB_WORK_EVENTS[Math.floor(Math.random() * JOB_WORK_EVENTS.length)];
+      setTimeout(() => setPendingWorkEvent(ev), 300);
+    }
     setTimeout(saveGame, 50);
   };
   const applyForLoan = (bankId) => {
@@ -8097,8 +8342,6 @@ function MarketSandbox() {
   }, 0) + bondsValue + itemsValue + leverageValue;
   const playerVenture = companies.find((c) => c.id === playerVentureId) || null;
   const selectedCompany = companies.find((c) => c.id === selectedId) || null;
-  const jobCompany = job ? companies.find((c) => c.id === job.companyId) : null;
-  const jobPosition = job ? POSITIONS.find((p) => p.id === job.positionId) : null;
   const marketingCost = playerVenture ? Math.round(800 * Math.pow(1.5, playerVenture.marketingLevel || 0)) : 0;
   const resolvedBal = getAccountBalance(resolvedPayFrom);
   const rdCost = playerVenture ? Math.round(1200 * Math.pow(1.4, playerVenture.rdLevel || 0)) : 0;
@@ -8706,83 +8949,84 @@ function MarketSandbox() {
             })()
           ] })
         ] }),
-        activeTab === "job" && /* @__PURE__ */ jsxs("div", { children: [
-          job && jobCompany && jobPosition && /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.gold}55`, borderRadius: 14, padding: 16, marginBottom: 16 }, children: [
-            /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.gold, textTransform: "uppercase", letterSpacing: 1 }, children: "\u0422\u0435\u043A\u0443\u0449\u0435\u0435 \u043C\u0435\u0441\u0442\u043E \u0440\u0430\u0431\u043E\u0442\u044B" }),
-            /* @__PURE__ */ jsx("div", { style: { fontSize: 16, fontWeight: 700, marginTop: 4 }, children: jobCompany.name }),
-            /* @__PURE__ */ jsxs("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 12 }, children: [
-              jobPosition.name,
-              " \xB7 \u043E\u043A\u043B\u0430\u0434 ",
-              fmt(jobPosition.salary),
-              "/\u0441\u043C\u0435\u043D\u0430 \xB7 \u041D\u0414\u0424\u041B 13% \u043D\u0430\u0447\u0438\u0441\u043B\u0438\u0442\u0441\u044F \u0432 \u043D\u0430\u043B\u043E\u0433\u0438"
+        activeTab === "job" && (() => {
+          const jobCompanyObj = job ? companies.find((c) => c.id === job.companyId) : null;
+          const jobEmployerObj = jobCompanyObj ? EMPLOYERS.find((e) => e.ticker === jobCompanyObj.ticker && e.trackId === job.trackId) : null;
+          const jobTrackObj = job ? CAREER_TRACKS[job.trackId] : null;
+          const jobHealth = jobCompanyObj ? jobCompanyHealth(companyRecentPerfPct(companies, jobCompanyObj.ticker, 20), sentiment, demandIndex) : null;
+          const trackLevel = jobTrackObj && job ? jobTrackObj.levels[job.level] : null;
+          const jobPay = job && jobTrackObj && jobEmployerObj && jobHealth ? jobEffectivePay(jobTrackObj, job.level, jobEmployerObj, jobHealth, job.negoBonusMult) : 0;
+          const nextLvl = jobTrackObj && job ? jobTrackObj.levels[job.level + 1] : null;
+          const healthLabel = { growing: "\u0420\u0430\u0441\u0442\u0451\u0442", stable: "\u0421\u0442\u0430\u0431\u0438\u043B\u044C\u043D\u0430", crisis: "\u041A\u0440\u0438\u0437\u0438\u0441" };
+          const healthColor = { growing: C.green, stable: C.inkDim, crisis: C.red };
+          const negoLocked = job && job.lastNegoAt && Date.now() - job.lastNegoAt < JOB_NEGOTIATION_COOLDOWN_MS;
+          return jsxs("div", { children: [
+            pendingWorkEvent && jsxs("div", { style: { background: C.surface, border: `1px solid ${C.violet}66`, borderRadius: 14, padding: 16, marginBottom: 16 }, children: [
+              jsx("div", { style: { fontSize: 11, color: C.violet, textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }, children: "\u0420\u0430\u0431\u043E\u0447\u0430\u044F \u0441\u0438\u0442\u0443\u0430\u0446\u0438\u044F" }),
+              jsx("div", { style: { fontSize: 13.5, marginBottom: 12 }, children: pendingWorkEvent.text }),
+              jsx("div", { style: { display: "flex", flexDirection: "column", gap: 8 }, children: pendingWorkEvent.choices.map((ch, i) => jsx("button", { onClick: () => resolveWorkEventChoice(i), style: { padding: "10px 12px", borderRadius: 10, border: `1px solid ${C.border}`, background: C.surface2, color: C.ink, fontSize: 13, textAlign: "left", fontWeight: 600 }, children: ch.label }, ch.label)) })
             ] }),
-            jobCooldown > 0 ? /* @__PURE__ */ jsxs("div", { style: { textAlign: "center", padding: "12px 0", color: C.inkFaint, fontSize: 14, fontWeight: 600, marginBottom: 8 }, children: [
-              "\u041E\u0442\u0434\u044B\u0445\u2026 ",
-              jobCooldown,
-              "\u0441"
-            ] }) : /* @__PURE__ */ jsx("div", { style: { display: "flex", flexDirection: "column", gap: 8, marginBottom: 8 }, children: TASK_OPTIONS.map((t) => /* @__PURE__ */ jsxs("button", { onClick: () => workShift(t.id), style: { display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 10, border: `1px solid ${C.border}`, background: C.surface2, color: C.ink, textAlign: "left" }, children: [
-              /* @__PURE__ */ jsx("div", { style: { fontSize: 20 }, children: t.icon }),
-              /* @__PURE__ */ jsxs("div", { style: { flex: 1, minWidth: 0 }, children: [
-                /* @__PURE__ */ jsxs("div", { style: { fontWeight: 700, fontSize: 13 }, children: [
-                  t.name,
-                  t.risky ? "" : t.payMult !== 1 ? ` \xB7 \xD7${t.payMult}` : ""
+            job && jobCompanyObj && jobTrackObj && trackLevel && jsxs("div", { style: { background: C.surface, border: `1px solid ${C.gold}55`, borderRadius: 14, padding: 16, marginBottom: 16 }, children: [
+              jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" }, children: [
+                jsx("div", { style: { fontSize: 11, color: C.gold, textTransform: "uppercase", letterSpacing: 1 }, children: "\u0422\u0435\u043A\u0443\u0449\u0435\u0435 \u043C\u0435\u0441\u0442\u043E \u0440\u0430\u0431\u043E\u0442\u044B" }),
+                jsx("div", { style: { fontSize: 10.5, fontWeight: 700, color: healthColor[jobHealth.status] }, children: healthLabel[jobHealth.status] })
+              ] }),
+              jsx("div", { style: { fontSize: 16, fontWeight: 700, marginTop: 4 }, children: jobCompanyObj.name }),
+              jsxs("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 8 }, children: [trackLevel.name, " \xB7 ", jobTrackObj.name] }),
+              jsxs("div", { style: { display: "flex", gap: 12, fontSize: 11.5, color: C.inkDim, marginBottom: 10, flexWrap: "wrap" }, children: [
+                jsxs("span", { children: ["\u041E\u043A\u043B\u0430\u0434 ", fmt(Math.round(jobPay))] }),
+                jsxs("span", { children: ["\u0421\u0442\u0430\u0436 ", job.tenureShifts, " \u0441\u043C."] }),
+                jsxs("span", { children: ["\u0420\u0435\u043F\u0443\u0442\u0430\u0446\u0438\u044F ", Math.round(job.reputation), "/", JOB_REP_MAX] }),
+                job.negoBonusMult > 0 && jsxs("span", { style: { color: C.green }, children: ["+", Math.round(job.negoBonusMult * 100), "% \u043E\u0442 \u043F\u0435\u0440\u0435\u0433\u043E\u0432\u043E\u0440\u043E\u0432"] })
+              ] }),
+              nextLvl && jsxs("div", { style: { marginBottom: 12 }, children: [
+                jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint, marginBottom: 3 }, children: ["\u0414\u043E \xAB", nextLvl.name, "\xBB: ", Math.round(job.reputation), "/", nextLvl.repReq, " \u0440\u0435\u043F\u0443\u0442\u0430\u0446\u0438\u0438", jobNeedsCar(job.trackId, job.level + 1) && !hasCarProperty() ? " \xB7 \u043D\u0443\u0436\u0435\u043D \u0441\u0432\u043E\u0439 \u0430\u0432\u0442\u043E\u043C\u043E\u0431\u0438\u043B\u044C" : ""] }),
+                jsx("div", { style: { height: 4, borderRadius: 2, background: C.border, overflow: "hidden" }, children: jsx("div", { style: { height: "100%", width: `${Math.min(100, job.reputation / nextLvl.repReq * 100)}%`, background: C.violet } }) })
+              ] }),
+              jobCooldown > 0 ? jsxs("div", { style: { textAlign: "center", padding: "12px 0", color: C.inkFaint, fontSize: 14, fontWeight: 600, marginBottom: 8 }, children: ["\u041E\u0442\u0434\u044B\u0445\u2026 ", jobCooldown, "\u0441"] }) : jsx("div", { style: { display: "flex", flexDirection: "column", gap: 8, marginBottom: 8 }, children: TASK_OPTIONS.map((t) => jsxs("button", { onClick: () => workShift(t.id), style: { display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 10, border: `1px solid ${C.border}`, background: C.surface2, color: C.ink, textAlign: "left" }, children: [
+                jsx("div", { style: { fontSize: 20 }, children: t.icon }),
+                jsxs("div", { style: { flex: 1, minWidth: 0 }, children: [
+                  jsx("div", { style: { fontWeight: 700, fontSize: 13 }, children: t.name }),
+                  jsx("div", { style: { fontSize: 11, color: C.inkDim }, children: t.desc })
                 ] }),
-                /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkDim }, children: t.desc })
-              ] }),
-              /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkFaint, textAlign: "right", flexShrink: 0 }, children: [
-                Math.round(jobPosition.cooldown * t.cooldownMult),
-                "\u0441"
+                jsxs("div", { style: { fontSize: 11, color: C.inkFaint, textAlign: "right", flexShrink: 0 }, children: [Math.round((40 + job.level * 6) * t.cooldownMult), "\u0441"] })
+              ] }, t.id)) }),
+              jsxs("div", { style: { display: "flex", gap: 8 }, children: [
+                jsx("button", { onClick: negotiateSalary, disabled: negoLocked, style: { flex: 1, padding: 10, borderRadius: 10, border: `1px solid ${C.border}`, background: negoLocked ? "transparent" : C.surface2, color: negoLocked ? C.inkFaint : C.ink, fontSize: 12.5, fontWeight: 600 }, children: "\u041F\u0435\u0440\u0435\u0433\u043E\u0432\u043E\u0440\u044B" }),
+                jsx("button", { onClick: quitJob, style: { flex: 1, padding: 10, borderRadius: 10, border: `1px solid ${C.border}`, background: "transparent", color: C.inkDim, fontSize: 12.5 }, children: "\u0423\u0432\u043E\u043B\u0438\u0442\u044C\u0441\u044F" })
               ] })
-            ] }, t.id)) }),
-            /* @__PURE__ */ jsx("button", { onClick: quitJob, style: { width: "100%", padding: 10, borderRadius: 10, border: `1px solid ${C.border}`, background: "transparent", color: C.inkDim, fontSize: 13 }, children: "\u0423\u0432\u043E\u043B\u0438\u0442\u044C\u0441\u044F" })
-          ] }),
-          /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }, children: "\u0412\u0430\u043A\u0430\u043D\u0441\u0438\u0438" }),
-          companies.filter((c) => !c.isPlayer && EMPLOYER_TICKERS.includes(c.ticker)).map((c) => {
-            const shifts = jobHistory[c.id] || 0;
-            return /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 14px", marginBottom: 8 }, children: [
-              /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }, children: [
-                /* @__PURE__ */ jsx("div", { style: { fontWeight: 600, fontSize: 14 }, children: c.name }),
-                /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkFaint }, children: [
-                  "\u0441\u0442\u0430\u0436: ",
-                  shifts,
-                  " \u0441\u043C."
+            ] }),
+            jobOffers.length > 0 && jsxs("div", { style: { marginBottom: 16 }, children: [
+              jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }, children: "\u041F\u0440\u0435\u0434\u043B\u043E\u0436\u0435\u043D\u0438\u044F" }),
+              jobOffers.map((o) => jsxs("div", { style: { background: C.surface, border: `1px solid ${C.violet}55`, borderRadius: 12, padding: "12px 14px", marginBottom: 8 }, children: [
+                jsxs("div", { style: { fontWeight: 700, fontSize: 13.5, marginBottom: 2 }, children: [o.companyName, " \xB7 ", o.levelName] }),
+                jsxs("div", { style: { fontSize: 11.5, color: C.inkDim, marginBottom: 8 }, children: [o.trackName, " \xB7 ", fmt(o.salary), "/\u0441\u043C\u0435\u043D\u0430 \xB7 ", healthLabel[o.healthStatus]] }),
+                jsxs("div", { style: { display: "flex", gap: 8 }, children: [
+                  jsx("button", { onClick: () => acceptJobOffer(o.id), style: { flex: 1, padding: 9, borderRadius: 9, border: "none", background: C.gold, color: "#161207", fontWeight: 700, fontSize: 12 }, children: "\u041F\u0440\u0438\u043D\u044F\u0442\u044C" }),
+                  jsx("button", { onClick: () => declineJobOffer(o.id), style: { flex: 1, padding: 9, borderRadius: 9, border: `1px solid ${C.border}`, background: "transparent", color: C.inkDim, fontSize: 12 }, children: "\u041E\u0442\u043A\u043B\u043E\u043D\u0438\u0442\u044C" })
                 ] })
-              ] }),
-              /* @__PURE__ */ jsx("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" }, children: POSITIONS.map((p) => {
-                const needsCar = p.id === "manager" && ["ASIM", "VSLG"].includes(c.ticker);
-                const unlocked = shifts >= p.minShifts && (!needsCar || hasCarProperty());
-                const isCurrent = job && job.companyId === c.id && job.positionId === p.id;
-                return /* @__PURE__ */ jsxs(
-                  "button",
-                  {
-                    onClick: () => unlocked && takeJob(c.id, p.id),
-                    disabled: !unlocked || isCurrent,
-                    style: { flex: "1 1 auto", minWidth: 92, padding: "8px 10px", borderRadius: 9, fontSize: 11.5, textAlign: "center", border: `1px solid ${isCurrent ? C.gold : C.border}`, background: isCurrent ? `${C.gold}22` : unlocked ? C.surface2 : "transparent", color: unlocked ? isCurrent ? C.gold : C.ink : C.inkFaint },
-                    children: [
-                      p.name,
-                      /* @__PURE__ */ jsx("br", {}),
-                      /* @__PURE__ */ jsx("span", { style: { fontFamily: "'JetBrains Mono', monospace" }, children: fmt(p.salary) }),
-                      !unlocked && shifts < p.minShifts && /* @__PURE__ */ jsxs(Fragment, { children: [
-                        /* @__PURE__ */ jsx("br", {}),
-                        /* @__PURE__ */ jsxs("span", { style: { fontSize: 10 }, children: [
-                          "\u043E\u0442 ",
-                          p.minShifts,
-                          " \u0441\u043C\u0435\u043D"
-                        ] }),
-                        /* @__PURE__ */ jsx("div", { style: { height: 3, borderRadius: 2, background: C.border, overflow: "hidden", marginTop: 4 }, children: /* @__PURE__ */ jsx("div", { style: { height: "100%", width: `${Math.min(100, shifts / p.minShifts * 100)}%`, background: C.violet } }) })
-                      ] }),
-                      !unlocked && shifts >= p.minShifts && needsCar && /* @__PURE__ */ jsxs(Fragment, { children: [
-                        /* @__PURE__ */ jsx("br", {}),
-                        /* @__PURE__ */ jsx("span", { style: { fontSize: 10 }, children: "\u043D\u0443\u0436\u0435\u043D \u0441\u0432\u043E\u0439 \u0430\u0432\u0442\u043E\u043C\u043E\u0431\u0438\u043B\u044C" })
-                      ] })
-                    ]
-                  },
-                  p.id
-                );
-              }) })
-            ] }, c.id);
-          })
-        ] }),
+              ] }, o.id))
+            ] }),
+            jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }, children: "\u0412\u0430\u043A\u0430\u043D\u0441\u0438\u0438" }),
+            EMPLOYERS.map((emp) => {
+              const c = companies.find((x) => x.ticker === emp.ticker);
+              const track = CAREER_TRACKS[emp.trackId];
+              if (!c || !track) return null;
+              const health = jobCompanyHealth(companyRecentPerfPct(companies, emp.ticker, 20), sentiment, demandIndex);
+              const isCurrentEmployer = job && jobCompanyObj && jobCompanyObj.ticker === emp.ticker && job.trackId === emp.trackId;
+              const priorRep = jobRepByTrack[emp.trackId] || 0;
+              const entrySalary = Math.round(track.levels[0].salaryBase * emp.scale * health.payrollMult);
+              return jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 14px", marginBottom: 8 }, children: [
+                jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }, children: [
+                  jsx("div", { style: { fontWeight: 600, fontSize: 14 }, children: c.name }),
+                  jsx("div", { style: { fontSize: 10.5, fontWeight: 700, color: healthColor[health.status] }, children: healthLabel[health.status] })
+                ] }),
+                jsxs("div", { style: { fontSize: 11.5, color: C.inkDim, marginBottom: 8 }, children: [track.name, " \xB7 \u043E\u0442 ", fmt(entrySalary), "/\u0441\u043C\u0435\u043D\u0430", priorRep > 0 ? ` \xB7 \u043E\u043F\u044B\u0442 \u0432 \u043E\u0442\u0440\u0430\u0441\u043B\u0438: ${Math.round(priorRep)} \u0440\u0435\u043F.` : ""] }),
+                isCurrentEmployer ? jsx("div", { style: { textAlign: "center", padding: 8, fontSize: 12, color: C.gold, fontWeight: 600 }, children: "\u0412\u044B \u0437\u0434\u0435\u0441\u044C \u0440\u0430\u0431\u043E\u0442\u0430\u0435\u0442\u0435" }) : jsx("button", { onClick: () => !job && takeJob(c.id, emp.trackId), disabled: !!job, style: { width: "100%", padding: 9, borderRadius: 9, border: `1px solid ${C.border}`, background: job ? "transparent" : C.surface2, color: job ? C.inkFaint : C.ink, fontSize: 12.5, fontWeight: 600 }, children: job ? "\u0421\u043D\u0430\u0447\u0430\u043B\u0430 \u0443\u0432\u043E\u043B\u044C\u0442\u0435\u0441\u044C" : "\u0423\u0441\u0442\u0440\u043E\u0438\u0442\u044C\u0441\u044F" })
+              ] }, emp.ticker);
+            })
+          ] });
+        })(),
         activeTab === "tenders" && (() => {
           const payOptions = [
             ...ipCash > 0 ? [{ id: "ip", label: "\u0421\u0447\u0451\u0442 \u0418\u041F" }] : [],
