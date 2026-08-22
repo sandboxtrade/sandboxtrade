@@ -1,4 +1,4 @@
-// Market Sandbox — V2.38.0 (Ввод денежных сумм: все 13 денежных полей ввода (переводы, кредиты банка, реклама банка/маркетплейса/магазина, депозитный резерв, аллокация трейдеров, тендеры, стартовый капитал и supply своей монеты) теперь показывают разделители разрядов прямо во время печати — не нужно считать нули. Добавлены fmtInputNumber/parseInputNumber в 01_constants.js: value отображается с запятыми, а в state всегда хранятся чистые цифры, так что все хендлеры (Number(state)) работают без изменений. Поля-проценты/десятичные (ставка вклада, цена монеты, доли распределения токенов) не тронуты — там разделители не нужны.)
+// Market Sandbox — V2.39.1 (Панель экономики на вкладке "Рынок": настроение рынка/спрос/ключевая ставка/инфляция/нефть/риск дефолта — компактные тайлы вверху списка. Калибровка govBudget: GOV_TAX_TO_DEBT_SCALE снижен с 2e6 до 5e4 (единичный налоговый платёж $50k теперь даёт заметную поправку ~0.5 из клампа ±12, а не 0.025 как раньше); свёртка cycleTaxIn→balanceEma перенесена с каждого 5-секундного макро-тика на раз в GOV_BUDGET_FOLD_MS=5 минут — иначе разовый платёж мгновенно спайковал и затухал за секунды, не успевая ощутимо сдвинуть govDebt. Теперь платёж даёт эффект, спадающий за ~20-30 игровых минут.)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -751,16 +751,17 @@ function marketplaceGmvPerSeller(trustScore, marketIndexVal, techLevel, devStaff
   const techMult = 1 + Math.min(0.6, (techLevel || 0) * 0.05 + (devStaff || 0) * 0.015);
   return 5e3 * (0.7 + clamp01(trustScore, 0, 100) / 100 * 0.6) * (marketIndexVal || 1) * techMult;
 }
-function marketplaceCycleEstimate(marketplace, marketIndexVal, bigSellers) {
+function marketplaceCycleEstimate(marketplace, marketIndexVal, bigSellers, demandIndexVal) {
   if (!marketplace) return { gmv: 0, revenue: 0, opex: 0, net: 0 };
+  const demandMult = macroClamp(typeof demandIndexVal === "number" ? demandIndexVal : 1, 0.6, 1.3);
   const staff = marketplace.staff || {};
   const crisisMult = (marketplace.crisisPenaltyCyclesLeft || 0) > 0 ? 0.8 : 1;
-  const baseGmv = Math.round(marketplace.sellerCount * marketplaceGmvPerSeller(marketplace.trustScore, marketIndexVal, marketplace.techLevel, staff.dev) * crisisMult);
+  const baseGmv = Math.round(marketplace.sellerCount * marketplaceGmvPerSeller(marketplace.trustScore, marketIndexVal, marketplace.techLevel, staff.dev) * crisisMult * demandMult);
   const wonSellers = (bigSellers || []).filter((s) => s.platform === "player");
   let bigGmv = 0;
   let bigRevenue = 0;
   wonSellers.forEach((s) => {
-    const g = Math.round(bigSellerCycleGmv(s, marketIndexVal) * crisisMult);
+    const g = Math.round(bigSellerCycleGmv(s, marketIndexVal) * crisisMult * demandMult);
     bigGmv += g;
     bigRevenue += Math.round(g * Math.max(0.01, marketplace.commissionRate - (s.commissionDiscount || 0)));
   });
@@ -1004,12 +1005,21 @@ function bankDepositAttractFactor(bank, macro, rate) {
   const base = Math.max(0.1, Math.min(4, 1 + gap * 1.4));
   return base * bankConfidenceMult(bank);
 }
+function bankFundingBase(bank) {
+  return (bank.depositReserve || 0) + Math.max(0, bank.capital || 0);
+}
+function bankLoanToFundingRatio(bank) {
+  return (bank.creditOutstanding || 0) / Math.max(1, bankFundingBase(bank));
+}
 function bankNplFraction(bank, macro) {
   const marketRate = BANK_NPC_AVG_CREDIT_RATE * bankMarketRateMult(macro);
   const rateRisk = Math.max(0, (bank.creditRate - marketRate) / marketRate) * 0.02;
   const macroStress = Math.max(0, ((macro && macro.interestRate || CENTRAL_BANK_BASE_RATE) - CENTRAL_BANK_BASE_RATE) / CENTRAL_BANK_BASE_RATE) * 0.03;
   const trustRisk = Math.max(0, (60 - (bank.trust || 50)) / 100) * 0.01;
-  return Math.min(0.15, BANK_NPL_BASE + rateRisk + macroStress + trustRisk);
+  // Кредитный портфель, растущий быстрее фондирования (вклады+капитал) — отдельный риск:
+  // агрессивная выдача без депозитной базы под ней. Порог 0.85, мягкий, ограниченный вклад.
+  const fundingRisk = Math.max(0, bankLoanToFundingRatio(bank) - 0.85) * 0.08;
+  return Math.min(0.18, BANK_NPL_BASE + rateRisk + macroStress + trustRisk + fundingRisk);
 }
 function depositEarnedAmount(d, now) {
   const elapsed = Math.max(0, now - (d.openedAt || now));
@@ -1170,10 +1180,36 @@ var DEFAULT_RISK_TRIGGER = 0.95;
 var DEFAULT_CHECK_CHANCE = 0.12;
 var DEFAULT_COOLDOWN_MS = 10 * 60 * 1e3;
 var MACRO_DEFAULT = { oilSupply: 50, oilDemand: 50, oilTrend: 0, fuelCost: 1, logisticsCost: 1, productionCost: 1, inflation: INFLATION_TARGET, interestRate: CENTRAL_BANK_BASE_RATE, lastRateDecisionAt: 0, govDebt: GOV_DEBT_BASELINE, govDefaultRisk: 0, govDebtWarningsTriggered: [], lastDefaultAt: 0 };
+// ===================== ЕДИНЫЙ ЭКОНОМИЧЕСКИЙ КОНТУР (V2.39) =====================
+// Sentiment — индикатор общего настроения рынка, НЕ главный регулятор. Пишется только
+// через nudgeSentiment() с жёстким потолком на суммарный сдвиг за один макро-тик — так
+// десять одновременных событий не дают +50/-50 разом. Затухает к 0 каждый тик (EMA).
+var SENTIMENT_DECAY_PER_TICK = 0.985;
+var SENTIMENT_MAX_SWING_PER_TICK = 6;
+var SENTIMENT_MIN = -100, SENTIMENT_MAX = 100;
+var SENTIMENT_DEFAULT = 0;
+// Consumer Demand — один из нескольких факторов, не переключатель. Вес кредитного
+// фактора (creditAvailability) намеренно самый маленький из денежных слагаемых.
+var DEMAND_LERP = 0.03;
+var DEMAND_DEFAULT = 1;
+// Government Budget — реально собранные налоги мягко корректируют таргет govDebt
+// (не заменяют существующую формулу ставка+себестоимость, а добавляют к ней).
+var GOV_BUDGET_DEFAULT = { cycleTaxIn: 0, balanceEma: 0, lastFoldAt: 0 };
+// Было 2e6 — при реальных суммах налогов (единичный платёж ИП/ООО/банка обычно
+// $5k-$200k) поправка почти не была заметна (($50k/2e6=0.025 из клампа ±12). Снижено
+// до масштаба одного заметного платежа: $50k налогов за окно сворачивания ~= correction 1.
+var GOV_TAX_TO_DEBT_SCALE = 5e4;
+var GOV_TAX_DEBT_MAX_CORRECTION = 12;
+// Налоги в игре разовые/редкие (декларация раз в QUARTER_MS=1 час), а не непрерывный
+// поток — сворачивать в EMA каждые 5 секунд означало, что платёж давал мгновенный
+// спайк и затухал за <1 минуту (SENTIMENT_DECAY-подобный эффект, но для другой величины
+// со своим смыслом). Сворачиваем раз в 5 минут — так один платёж даёт заметную и
+// продержавшуюся поправку, а не мигающую вспышку.
+var GOV_BUDGET_FOLD_MS = 5 * 60 * 1e3;
 function macroClamp(v, lo, hi) {
   return Math.max(lo, Math.min(hi, v));
 }
-function macroTick(macro, oilPrice) {
+function macroTick(macro, oilPrice, govBalanceSignal) {
   const oilSupply = macroClamp(macro.oilSupply + (50 - macro.oilSupply) * OIL_MEANREVERT, 0, 100);
   const oilDemand = macroClamp(macro.oilDemand + (50 - macro.oilDemand) * OIL_MEANREVERT, 0, 100);
   const imbalance = oilDemand - oilSupply;
@@ -1193,7 +1229,10 @@ function macroTick(macro, oilPrice) {
   // ставка) и слабая экономика (низкий productionCost) толкают его вверх — задел под
   // фазу 4 (дефолт), сам дефолт здесь ещё не триггерится.
   const debtPressure = ((macro.interestRate || CENTRAL_BANK_BASE_RATE) - CENTRAL_BANK_BASE_RATE) * 40 + (1 - productionCost) * 15;
-  const govDebtTarget = macroClamp(GOV_DEBT_BASELINE + debtPressure, 10, 150);
+  // Профицит (реально собранные налоги выше базовой линии) плавно тянет госдолг вниз,
+  // дефицит — вверх. Небольшая поправка поверх основного давления, с жёстким потолком.
+  const taxCorrection = macroClamp((govBalanceSignal || 0) / GOV_TAX_TO_DEBT_SCALE, -GOV_TAX_DEBT_MAX_CORRECTION, GOV_TAX_DEBT_MAX_CORRECTION);
+  const govDebtTarget = macroClamp(GOV_DEBT_BASELINE + debtPressure - taxCorrection, 10, 150);
   const govDebt = (typeof macro.govDebt === "number" ? macro.govDebt : GOV_DEBT_BASELINE) + (govDebtTarget - (typeof macro.govDebt === "number" ? macro.govDebt : GOV_DEBT_BASELINE)) * GOV_DEBT_LERP;
   const govDefaultRisk = macroClamp((govDebt - GOV_DEBT_BASELINE) / 100, 0, 1);
   return { ...macro, oilSupply, oilDemand, oilTrend, fuelCost, logisticsCost, productionCost, inflation, govDebt, govDefaultRisk };
@@ -1433,7 +1472,7 @@ var PITCH_ANGLES = [
   { id: "cap", label: "\u041A\u0430\u043F\u0438\u0442\u0430\u043B\u0438\u0437\u0430\u0446\u0438\u044E", icon: "\u{1F4CA}" }
 ];
 var STORAGE_KEY = "market-sandbox-v6";
-var SAVE_VERSION = 11;
+var SAVE_VERSION = 12;
 var LocalStorageSaveAdapter = {
   async save(key, payload) {
     await window.storage.set(key, JSON.stringify(payload));
@@ -1564,6 +1603,16 @@ var SAVE_MIGRATIONS = {
       if (typeof c.coinHype === "number") return c;
       return { ...c, coinHype: Math.min(100, 20 + (c.hypeLevel || 0) * 5), coinTrust: 50 };
     }) : data.companies
+  }),
+  // v11 -> v12: единый экономический контур — Market Sentiment, Consumer Demand,
+  // Government Budget. Старые сохранения стартуют с нейтральных базовых значений
+  // (sentiment=0, demandIndex=1, пустой govBudget) — экономика продолжает работать
+  // как раньше, новые слои просто подключаются с чистого листа.
+  12: (data) => ({
+    ...data,
+    sentiment: typeof data.sentiment === "number" ? data.sentiment : SENTIMENT_DEFAULT,
+    demandIndex: typeof data.demandIndex === "number" ? data.demandIndex : DEMAND_DEFAULT,
+    govBudget: data.govBudget && typeof data.govBudget === "object" ? { ...GOV_BUDGET_DEFAULT, ...data.govBudget } : GOV_BUDGET_DEFAULT
   })
 };
 function migrateSaveData(data) {
@@ -2139,6 +2188,9 @@ function MarketSandbox() {
   const [ipTransferError, setIpTransferError] = useState(null);
   const [marketIndex, setMarketIndex] = useState(1);
   const [macro, setMacro] = useState(MACRO_DEFAULT);
+  const [sentiment, setSentiment] = useState(SENTIMENT_DEFAULT);
+  const [demandIndex, setDemandIndex] = useState(DEMAND_DEFAULT);
+  const [govBudget, setGovBudget] = useState(GOV_BUDGET_DEFAULT);
   const [ipTab, setIpTab] = useState("account");
   const [bankAccounts, setBankAccounts] = useState({});
   const [transferSuspicion, setTransferSuspicion] = useState(0);
@@ -2249,6 +2301,10 @@ function MarketSandbox() {
   const ipLoansRef = useRef(ipLoans);
   const marketIndexRef = useRef(marketIndex);
   const macroRef = useRef(macro);
+  const sentimentRef = useRef(sentiment);
+  const demandIndexRef = useRef(demandIndex);
+  const govBudgetRef = useRef(govBudget);
+  const sentimentPendingRef = useRef(0);
   useEffect(() => {
     onboardedRef.current = onboarded;
   }, [onboarded]);
@@ -2418,6 +2474,15 @@ function MarketSandbox() {
     macroRef.current = macro;
   }, [macro]);
   useEffect(() => {
+    sentimentRef.current = sentiment;
+  }, [sentiment]);
+  useEffect(() => {
+    demandIndexRef.current = demandIndex;
+  }, [demandIndex]);
+  useEffect(() => {
+    govBudgetRef.current = govBudget;
+  }, [govBudget]);
+  useEffect(() => {
     suspicionRef.current = suspicion;
   }, [suspicion]);
   useEffect(() => {
@@ -2559,6 +2624,19 @@ function MarketSandbox() {
     const next = { ...storiesByIdRef.current, [id]: { ...cur, ...patch } };
     storiesByIdRef.current = next;
     setStoriesById(next);
+  };
+  // Единственная точка записи в общий sentiment — копится в ref, применяется раз в
+  // макро-тик с decay+clamp (см. интервал MACRO_TICK_MS). Так десять событий подряд не
+  // дают мгновенный обвал/взлёт: реальный эффект ограничен SENTIMENT_MAX_SWING_PER_TICK.
+  const nudgeSentiment = (amount) => {
+    if (!amount) return;
+    sentimentPendingRef.current += amount;
+  };
+  // Реально собранные (не просто начисленные) налоги — копится в ref, раз в макро-тик
+  // сворачивается в govBudget.balanceEma и мягко двигает таргет госдолга (macroTick).
+  const addGovTaxIn = (amount) => {
+    if (!amount) return;
+    govBudgetRef.current = { ...govBudgetRef.current, cycleTaxIn: (govBudgetRef.current.cycleTaxIn || 0) + amount };
   };
   const pushPost = (post) => {
     const id = post.id || makeId("post");
@@ -2721,6 +2799,9 @@ function MarketSandbox() {
     setIpLoans(Array.isArray(data.ipLoans) ? data.ipLoans : []);
     setMarketIndex(typeof data.marketIndex === "number" ? data.marketIndex : 1);
     setMacro(data.macro && typeof data.macro === "object" ? { ...MACRO_DEFAULT, ...data.macro } : MACRO_DEFAULT);
+    setSentiment(typeof data.sentiment === "number" ? data.sentiment : SENTIMENT_DEFAULT);
+    setDemandIndex(typeof data.demandIndex === "number" ? data.demandIndex : DEMAND_DEFAULT);
+    setGovBudget(data.govBudget && typeof data.govBudget === "object" ? { ...GOV_BUDGET_DEFAULT, ...data.govBudget } : GOV_BUDGET_DEFAULT);
     setOwnedItems(data.ownedItems || {});
     setLoans(Array.isArray(data.loans) ? data.loans : []);
     const oldJobCompany = data.job ? oldCompaniesById[data.job.companyId] : null;
@@ -2882,6 +2963,9 @@ function MarketSandbox() {
     ipLoans: ipLoansRef.current,
     marketIndex: marketIndexRef.current,
     macro: macroRef.current,
+    sentiment: sentimentRef.current,
+    demandIndex: demandIndexRef.current,
+    govBudget: govBudgetRef.current,
     ownedItems: ownedItemsRef.current,
     loans: loansRef.current,
     job: jobRef.current,
@@ -3152,6 +3236,7 @@ function MarketSandbox() {
     scheduleEvent({ id: makeId("sched"), kind: "macro_dev", storyId, dir: isCrash ? "crash" : "rally", devPct: impact * 0.18, importance, dueAt: devDueAt });
     registerStory({ id: storyId, headline: factText, category: "macro", personal: false, importance, status: "developing", reliability: "official", ticker: null, marketImpactPct: impact, createdAt: Date.now(), postCount: posts.length });
     pushPosts(posts.map((p) => ({ ...p, id: makeId("post"), storyId })));
+    nudgeSentiment(macroClamp(impact * 0.25, -8, 8));
   };
   const spawnOilStory = () => {
     const keys = Object.keys(OIL_EVENT_BANKS);
@@ -3200,12 +3285,21 @@ function MarketSandbox() {
     });
     registerStory({ id: storyId, headline: factText, category: "macro", personal: false, importance, status, reliability, ticker: "OIL", marketImpactPct: isPos ? appliedMag : -appliedMag, createdAt: Date.now(), postCount: posts.length });
     pushPosts(posts.map((p) => ({ ...p, id: makeId("post"), storyId })));
+    nudgeSentiment((isPos ? 1 : -1) * macroClamp(importance * 0.8, 0.5, 3));
   };
   const trySpawnRateDecision = () => {
     const m = macroRef.current;
     const now = Date.now();
     if (now - (m.lastRateDecisionAt || 0) < CENTRAL_BANK_MIN_INTERVAL_MS) return;
-    const overheat = macroOverheat(m);
+    const baseOverheat = macroOverheat(m);
+    const b = bankRef.current;
+    // Слабый спрос тянет решение к смягчению, риск дефолта/банковский стресс — сдерживают
+    // повышение (регулятор не разгоняет ставку дальше, если система уже под давлением).
+    const recessionBias = demandIndexRef.current < 0.9 ? (0.9 - demandIndexRef.current) * 1.5 : 0;
+    const bankStressBrake = b ? Math.min(0.5, bankNplFraction(b, m) * 6) : 0;
+    const govRiskBrake = Math.max(0, (m.govDefaultRisk || 0) - 0.5);
+    let overheat = baseOverheat - recessionBias;
+    if (overheat > 0) overheat -= (bankStressBrake + govRiskBrake) * overheat * 0.5;
     if (Math.abs(overheat) < 0.35) return;
     const chance = macroClamp(Math.abs(overheat) * 0.06, 0, 0.22);
     if (Math.random() >= chance) return;
@@ -3229,6 +3323,7 @@ function MarketSandbox() {
     ];
     registerStory({ id: storyId, headline: factText, category: "macro", personal: false, importance: 4, status: "confirmed", reliability: "official", ticker: null, marketImpactPct: 0, createdAt: Date.now(), postCount: posts.length });
     pushPosts(posts.map((p) => ({ ...p, id: makeId("post"), storyId })));
+    nudgeSentiment((isHike ? -1 : 1) * macroClamp(Math.abs(overheat) * 10, 4, 10));
   };
   const trySpawnDebtWarning = () => {
     const m = macroRef.current;
@@ -3258,6 +3353,7 @@ function MarketSandbox() {
     }
     registerStory({ id: storyId, headline: toFire.text, category: "macro", personal: false, importance: toFire.importance, status: "developing", reliability: "official", ticker: null, marketImpactPct: 0, createdAt: Date.now(), postCount: posts.length });
     pushPosts(posts.map((p) => ({ ...p, id: makeId("post"), storyId })));
+    nudgeSentiment(-toFire.importance * 1.2);
   };
   const trySpawnSovereignDefault = () => {
     const m = macroRef.current;
@@ -3294,6 +3390,7 @@ function MarketSandbox() {
     scheduleEvent({ id: makeId("sched"), kind: "default_dev", storyId, stage: 1, importance: 4, dueAt: dev1DueAt });
     registerStory({ id: storyId, headline: factText, category: "macro", personal: false, importance: 4, status: "developing", reliability: "official", ticker: null, marketImpactPct: -14, createdAt: Date.now(), postCount: posts.length });
     pushPosts(posts.map((p) => ({ ...p, id: makeId("post"), storyId })));
+    nudgeSentiment(-24);
   };
   const spawnRugPullStory = (c) => {
     applyImpact(c.id, -85 - Math.random() * 10);
@@ -3888,7 +3985,8 @@ function MarketSandbox() {
           const activeAds = (shop.ads || []).filter((a) => Date.now() < a.adUntil);
           const adMult = activeAds.length ? computeAdBoost(activeAds) : 1;
           const adMultForChance = Math.min(adMult, 6);
-          const saleChance = Math.min(0.85, Math.max(0.02, 0.16 * attractiveness * ratingMult * adMultForChance * repMult * zzoneMult));
+          const demandMult = macroClamp(demandIndexRef.current || 1, 0.6, 1.3);
+          const saleChance = Math.min(0.85, Math.max(0.02, 0.16 * attractiveness * ratingMult * adMultForChance * repMult * zzoneMult * demandMult));
           const adQtyBoost = 1 + Math.max(0, adMult - 6) * 0.15;
           if (Math.random() < saleChance) {
             const qtySold = Math.min(c.stock, Math.max(1, Math.round((1 + Math.floor(Math.random() * 3)) * adQtyBoost)));
@@ -3920,9 +4018,21 @@ function MarketSandbox() {
     const id = setInterval(() => {
       const oilCompany = companiesRef.current.find((c) => c.ticker === "OIL");
       const oilPrice = oilCompany ? oilCompany.price : OIL_BASELINE_PRICE;
-      const next = macroTick(macroRef.current, oilPrice);
+      // Реально собранные налоги с прошлого тика сворачиваем в EMA раз в 5 минут (не
+      // каждый макро-тик) — иначе разовый платёж мгновенно спайкует и гаснет за секунды,
+      // не успевая ощутимо сдвинуть govDebt.
+      const gb = govBudgetRef.current;
+      const nowTs = Date.now();
+      const dueFold = nowTs - (gb.lastFoldAt || 0) >= GOV_BUDGET_FOLD_MS;
+      const balanceEma = dueFold ? (gb.balanceEma || 0) + ((gb.cycleTaxIn || 0) - (gb.balanceEma || 0)) * 0.5 : (gb.balanceEma || 0);
+      const next = macroTick(macroRef.current, oilPrice, balanceEma);
       macroRef.current = next;
       setMacro(next);
+      const nextGb = dueFold ? { cycleTaxIn: 0, balanceEma, lastFoldAt: nowTs } : gb;
+      if (dueFold) {
+        govBudgetRef.current = nextGb;
+        setGovBudget(nextGb);
+      }
       setMarketIndex((idx) => {
         const target = macroRetailIndexTarget(next);
         return Math.max(0.7, Math.min(1.5, idx + (target - idx) * RETAIL_LERP));
@@ -3935,6 +4045,35 @@ function MarketSandbox() {
         const commissionRate = macroClamp(baseCommission - discount, ZZONE_MIN_COMMISSION, baseCommission);
         return { ...zb, baseCommission, commissionRate };
       });
+      // Sentiment: суммарный пуш за тик от всех источников (новости/соцсеть/банк),
+      // жёстко ограниченный SENTIMENT_MAX_SWING_PER_TICK, плюс затухание к 0.
+      const rawPush = sentimentPendingRef.current;
+      sentimentPendingRef.current = 0;
+      const cappedPush = Math.max(-SENTIMENT_MAX_SWING_PER_TICK, Math.min(SENTIMENT_MAX_SWING_PER_TICK, rawPush));
+      const nextSentiment = Math.max(SENTIMENT_MIN, Math.min(SENTIMENT_MAX, sentimentRef.current * SENTIMENT_DECAY_PER_TICK + cappedPush));
+      sentimentRef.current = nextSentiment;
+      setSentiment(nextSentiment);
+      // Consumer Demand: несколько слабых факторов, ни один не доминирует. Вес кредитной
+      // доступности сознательно самый маленький из денежных слагаемых — банк не должен
+      // автоматически разгонять экономику одной агрессивной выдачей кредитов.
+      const b = bankRef.current;
+      const realCreditCost = macroClamp((next.interestRate || CENTRAL_BANK_BASE_RATE) - (next.inflation || INFLATION_TARGET), -0.1, 0.3);
+      const bankStress = b ? bankNplFraction(b, next) : BANK_NPL_BASE;
+      const creditAvailability = b ? macroClamp(b.creditOutstanding / Math.max(1, b.creditOutstanding + b.capital), 0, 1) : 0.5;
+      const inflationDeviation = (next.inflation || INFLATION_TARGET) - INFLATION_TARGET;
+      const demandTarget = macroClamp(
+        1
+        + (sentimentRef.current / 100) * 0.15
+        - realCreditCost * 0.5
+        + (creditAvailability - 0.5) * 0.16
+        - bankStress * 0.6
+        - inflationDeviation * 1.2,
+        0.5,
+        1.5
+      );
+      const nextDemand = demandIndexRef.current + (demandTarget - demandIndexRef.current) * DEMAND_LERP;
+      demandIndexRef.current = nextDemand;
+      setDemandIndex(nextDemand);
     }, MACRO_TICK_MS);
     return () => clearInterval(id);
   }, [loaded]);
@@ -4385,7 +4524,7 @@ function MarketSandbox() {
       const dtMs = Math.max(0, Math.min(now0 - (mp.lastTickAt || now0), MARKETPLACE_CYCLE_MS));
       if (dtMs <= 0) return;
       const dtFrac = dtMs / MARKETPLACE_CYCLE_MS;
-      const est = marketplaceCycleEstimate(mp, marketIndexRef.current, bigSellersRef.current);
+      const est = marketplaceCycleEstimate(mp, marketIndexRef.current, bigSellersRef.current, demandIndexRef.current);
       const gmvDelta = est.gmv * dtFrac;
       const revenueDelta = est.revenue * dtFrac;
       const opexDelta = est.opex * dtFrac;
@@ -4786,14 +4925,16 @@ function MarketSandbox() {
         nextCycleAt: Date.now() + BANK_CYCLE_MS
       } : prev);
       if (eventPost) pushPost({ text: `«${b.name}»: ${eventPost.text}`, positive: eventPost.positive, isMacro: false, importance: 2 });
-      if (panicPost) pushPost({ text: panicPost, positive: false, isMacro: false, importance: 3 });
-      if (equityCriticalPost) pushPost({ text: equityCriticalPost, positive: false, isMacro: false, importance: 3 });
-      if (nplPost) pushPost({ text: nplPost, positive: false, isMacro: false, importance: 2 });
+      if (panicPost) { pushPost({ text: panicPost, positive: false, isMacro: false, importance: 3 }); nudgeSentiment(-3); }
+      if (equityCriticalPost) { pushPost({ text: equityCriticalPost, positive: false, isMacro: false, importance: 3 }); nudgeSentiment(-3); }
+      if (nplPost) { pushPost({ text: nplPost, positive: false, isMacro: false, importance: 2 }); nudgeSentiment(-1.5); }
       const cycleNet = Math.round(accumNet - BANK_SALARY_PER_CYCLE + eventCapitalDelta);
       if (newCapital > (b.maxCapitalReached || 0) * 1.02) {
         pushPost({ text: `«${b.name}» показал рекордный капитал \xB7 ${fmt(Math.round(newCapital))}`, positive: true, isMacro: false, importance: 3 });
+        nudgeSentiment(1.5);
       } else if (cycleNet < 0 && Math.abs(cycleNet) > b.capital * 0.05) {
         pushPost({ text: `«${b.name}» сообщил об убыточном цикле \xB7 ${fmt(cycleNet)}`, positive: false, isMacro: false, importance: 2 });
+        nudgeSentiment(-1.5);
       }
       logTx("Банк · итог цикла (ЗП+события)", Math.round(newCapital - b.capital), newCapital >= b.capital ? "in" : "out");
       setTimeout(saveGame, 50);
@@ -6050,7 +6191,8 @@ function MarketSandbox() {
       if (now >= nextTenderSpawnAtRef.current && next.filter((t) => t.status === "open").length < 6) {
         next = [...next, createTenderObject()];
         changed = true;
-        setNextTenderSpawnAt(now + (90 + Math.random() * 180) * 1e3);
+        const demandFreqMult = macroClamp(1.15 - ((demandIndexRef.current || 1) - 1) * 0.5, 0.6, 1.4);
+        setNextTenderSpawnAt(now + (90 + Math.random() * 180) * 1e3 * demandFreqMult);
       }
       next = next.map((t) => {
         if (t.status !== "bidding" || !t.resolveAt || now < t.resolveAt) return t;
@@ -6445,6 +6587,7 @@ function MarketSandbox() {
     const amount = Math.min(Number(amountRaw) || entity.taxOwed, entity.cash, entity.taxOwed);
     if (amount <= 0) return;
     setFakeIps((prev) => prev[fakeId] ? { ...prev, [fakeId]: { ...prev[fakeId], cash: prev[fakeId].cash - amount, taxOwed: Number((prev[fakeId].taxOwed - amount).toFixed(2)) } } : prev);
+    addGovTaxIn(amount);
     logTx("\u041D\u0430\u043B\u043E\u0433\u0438 \u0447\u0443\u0436\u043E\u0433\u043E \u0418\u041F", amount, "out");
     setTimeout(saveGame, 50);
   };
@@ -6516,6 +6659,7 @@ function MarketSandbox() {
         return;
       }
       setBank((prev) => prev ? { ...prev, capital: prev.capital - d.tax } : prev);
+      addGovTaxIn(d.tax);
       setDeclarations((prev) => prev.map((x) => x.id === declId ? { ...x, paid: true } : x));
       setTimeout(saveGame, 50);
       return;
@@ -6525,6 +6669,7 @@ function MarketSandbox() {
       return;
     }
     setIpCash((c) => c - d.tax);
+    addGovTaxIn(d.tax);
     setDeclarations((prev) => prev.map((x) => x.id === declId ? { ...x, paid: true } : x));
     setTimeout(saveGame, 50);
   };
@@ -6718,6 +6863,9 @@ function MarketSandbox() {
     }
     registerStory({ id: storyId, headline: text, category: v ? v.sector === "\u041A\u0440\u0438\u043F\u0442\u043E" ? "crypto" : "companies" : "personal", personal: true, importance: mainPost.importance, status: "developing", reliability: score.scamRisk >= 55 ? "low" : "official", ticker: v ? v.ticker : null, marketImpactPct: immediatePct, createdAt: now, postCount: 1 + commentPosts.length });
     pushPosts([mainPost, ...commentPosts].map((p) => ({ ...p, id: makeId("post"), storyId })));
+    if (score.engagement >= 70) {
+      nudgeSentiment(Math.sign(score.audienceReaction) * macroClamp(Math.abs(score.audienceReaction) / 100 * 3, 0.5, 3));
+    }
     if (v && Math.abs(remainingPct) > 0.3) {
       const overshoot = score.scamRisk >= 55 && score.hype >= 55;
       const dueAt = now + (25e3 + Math.random() * 45e3);
@@ -7278,6 +7426,9 @@ function MarketSandbox() {
     if (mp.ipoStatus === "public" && mp.stockCompanyId && Math.abs(score.audienceReaction) > 15) {
       applyImpact(mp.stockCompanyId, score.audienceReaction / 12);
     }
+    if (score.engagement >= 70) {
+      nudgeSentiment(Math.sign(score.audienceReaction) * macroClamp(Math.abs(score.audienceReaction) / 100 * 3, 0.5, 3));
+    }
     setMarketplaceComposerText("");
     setMarketplaceLastPostFeedback({ reach, band, scamRisk: Math.round(score.scamRisk) });
     setTimeout(saveGame, 50);
@@ -7695,6 +7846,7 @@ function MarketSandbox() {
     if (pay <= 0) return;
     adjustAccountBalance(src, -pay);
     setTaxOwed((o) => Math.max(0, Number((o - pay).toFixed(2))));
+    addGovTaxIn(pay);
     setTaxHistory((h) => [{ id: makeId("tax"), label: "\u041E\u043F\u043B\u0430\u0442\u0430 \u043D\u0430\u043B\u043E\u0433\u043E\u0432", amount: pay, kind: "payment" }, ...h].slice(0, 60));
     logTx("\u041E\u043F\u043B\u0430\u0442\u0430 \u043D\u0430\u043B\u043E\u0433\u043E\u0432", pay, "out");
     setTimeout(saveGame, 50);
@@ -7857,6 +8009,9 @@ function MarketSandbox() {
     setMarketIndex(1);
     macroRef.current = MACRO_DEFAULT;
     setMacro(MACRO_DEFAULT);
+    setSentiment(SENTIMENT_DEFAULT);
+    setDemandIndex(DEMAND_DEFAULT);
+    setGovBudget(GOV_BUDGET_DEFAULT);
     setIpTab("account");
     setSuspicion(0);
     setBankRatings({ mfo: 50, priv: 50, fed: 50 });
@@ -8111,6 +8266,27 @@ function MarketSandbox() {
             return 0;
           });
           return /* @__PURE__ */ jsxs("div", { children: [
+            (() => {
+              const m = macro;
+              const sentColor = sentiment > 8 ? C.green : sentiment < -8 ? C.red : C.inkDim;
+              const sentLabel = sentiment > 20 ? "\u042D\u0439\u0444\u043E\u0440\u0438\u044F" : sentiment > 8 ? "\u041E\u043F\u0442\u0438\u043C\u0438\u0437\u043C" : sentiment < -20 ? "\u041F\u0430\u043D\u0438\u043A\u0430" : sentiment < -8 ? "\u0422\u0440\u0435\u0432\u043E\u0433\u0430" : "\u041D\u0435\u0439\u0442\u0440\u0430\u043B\u044C\u043D\u043E";
+              const demandColor = demandIndex > 1.08 ? C.green : demandIndex < 0.92 ? C.red : C.inkDim;
+              const demandLabel = demandIndex > 1.08 ? "\u0420\u0430\u0441\u0442\u0451\u0442" : demandIndex < 0.92 ? "\u041F\u0430\u0434\u0430\u0435\u0442" : "\u0421\u0442\u0430\u0431\u0438\u043B\u0435\u043D";
+              const riskColor = (m.govDefaultRisk || 0) > 0.5 ? C.red : (m.govDefaultRisk || 0) > 0.2 ? C.gold : C.inkDim;
+              const tiles = [
+                { label: "\u041D\u0430\u0441\u0442\u0440\u043E\u0435\u043D\u0438\u0435 \u0440\u044B\u043D\u043A\u0430", value: `${sentiment >= 0 ? "+" : ""}${sentiment.toFixed(0)}`, sub: sentLabel, color: sentColor },
+                { label: "\u041F\u043E\u0442\u0440\u0435\u0431\u0438\u0442\u0435\u043B\u044C\u0441\u043A\u0438\u0439 \u0441\u043F\u0440\u043E\u0441", value: demandIndex.toFixed(2), sub: demandLabel, color: demandColor },
+                { label: "\u041A\u043B\u044E\u0447\u0435\u0432\u0430\u044F \u0441\u0442\u0430\u0432\u043A\u0430", value: `${((m.interestRate || 0) * 100).toFixed(1)}%`, sub: "\u0424\u0435\u0434\u0411\u0430\u043D\u043A", color: C.inkDim },
+                { label: "\u0418\u043D\u0444\u043B\u044F\u0446\u0438\u044F", value: `${((m.inflation || 0) * 100).toFixed(1)}%`, sub: "\u0433\u043E\u0434\u043E\u0432\u044B\u0445", color: C.inkDim },
+                { label: "\u041D\u0435\u0444\u0442\u044C", value: `${(companies.find((c) => c.ticker === "OIL")?.price || 0).toFixed(1)}`, sub: m.oilTrend > 0.3 ? "\u0420\u0430\u0441\u0442\u0451\u0442" : m.oilTrend < -0.3 ? "\u041F\u0430\u0434\u0430\u0435\u0442" : "\u0421\u0442\u0430\u0431\u0438\u043B\u044C\u043D\u0430", color: C.inkDim },
+                { label: "\u0420\u0438\u0441\u043A \u0434\u0435\u0444\u043E\u043B\u0442\u0430", value: `${((m.govDefaultRisk || 0) * 100).toFixed(0)}%`, sub: "\u0433\u043E\u0441\u0434\u043E\u043B\u0433", color: riskColor }
+              ];
+              return /* @__PURE__ */ jsx("div", { style: { display: "flex", gap: 8, overflowX: "auto", marginBottom: 12, paddingBottom: 2 }, children: tiles.map((t, i) => /* @__PURE__ */ jsxs("div", { style: { flexShrink: 0, minWidth: 92, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, padding: "8px 10px" }, children: [
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 9.5, color: C.inkFaint, marginBottom: 2, whiteSpace: "nowrap" }, children: t.label }),
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 15, fontWeight: 700, color: t.color }, children: t.value }),
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 9.5, color: t.color }, children: t.sub })
+              ] }, i)) });
+            })(),
             /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }, children: [
               /* @__PURE__ */ jsx("div", { style: { display: "flex", gap: 6, flex: 1, overflowX: "auto" }, children: pills.map((p) => /* @__PURE__ */ jsx("button", { onClick: () => setMarketFilterCat(p.id), style: { padding: "7px 13px", borderRadius: 20, border: "none", fontWeight: 600, fontSize: 12, whiteSpace: "nowrap", background: marketFilterCat === p.id ? C.violet : C.surface2, color: marketFilterCat === p.id ? "#fff" : C.inkDim }, children: p.label }, p.id)) }),
               /* @__PURE__ */ jsxs("select", { value: marketSort, onChange: (e) => setMarketSort(e.target.value), style: { background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, color: C.inkDim, fontSize: 11.5, padding: "7px 8px", flexShrink: 0 }, children: [
