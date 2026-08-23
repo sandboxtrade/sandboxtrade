@@ -1,4 +1,4 @@
-// Market Sandbox — V2.46.0 (Капитализация банков/крипты/поставщиков увеличена в 20x через supply в NPC_SEED — раньше капитализация была $50-130M (ZZONE — $1.2B), и $10M сделки хватало почти на предельный импакт (92%), т.е. с капиталом даже в 10 млн можно было "крутить рынком как угодно". Теперь капитализация $1-2.5B (ZZONE — $24B): та же 6%-я реакция (порог рыночного шока из V2.44) требует уже ~$60-100M сделки, а $10M даёт лишь ~0.5-1% движения цены — заметно, но не разрушительно. Цены компаний не менялись, только supply (impactPct = sizeRatio×150 обратно пропорционален капитализации при неизменном price). Для уже открытых сохранений добавлена одноразовая миграция в applyLoadedData: NPC-компания (не игрока) с supply, точно совпадающим со старым значением из NPC_SEED_LEGACY_SUPPLY, получает новый supply из актуального NPC_SEED — цена и все холдинги игрока (qty×price) при этом не искажаются, меняется только допустимый импакт будущих сделок. esbuild чист.)
+// Market Sandbox — V2.47.0 (Полная переработка механики собственной крипты: убраны все прямые applyImpact-скачки цены из переговоров с инвесторами/рекламы/маркетинга/R&D — теперь эти действия меняют только hype/trust/coinDemand, а цену двигают только настоящие сделки с пулом. Инвестор-раунды исполняются 3 траншами через scheduler той же формулой импакта, что и обычная сделка (sizeRatio×150×liqFactor, cap 92%) — вместо кастомного попа до 70%. Реклама переведена на модель банка: sqrt-диминишинг-ретёрнс по бюджету, выбор канала (соцсети/СМИ/инфлюенсеры/крипто-медиа), вероятностная конверсия 4 траншами вместо одного мгновенного попа в конце. Запуск монеты упрощён до название/тикер/supply — фиксированный сплит founder 20%/pool 80%, без ручного распределения %. Добавлены mintCoin/burnCoin: mint увеличивает supply и holdings без прямого движения цены (только небольшой удар по trust), burn — только из собственных доступных токенов (небольшой прирост trust). Ликвидность теперь чистое добавление poolUsd с любого счёта, не завязано на legacy reserveAllocation. Новый параметр coinDemand вплетён в органический 20-сек тик наравне с hype/trust. esbuild чист.)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -646,6 +646,29 @@ var AD_DURATIONS = [
   { id: "long", label: "40 \u043C\u0438\u043D", ms: 40 * 60 * 1e3 }
 ];
 var AD_MIN_BUDGET = 500;
+// ---- Coin campaigns (реклама/инвесторы собственной крипты) ----
+// Единая модель диминишинг-ретёрнс + постепенная Poisson-конверсия в реальные сделки
+// пула — построена по образцу BANK_MARKETING_* (см. bankMarketingReachTarget/lambdaPerSec),
+// чтобы реклама/переговоры создавали ТОЛЬКО спрос, а цену двигали настоящие сделки в пуле.
+var COIN_CAMPAIGN_DURATION_MS = 6 * 60 * 1e3;
+var COIN_AD_CHANNELS = [
+  { id: "social", label: "\u0421\u043E\u0446\u0441\u0435\u0442\u0438", reachK: 1.5, trustK: 0.9 },
+  { id: "media", label: "\u0424\u0438\u043D\u0430\u043D\u0441\u043E\u0432\u044B\u0435 \u0421\u041C\u0418", reachK: 0.9, trustK: 1.4 },
+  { id: "influencers", label: "\u0418\u043D\u0444\u043B\u044E\u0435\u043D\u0441\u0435\u0440\u044B", reachK: 1.9, trustK: 0.7 },
+  { id: "crypto", label: "\u041A\u0440\u0438\u043F\u0442\u043E-\u043C\u0435\u0434\u0438\u0430", reachK: 1.2, trustK: 1.1 }
+];
+function coinAdChannel(id) {
+  return COIN_AD_CHANNELS.find((c) => c.id === id) || COIN_AD_CHANNELS[0];
+}
+function coinCampaignTargetUsd(budget, channel, qualityFactor) {
+  // sqrt(budget) — диминишинг-ретёрнс: $10k даёт не в 10 раз больше эффекта, чем $1k
+  return Math.sqrt(Math.max(0, budget)) * channel.reachK * 55 * Math.max(0.15, qualityFactor);
+}
+var COIN_MINT_TRUST_HIT_K = 12;
+var COIN_BURN_TRUST_GAIN_K = 8;
+var INVESTOR_ROUND_CHUNKS = 3;
+var INVESTOR_ROUND_CHUNK_GAP_MS = 14e3;
+var AD_CAMPAIGN_CHUNKS = 4;
 var DAY_MS = 15e3;
 var RESELL_STARTUP = { registration: 500, rent: 800, equipment: 300 };
 var FACTORY_LINES = {
@@ -2245,8 +2268,8 @@ function MarketSandbox() {
     const id = setTimeout(() => setGlobalToast((t) => t && t.id === globalToast.id ? null : t), 3200);
     return () => clearTimeout(id);
   }, [globalToast]);
-  const [form, setForm] = useState({ name: "", ticker: "", sector: SECTORS[0], kind: "company", strategy: "tech", factoryCategory: "clothes", seedAmount: "", cryptoSupply: "20000", cryptoStartPrice: "0.2", distFounder: "30", distLiquidity: "20", distPublic: "30", distMarketing: "10", distReserve: "10" });
-  const [adForm, setAdForm] = useState({ budget: "1000", headline: "", description: "", duration: "mid" });
+  const [form, setForm] = useState({ name: "", ticker: "", sector: SECTORS[0], kind: "company", strategy: "tech", factoryCategory: "clothes", seedAmount: "", cryptoSupply: "20000" });
+  const [adForm, setAdForm] = useState({ budget: "1000", headline: "", description: "", duration: "mid", channel: "social" });
   const [confirmReset, setConfirmReset] = useState(false);
   const [loans, setLoans] = useState([]);
   const [job, setJob] = useState(null);
@@ -2906,6 +2929,7 @@ function MarketSandbox() {
         rdLevel: c.rdLevel || 0,
         hypeLevel: c.hypeLevel || 0,
         scamHeat: c.scamHeat || 0,
+        coinDemand: c.isPlayer && c.kind === "crypto" ? typeof c.coinDemand === "number" ? c.coinDemand : 20 : c.coinDemand,
         rugged: !!c.rugged
       };
     }).filter((c) => c.isPlayer || !REMOVED_TICKERS.includes(c.ticker));
@@ -3228,6 +3252,7 @@ function MarketSandbox() {
       adCampaign: c.adCampaign,
       coinHype: c.coinHype,
       coinTrust: c.coinTrust,
+      coinDemand: c.coinDemand,
       isPlayer: c.isPlayer,
       kind: c.kind,
       strategy: c.strategy,
@@ -3645,34 +3670,61 @@ function MarketSandbox() {
       applyImpact(c.id, ev.contagionPct);
       pushPost({ role: "trader", kind: "development", text: `${ev.ticker} ${ev.isCrash ? "снижается вслед за" : "растёт на фоне"} ${ev.sourceTicker}`, positive: !ev.isCrash, isMacro: false, ticker: ev.ticker, importance: 1 });
     } else if (ev.kind === "ad_campaign_resolve") {
+      // Реклама больше НЕ телепортирует цену одним поповым % — она только создаёт
+      // awareness/trust здесь и планирует несколько вероятностных траншей реального
+      // спроса (ev.kind === "ad_campaign_chunk"), каждый из которых двигает цену через
+      // настоящую сделку с пулом по той же формуле импакта, что и обычная торговля.
       if (!c) return;
       if (c.rugged) {
         setCompanies((prev) => prev.map((x) => x.id === c.id ? { ...x, adCampaign: null } : x));
         return;
       }
       const trust = playerSocialProfileRef.current.trust;
-      const convFactor = clamp01(ev.quality * 0.65 + trust * 0.35, 0, 100) / 100;
-      const variance = 0.35 + Math.random() * 1.3;
-      const expectedUsd = ev.budget * (0.4 + convFactor * 1.6);
-      const demandUsd = Math.max(0, Math.round(expectedUsd * variance));
-      const hasPool = c.kind === "crypto" && typeof c.poolCoin === "number";
+      const qualityFactor = 0.3 + clamp01(ev.quality * 0.65 + trust * 0.35, 0, 100) / 100;
       const hypeGain = Math.min(35, 8 + ev.budget / 300 + ev.quality / 8);
       const trustDelta = ev.quality >= 60 ? 2 + ev.quality / 40 : ev.quality <= 30 ? -3 : 0;
-      let boughtCoins = 0;
-      if (hasPool && demandUsd > 0 && c.poolCoin > 0) {
-        boughtCoins = Math.min(c.poolCoin * 0.7, demandUsd / c.price);
-        const usdIn = boughtCoins * c.price;
-        const sizeRatio = boughtCoins / c.supply;
-        const popPct = Math.min(60, sizeRatio * 150 * poolLiquidityFactor(c.poolUsd, c.price * c.supply));
-        setCompanies((prev) => prev.map((x) => x.id === c.id ? { ...x, adCampaign: null, poolCoin: x.poolCoin - boughtCoins, poolUsd: x.poolUsd + usdIn, marketingLevel: (x.marketingLevel || 0) + 1, hypeLevel: (x.hypeLevel || 0) + (convFactor > 0.5 ? 1 : 0), coinHype: Math.min(100, (x.coinHype || 30) + hypeGain), coinTrust: Math.max(0, Math.min(100, (x.coinTrust || 50) + trustDelta)) } : x));
-        applyImpact(c.id, popPct);
-      } else {
-        setCompanies((prev) => prev.map((x) => x.id === c.id ? { ...x, adCampaign: null, marketingLevel: (x.marketingLevel || 0) + 1, coinHype: Math.min(100, (x.coinHype || 30) + hypeGain * 0.4), coinTrust: Math.max(0, Math.min(100, (x.coinTrust || 50) + trustDelta)) } : x));
+      const totalTargetUsd = coinCampaignTargetUsd(ev.budget, coinAdChannel(ev.channel), qualityFactor);
+      setCompanies((prev) => prev.map((x) => x.id === c.id ? { ...x, marketingLevel: (x.marketingLevel || 0) + 1, coinHype: Math.min(100, (x.coinHype || 30) + hypeGain), coinTrust: Math.max(0, Math.min(100, (x.coinTrust || 50) + trustDelta)), coinDemand: Math.min(100, (x.coinDemand || 20) + hypeGain * 0.5) } : x));
+      const chunks = AD_CAMPAIGN_CHUNKS;
+      for (let i = 1; i <= chunks; i++) {
+        scheduleEvent({ id: makeId("sched"), kind: "ad_campaign_chunk", companyId: c.id, ticker: c.ticker, chunkTargetUsd: totalTargetUsd / chunks, quality: ev.quality, isLast: i === chunks, dueAt: Date.now() + i * Math.round((ev.durationMs || COIN_CAMPAIGN_DURATION_MS) / chunks) });
       }
-      const band = demandUsd >= ev.budget * 1.3 ? "\u043E\u0442\u043B\u0438\u0447\u043D\u044B\u0439" : demandUsd >= ev.budget * 0.6 ? "\u0441\u0440\u0435\u0434\u043D\u0438\u0439" : "\u0441\u043B\u0430\u0431\u044B\u0439";
-      pushPost({ role: "trader", kind: "development", text: `${ev.ticker}: \u0440\u0435\u043A\u043B\u0430\u043C\u043D\u0430\u044F \u043A\u0430\u043C\u043F\u0430\u043D\u0438\u044F \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043D\u0430 \u2014 \u0440\u0435\u0437\u0443\u043B\u044C\u0442\u0430\u0442 ${band}${boughtCoins > 0 ? `, \u043F\u0440\u0438\u0442\u043E\u043A \u2248${fmt(Math.round(boughtCoins * c.price))}` : ""}`, positive: demandUsd >= ev.budget * 0.8, isMacro: false, ticker: ev.ticker, importance: 2 });
+      pushPost({ role: "trader", kind: "development", text: `${c.ticker}: \u0440\u0435\u043A\u043B\u0430\u043C\u043D\u0430\u044F \u043A\u0430\u043C\u043F\u0430\u043D\u0438\u044F \u0437\u0430\u043F\u0443\u0449\u0435\u043D\u0430 \u2014 \u043E\u0445\u0432\u0430\u0442 \u0440\u0430\u0441\u0442\u0451\u0442, \u043F\u043E\u043A\u0443\u043F\u0430\u0442\u0435\u043B\u0438 \u0431\u0443\u0434\u0443\u0442 \u043F\u043E\u044F\u0432\u043B\u044F\u0442\u044C\u0441\u044F \u043F\u043E\u0441\u0442\u0435\u043F\u0435\u043D\u043D\u043E`, positive: true, isMacro: false, ticker: c.ticker, importance: 1 });
       if ((ev.scamRisk || 0) >= 55) {
         setPlayerSocialProfile((p) => ({ ...p, trust: Math.max(0, p.trust - 3) }));
+      }
+    } else if (ev.kind === "ad_campaign_chunk" || ev.kind === "investor_round_chunk") {
+      if (!c || c.rugged || typeof c.poolCoin !== "number") {
+        if (ev.kind === "ad_campaign_chunk" && ev.isLast && c) setCompanies((prev) => prev.map((x) => x.id === c.id ? { ...x, adCampaign: null } : x));
+        return;
+      }
+      let coinsChunk;
+      if (ev.kind === "investor_round_chunk") {
+        coinsChunk = Math.min(ev.coinsChunk, c.poolCoin * 0.95);
+      } else {
+        // Вероятностная конверсия: не каждый транш рекламы приводит к реальным покупкам
+        const buyChance = Math.min(0.9, 0.35 + (ev.quality || 40) / 150);
+        if (Math.random() > buyChance) {
+          if (ev.isLast) setCompanies((prev) => prev.map((x) => x.id === c.id ? { ...x, adCampaign: null } : x));
+          return;
+        }
+        const variance = 0.4 + Math.random() * 1.2;
+        coinsChunk = Math.min(c.poolCoin * 0.5, ev.chunkTargetUsd * variance / c.price);
+      }
+      if (coinsChunk <= 0) {
+        if (ev.kind === "ad_campaign_chunk" && ev.isLast) setCompanies((prev) => prev.map((x) => x.id === c.id ? { ...x, adCampaign: null } : x));
+        return;
+      }
+      const sizeRatio = coinsChunk / c.supply;
+      const impactPct = Math.min(92, sizeRatio * 150 * poolLiquidityFactor(c.poolUsd, c.price * c.supply));
+      const avgExecPrice = c.price * (1 + impactPct / 200);
+      const usdIn = avgExecPrice * coinsChunk;
+      setCompanies((prev) => prev.map((x) => x.id === c.id ? { ...x, poolCoin: x.poolCoin - coinsChunk, poolUsd: x.poolUsd + usdIn, ...(ev.kind === "ad_campaign_chunk" && ev.isLast ? { adCampaign: null } : {}) } : x));
+      applyImpact(c.id, impactPct);
+      flagLeveragedPumpPattern(c.id, impactPct);
+      if (ev.kind === "investor_round_chunk" && ev.account) {
+        adjustAccountBalance(ev.account, usdIn);
+        logTx(`\u0418\u043D\u0432\u0435\u0441\u0442\u043E\u0440 \xB7 \u0442\u0440\u0430\u043D\u0448 ${c.ticker}`, usdIn, "in");
       }
     } else if (ev.kind === "oil_confirm") {
       const bank = OIL_EVENT_BANKS[ev.bankKey];
@@ -3930,28 +3982,31 @@ function MarketSandbox() {
         if (!c.isPlayer || c.kind !== "crypto" || c.rugged) return c;
         const hype = typeof c.coinHype === "number" ? c.coinHype : 30;
         const trust = typeof c.coinTrust === "number" ? c.coinTrust : 50;
+        const demand = typeof c.coinDemand === "number" ? c.coinDemand : 20;
         const nextHype = Math.max(0, hype - 1.5);
+        const nextDemand = Math.max(0, demand - 2);
         if (typeof c.poolCoin !== "number" || c.poolCoin <= 0 || c.poolUsd <= 0) {
-          return { ...c, coinHype: nextHype };
+          return { ...c, coinHype: nextHype, coinDemand: nextDemand };
         }
-        const speculatorPressure = (hype - 50) / 50 * 0.55;
-        const longTermPressure = (trust - 50) / 50 * 0.35;
+        const speculatorPressure = (hype - 50) / 50 * 0.4;
+        const longTermPressure = (trust - 50) / 50 * 0.3;
+        const demandPressure = (demand - 20) / 80 * 0.5;
         const noise = (Math.random() - 0.5) * 0.3;
-        const netPressure = Math.max(-1, Math.min(1, speculatorPressure + longTermPressure + noise));
+        const netPressure = Math.max(-1, Math.min(1, speculatorPressure + longTermPressure + demandPressure + noise));
         const netUsd = netPressure * c.poolUsd * 0.025;
-        if (Math.abs(netUsd) < 1) return { ...c, coinHype: nextHype };
+        if (Math.abs(netUsd) < 1) return { ...c, coinHype: nextHype, coinDemand: nextDemand };
         if (netUsd > 0) {
           const coinsOut = Math.min(c.poolCoin * 0.4, netUsd / c.price);
           const usdIn = coinsOut * c.price;
           const sizeRatio = coinsOut / c.supply;
           impacts.push({ id: c.id, pct: Math.min(15, sizeRatio * 150 * poolLiquidityFactor(c.poolUsd, c.price * c.supply)) });
-          return { ...c, coinHype: nextHype, poolCoin: c.poolCoin - coinsOut, poolUsd: c.poolUsd + usdIn };
+          return { ...c, coinHype: nextHype, coinDemand: nextDemand, poolCoin: c.poolCoin - coinsOut, poolUsd: c.poolUsd + usdIn };
         } else {
           const usdOut = Math.min(c.poolUsd * 0.4, -netUsd);
           const coinsIn = usdOut / c.price;
           const sizeRatio = coinsIn / c.supply;
           impacts.push({ id: c.id, pct: -Math.min(15, sizeRatio * 150 * poolLiquidityFactor(c.poolUsd, c.price * c.supply)) });
-          return { ...c, coinHype: nextHype, poolCoin: c.poolCoin + coinsIn, poolUsd: c.poolUsd - usdOut };
+          return { ...c, coinHype: nextHype, coinDemand: nextDemand, poolCoin: c.poolCoin + coinsIn, poolUsd: c.poolUsd - usdOut };
         }
       }));
       impacts.forEach((imp) => applyImpact(imp.id, imp.pct));
@@ -5524,30 +5579,24 @@ function MarketSandbox() {
     setTimeout(saveGame, 50);
   };
   const listingFee = form.kind === "crypto" ? 300 : 500;
-  const cryptoDistSum = Math.round((Number(form.distFounder) || 0) + (Number(form.distLiquidity) || 0) + (Number(form.distPublic) || 0) + (Number(form.distMarketing) || 0) + (Number(form.distReserve) || 0));
-  const cryptoDistValid = form.kind !== "crypto" || cryptoDistSum === 100 && (Number(form.distLiquidity) || 0) >= 5;
+  const cryptoDistValid = true;
   const createVenture = () => {
     const src = resolvedPayFrom;
     const bal = getAccountBalance(src);
-    if (!form.name.trim() || !form.ticker.trim() || bal < listingFee || !cryptoDistValid) return;
+    if (!form.name.trim() || !form.ticker.trim() || bal < listingFee) return;
     const seedAmount = Math.max(0, Math.round(Number(form.seedAmount) || 0));
     if (seedAmount > ipCash) return;
     const id = makeId("co");
     const isCrypto = form.kind === "crypto";
-    const startPrice = isCrypto ? Math.max(1e-3, Number(form.cryptoStartPrice) || 0.2) : 2;
+    // Упрощённый запуск (V2.47): игрок указывает только supply, цену и распределение не
+    // настраивает — фиксированный сплит founder 20% / pool 80% как в новой архитектуре.
+    const startPrice = isCrypto ? 0.2 : 2;
     const baseSupply = isCrypto ? Math.max(1e3, Math.min(5e6, Math.round(Number(form.cryptoSupply) || 2e4))) : 2e3;
     const supply = baseSupply;
-    let founderQty, poolCoin, publicAllocation, marketingAllocation, reserveAllocation;
+    let founderQty, poolCoin;
     if (isCrypto) {
-      const fPct = Number(form.distFounder) || 0;
-      const lPct = Number(form.distLiquidity) || 0;
-      const pPct = Number(form.distPublic) || 0;
-      const mPct = Number(form.distMarketing) || 0;
-      founderQty = Math.round(baseSupply * fPct / 100);
-      poolCoin = Math.round(baseSupply * lPct / 100);
-      publicAllocation = Math.round(baseSupply * pPct / 100);
-      marketingAllocation = Math.round(baseSupply * mPct / 100);
-      reserveAllocation = baseSupply - founderQty - poolCoin - publicAllocation - marketingAllocation;
+      founderQty = Math.round(baseSupply * FOUNDER_PCT.crypto);
+      poolCoin = baseSupply - founderQty;
     } else {
       founderQty = Math.round(baseSupply * FOUNDER_PCT.company);
     }
@@ -5567,15 +5616,14 @@ function MarketSandbox() {
       poolCoin,
       poolUsd,
       initialPoolCoin: isCrypto ? poolCoin : void 0,
-      publicAllocation,
-      marketingAllocation,
-      reserveAllocation,
       vestingLockedTotal,
       vestingReleased: 0,
       vestingStartAt: Date.now(),
       vestingDurationMs: VESTING_DURATION_MS,
       coinHype: isCrypto ? Math.round(Math.max(15, Math.min(60, 20 + reputation * 0.3))) : void 0,
       coinTrust: isCrypto ? Math.round(Math.max(20, Math.min(90, 20 + reputation * 0.6))) : void 0,
+      coinDemand: isCrypto ? 20 : void 0,
+      coinCampaigns: isCrypto ? [] : void 0,
       isPlayer: true,
       marketingLevel: 0,
       rdLevel: 0,
@@ -5595,7 +5643,7 @@ function MarketSandbox() {
     setHoldings((h) => ({ ...h, [id]: { qty: founderUnlockedNow, avgCost: 0 } }));
     setPlayerVentureId(id);
     setSelectedBizId("venture");
-    setForm({ name: "", ticker: "", sector: SECTORS[0], kind: "company", strategy: "tech", factoryCategory: "clothes", seedAmount: "", cryptoSupply: "20000", cryptoStartPrice: "0.2", distFounder: "30", distLiquidity: "20", distPublic: "30", distMarketing: "10", distReserve: "10" });
+    setForm({ name: "", ticker: "", sector: SECTORS[0], kind: "company", strategy: "tech", factoryCategory: "clothes", seedAmount: "", cryptoSupply: "20000" });
     setBizPath(null);
     setActiveTab("company");
     setTimeout(saveGame, 50);
@@ -6988,18 +7036,26 @@ function MarketSandbox() {
       const dilution = dMin + Math.random() * (dMax - dMin);
       const wantCoins = Math.round(v.supply * dilution);
       const coinsFromPool = hasPool ? Math.min(wantCoins, Math.round(v.poolCoin * 0.8)) : wantCoins;
-      const raised = Math.round(coinsFromPool * v.price);
-      const pop = hasPool ? Math.min(70, (4 + dilution * 60) * poolLiquidityFactor(v.poolUsd, v.price * v.supply)) : 4 + dilution * 60;
-      applyImpact(v.id, pop);
-      flagLeveragedPumpPattern(v.id, pop);
       const hypeGain = investorPersona.hypeGain != null ? investorPersona.hypeGain : 10;
       const trustGain = investorPersona.trustGain != null ? investorPersona.trustGain : 5;
-      setCompanies((prev) => prev.map((c) => c.id === v.id ? { ...c, ...(hasPool ? { poolCoin: c.poolCoin - coinsFromPool } : {}), investorRounds: (c.investorRounds || 0) + 1, investorCooldown: 90, coinHype: v.kind === "crypto" ? Math.max(0, Math.min(100, (c.coinHype || 30) + hypeGain)) : c.coinHype, coinTrust: v.kind === "crypto" ? Math.max(0, Math.min(100, (c.coinTrust || 50) + trustGain)) : c.coinTrust } : c));
-      if (hasPool && raised > 0) {
-        adjustAccountBalance(resolvedPayFrom, raised);
-        logTx(`\u0418\u043D\u0432\u0435\u0441\u0442\u043E\u0440 \xB7 \u0440\u0430\u0443\u043D\u0434 ${v.ticker}`, raised, "in");
+      setCompanies((prev) => prev.map((c) => c.id === v.id ? { ...c, investorRounds: (c.investorRounds || 0) + 1, investorCooldown: 90, coinHype: v.kind === "crypto" ? Math.max(0, Math.min(100, (c.coinHype || 30) + hypeGain)) : c.coinHype, coinTrust: v.kind === "crypto" ? Math.max(0, Math.min(100, (c.coinTrust || 50) + trustGain)) : c.coinTrust } : c));
+      if (hasPool && coinsFromPool > 0) {
+        // Инвестор реально покупает долю из пула — но исполняется несколькими траншами
+        // с интервалом (как ордер, а не телепорт цены), импакт каждого транша считается
+        // ТОЙ ЖЕ формулой, что и обычная сделка игрока (sizeRatio×150×liqFactor, cap 92%).
+        const chunk = Math.round(coinsFromPool / INVESTOR_ROUND_CHUNKS);
+        for (let i = 1; i <= INVESTOR_ROUND_CHUNKS; i++) {
+          const coinsChunk = i === INVESTOR_ROUND_CHUNKS ? coinsFromPool - chunk * (INVESTOR_ROUND_CHUNKS - 1) : chunk;
+          scheduleEvent({ id: makeId("sched"), kind: "investor_round_chunk", companyId: v.id, ticker: v.ticker, coinsChunk, account: resolvedPayFrom, dueAt: Date.now() + i * INVESTOR_ROUND_CHUNK_GAP_MS });
+        }
+      } else if (!hasPool) {
+        const raised = Math.round(coinsFromPool * v.price);
+        if (raised > 0) {
+          adjustAccountBalance(resolvedPayFrom, raised);
+          logTx(`\u0418\u043D\u0432\u0435\u0441\u0442\u043E\u0440 \xB7 \u0440\u0430\u0443\u043D\u0434 ${v.ticker}`, raised, "in");
+        }
       }
-      pushPost({ text: `${v.ticker}: ${investorPersona.name} \u0432\u043F\u0435\u0447\u0430\u0442\u043B\u0451\u043D${matched ? " \u2014 \u043F\u043E\u043F\u0430\u0434\u0430\u043D\u0438\u0435 \u0442\u043E\u0447\u043D\u043E \u0432 \u0435\u0433\u043E \u0438\u043D\u0442\u0435\u0440\u0435\u0441\u044B" : ""} \u2014 \u0440\u0430\u0443\u043D\u0434 \u0437\u0430\u043A\u0440\u044B\u0442`, positive: true, isMacro: false, ticker: v.ticker });
+      pushPost({ text: `${v.ticker}: ${investorPersona.name} \u0432\u043F\u0435\u0447\u0430\u0442\u043B\u0451\u043D${matched ? " \u2014 \u043F\u043E\u043F\u0430\u0434\u0430\u043D\u0438\u0435 \u0442\u043E\u0447\u043D\u043E \u0432 \u0435\u0433\u043E \u0438\u043D\u0442\u0435\u0440\u0435\u0441\u044B" : ""} \u2014 \u0440\u0430\u0443\u043D\u0434 \u0437\u0430\u043A\u0440\u044B\u0442, \u0441\u0434\u0435\u043B\u043A\u0430 \u0431\u0443\u0434\u0435\u0442 \u0438\u0441\u043F\u043E\u043B\u043D\u044F\u0442\u044C\u0441\u044F \u0442\u0440\u0430\u043D\u0448\u0430\u043C\u0438`, positive: true, isMacro: false, ticker: v.ticker });
     } else {
       setCompanies((prev) => prev.map((c) => c.id === v.id ? { ...c, investorCooldown: 60 } : c));
     }
@@ -7019,10 +7075,16 @@ function MarketSandbox() {
         return;
       }
       adjustAccountBalance(src, -cost);
-      const pop = (3 + (v.marketingLevel || 0) * 0.6) * repFactor;
-      applyImpact(v.id, pop);
-      flagLeveragedPumpPattern(v.id, pop);
-      setCompanies((prev) => prev.map((c) => c.id === v.id ? { ...c, marketingLevel: (c.marketingLevel || 0) + 1 } : c));
+      if (v.kind === "crypto") {
+        // Маркетинг/переговоры/R&D больше не двигают цену напрямую — только hype/trust/demand,
+        // реальный спрос конвертируется в сделки через органический тик (см. useEffect ниже).
+        setCompanies((prev) => prev.map((c) => c.id === v.id ? { ...c, marketingLevel: (c.marketingLevel || 0) + 1, coinHype: Math.min(100, (c.coinHype || 30) + 6), coinDemand: Math.min(100, (c.coinDemand || 20) + 8) } : c));
+      } else {
+        const pop = (3 + (v.marketingLevel || 0) * 0.6) * repFactor;
+        applyImpact(v.id, pop);
+        flagLeveragedPumpPattern(v.id, pop);
+        setCompanies((prev) => prev.map((c) => c.id === v.id ? { ...c, marketingLevel: (c.marketingLevel || 0) + 1 } : c));
+      }
     } else if (action === "rd") {
       const cost = Math.round(1e3 * Math.pow(1.55, v.rdLevel || 0));
       if (bal < cost) {
@@ -7030,10 +7092,14 @@ function MarketSandbox() {
         return;
       }
       adjustAccountBalance(src, -cost);
-      const pop = (1.5 + Math.random() * 2.5) * repFactor;
-      applyImpact(v.id, pop);
-      flagLeveragedPumpPattern(v.id, pop);
-      setCompanies((prev) => prev.map((c) => c.id === v.id ? { ...c, rdLevel: (c.rdLevel || 0) + 1, vol: Math.max(0.3, c.vol * 0.9), coinTrust: c.kind === "crypto" ? Math.max(0, Math.min(100, (c.coinTrust || 50) + 4)) : c.coinTrust } : c));
+      if (v.kind === "crypto") {
+        setCompanies((prev) => prev.map((c) => c.id === v.id ? { ...c, rdLevel: (c.rdLevel || 0) + 1, vol: Math.max(0.3, c.vol * 0.9), coinTrust: Math.max(0, Math.min(100, (c.coinTrust || 50) + 4)) } : c));
+      } else {
+        const pop = (1.5 + Math.random() * 2.5) * repFactor;
+        applyImpact(v.id, pop);
+        flagLeveragedPumpPattern(v.id, pop);
+        setCompanies((prev) => prev.map((c) => c.id === v.id ? { ...c, rdLevel: (c.rdLevel || 0) + 1, vol: Math.max(0.3, c.vol * 0.9) } : c));
+      }
     }
     setTimeout(saveGame, 50);
   };
@@ -7059,15 +7125,20 @@ function MarketSandbox() {
     adjustAccountBalance(src, -adCampaignCost);
     logTx(`\u0420\u0435\u043A\u043B\u0430\u043C\u043D\u0430\u044F \u043A\u0430\u043C\u043F\u0430\u043D\u0438\u044F \xB7 ${v.ticker}`, adCampaignCost, "out");
     const dueAt = Date.now() + duration.ms;
-    setCompanies((prev) => prev.map((c) => c.id === v.id ? { ...c, adCampaign: { budget: adCampaignCost, quality, headline: adForm.headline.trim(), startAt: Date.now(), dueAt } } : c));
-    scheduleEvent({ id: makeId("sched"), kind: "ad_campaign_resolve", companyId: v.id, ticker: v.ticker, budget: adCampaignCost, quality, scamRisk: analysis.scamRisk, dueAt });
-    setAdForm({ budget: "1000", headline: "", description: "", duration: "mid" });
+    const channel = adForm.channel;
+    setCompanies((prev) => prev.map((c) => c.id === v.id ? { ...c, adCampaign: { budget: adCampaignCost, quality, headline: adForm.headline.trim(), channel, startAt: Date.now(), dueAt } } : c));
+    scheduleEvent({ id: makeId("sched"), kind: "ad_campaign_resolve", companyId: v.id, ticker: v.ticker, budget: adCampaignCost, quality, channel, durationMs: duration.ms, scamRisk: analysis.scamRisk, dueAt });
+    setAdForm({ budget: "1000", headline: "", description: "", duration: "mid", channel: "social" });
     setTimeout(saveGame, 50);
   };
   const [liquidityTopUp, setLiquidityTopUp] = useState("500");
+  const [mintAmount, setMintAmount] = useState("");
+  const [burnAmount, setBurnAmount] = useState("");
   const addLiquidityFromReserve = () => {
+    // Ликвидность = живые деньги в пуле (poolUsd), без изменения supply/poolCoin и без
+    // прямого движения цены — просто рынок становится глубже (меньше slippage у крупных сделок).
     const v = companies.find((c) => c.id === playerVentureId);
-    if (!v || v.kind !== "crypto" || v.rugged || !(v.reserveAllocation > 0)) return;
+    if (!v || v.kind !== "crypto" || v.rugged) return;
     const src = resolvedPayFrom;
     const usdAmount = Math.max(0, Math.round(Number(liquidityTopUp) || 0));
     if (usdAmount <= 0) return;
@@ -7075,10 +7146,46 @@ function MarketSandbox() {
       notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u2014 \u043D\u0443\u0436\u043D\u043E ${fmt(usdAmount)}`);
       return;
     }
-    const coinsFromReserve = Math.min(v.reserveAllocation, usdAmount / v.price);
     adjustAccountBalance(src, -usdAmount);
-    logTx(`\u041F\u043E\u043F\u043E\u043B\u043D\u0435\u043D\u0438\u0435 \u043F\u0443\u043B\u0430 \u0438\u0437 Reserve \xB7 ${v.ticker}`, usdAmount, "out");
-    setCompanies((prev) => prev.map((c) => c.id === v.id ? { ...c, poolCoin: c.poolCoin + coinsFromReserve, poolUsd: c.poolUsd + usdAmount, reserveAllocation: c.reserveAllocation - coinsFromReserve, coinTrust: Math.max(0, Math.min(100, (c.coinTrust || 50) + 1.5)) } : c));
+    logTx(`\u041F\u043E\u043F\u043E\u043B\u043D\u0435\u043D\u0438\u0435 \u043B\u0438\u043A\u0432\u0438\u0434\u043D\u043E\u0441\u0442\u0438 \xB7 ${v.ticker}`, usdAmount, "out");
+    setCompanies((prev) => prev.map((c) => c.id === v.id ? { ...c, poolUsd: (c.poolUsd || 0) + usdAmount, coinTrust: Math.max(0, Math.min(100, (c.coinTrust || 50) + 1)) } : c));
+    setTimeout(saveGame, 50);
+  };
+  const mintCoin = (amountRaw) => {
+    // Mint только увеличивает supply и holdings игрока — деньги не появляются, цена не
+    // меняется мгновенно. Реальный эффект — рынок сам переоценит проект (через trust/органический тик).
+    const v = companies.find((c) => c.id === playerVentureId);
+    if (!v || v.kind !== "crypto" || v.rugged) return;
+    const amount = Math.max(0, Math.round(Number(amountRaw) || 0));
+    if (amount <= 0 || amount > v.supply * 2) return;
+    const trustHit = Math.min(20, (amount / Math.max(1, v.supply)) * COIN_MINT_TRUST_HIT_K);
+    setCompanies((prev) => prev.map((c) => c.id === v.id ? { ...c, supply: c.supply + amount, coinTrust: Math.max(0, (c.coinTrust || 50) - trustHit) } : c));
+    setHoldings((h) => {
+      const prevH = h[v.id] || { qty: 0, avgCost: 0 };
+      return { ...h, [v.id]: { ...prevH, qty: prevH.qty + amount } };
+    });
+    pushPost({ role: "insider", kind: "development", text: `${v.ticker}: \u043E\u0441\u043D\u043E\u0432\u0430\u0442\u0435\u043B\u044C \u0432\u044B\u043F\u0443\u0441\u0442\u0438\u043B \u0434\u043E\u043F\u043E\u043B\u043D\u0438\u0442\u0435\u043B\u044C\u043D\u044B\u0435 ${amount.toLocaleString()} ${v.ticker} \u2014 \u043F\u0440\u0435\u0434\u043B\u043E\u0436\u0435\u043D\u0438\u0435 \u0432\u044B\u0440\u043E\u0441\u043B\u043E`, positive: false, isMacro: false, ticker: v.ticker, importance: 1 });
+    setTimeout(saveGame, 50);
+  };
+  const burnCoin = (amountRaw) => {
+    const v = companies.find((c) => c.id === playerVentureId);
+    if (!v || v.kind !== "crypto" || v.rugged) return;
+    const held = holdings[v.id]?.qty || 0;
+    const amount = Math.max(0, Math.round(Number(amountRaw) || 0));
+    if (amount <= 0 || amount > held || amount >= v.supply) return;
+    const trustGain = Math.min(15, (amount / Math.max(1, v.supply)) * COIN_BURN_TRUST_GAIN_K);
+    setCompanies((prev) => prev.map((c) => c.id === v.id ? { ...c, supply: c.supply - amount, coinTrust: Math.min(100, (c.coinTrust || 50) + trustGain) } : c));
+    setHoldings((h) => {
+      const prevH = h[v.id];
+      const newQty = prevH.qty - amount;
+      if (newQty <= 0) {
+        const rest = { ...h };
+        delete rest[v.id];
+        return rest;
+      }
+      return { ...h, [v.id]: { ...prevH, qty: newQty } };
+    });
+    pushPost({ role: "insider", kind: "development", text: `${v.ticker}: \u0441\u043E\u0436\u0436\u0451\u043D\u043E ${amount.toLocaleString()} ${v.ticker} \u2014 \u043F\u0440\u0435\u0434\u043B\u043E\u0436\u0435\u043D\u0438\u0435 \u0441\u043E\u043A\u0440\u0430\u0449\u0430\u0435\u0442\u0441\u044F`, positive: true, isMacro: false, ticker: v.ticker, importance: 1 });
     setTimeout(saveGame, 50);
   };
   const [confirmRug, setConfirmRug] = useState(false);
@@ -9911,17 +10018,32 @@ function MarketSandbox() {
                 (founderHolding.qty / playerVenture.supply * 100).toFixed(1),
                 "%)"
               ] }),
-              typeof playerVenture.publicAllocation === "number" && /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkFaint, marginTop: 10 }, children: [
-                "\u041E\u0442\u043A\u0440\u044B\u0442\u044B\u0439 (\u043D\u0435\u0440\u0430\u0441\u043F\u0440\u0435\u0434\u0435\u043B\u0451\u043D\u043D\u043E) ",
-                Math.round(playerVenture.publicAllocation).toLocaleString(),
-                " \xB7 \u0420\u0435\u043A\u043B\u0430\u043C\u0430 ",
-                Math.round(playerVenture.marketingAllocation || 0).toLocaleString(),
-                " \xB7 \u0420\u0435\u0437\u0435\u0440\u0432 ",
-                Math.round(playerVenture.reserveAllocation || 0).toLocaleString()
+              /* @__PURE__ */ jsxs("div", { style: { marginTop: 10 }, children: [
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginBottom: 4 }, children: "\u041B\u0438\u043A\u0432\u0438\u0434\u043D\u043E\u0441\u0442\u044C \u043F\u0443\u043B\u0430 (\u0433\u043B\u0443\u0431\u0436\u0435 \u043F\u0443\u043B \u2014 \u043C\u0435\u043D\u044C\u0448\u0435 slippage)" }),
+                /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 6 }, children: [
+                  /* @__PURE__ */ jsx("input", { type: "text", inputMode: "numeric", value: fmtInputNumber(liquidityTopUp), onChange: (e) => setLiquidityTopUp(parseInputNumber(e.target.value)), style: { ...inputStyle, flex: 1, padding: "6px 8px", fontSize: 12 } }),
+                  /* @__PURE__ */ jsx("button", { onClick: addLiquidityFromReserve, disabled: resolvedBal < (Number(liquidityTopUp) || 0), style: { padding: "6px 10px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.surface2, color: C.ink, fontSize: 11.5, fontWeight: 600, whiteSpace: "nowrap" }, children: "\u0414\u043E\u0431\u0430\u0432\u0438\u0442\u044C \u043B\u0438\u043A\u0432\u0438\u0434\u043D\u043E\u0441\u0442\u044C" })
+                ] })
               ] }),
-              playerVenture.reserveAllocation > 0 && /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 6, marginTop: 6 }, children: [
-                /* @__PURE__ */ jsx("input", { type: "text", inputMode: "numeric", value: fmtInputNumber(liquidityTopUp), onChange: (e) => setLiquidityTopUp(parseInputNumber(e.target.value)), style: { ...inputStyle, flex: 1, padding: "6px 8px", fontSize: 12 } }),
-                /* @__PURE__ */ jsx("button", { onClick: addLiquidityFromReserve, disabled: resolvedBal < (Number(liquidityTopUp) || 0), style: { padding: "6px 10px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.surface2, color: C.ink, fontSize: 11.5, fontWeight: 600, whiteSpace: "nowrap" }, children: "\u041F\u043E\u043F\u043E\u043B\u043D\u0438\u0442\u044C \u043F\u0443\u043B \u0438\u0437 \u0440\u0435\u0437\u0435\u0440\u0432\u0430" })
+              /* @__PURE__ */ jsxs("div", { style: { marginTop: 10, display: "flex", gap: 6 }, children: [
+                /* @__PURE__ */ jsxs("div", { style: { flex: 1 }, children: [
+                  /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginBottom: 4 }, children: "Mint \u2014 \u0432\u044B\u043F\u0443\u0441\u0442\u0438\u0442\u044C \u043D\u043E\u0432\u044B\u0435 (\u2193 \u0434\u043E\u0432\u0435\u0440\u0438\u0435)" }),
+                  /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 6 }, children: [
+                    /* @__PURE__ */ jsx("input", { type: "text", inputMode: "numeric", value: fmtInputNumber(mintAmount), onChange: (e) => setMintAmount(parseInputNumber(e.target.value)), style: { ...inputStyle, flex: 1, padding: "6px 8px", fontSize: 12 } }),
+                    /* @__PURE__ */ jsx("button", { onClick: () => mintCoin(mintAmount), disabled: !(Number(mintAmount) > 0), style: { padding: "6px 10px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.surface2, color: C.ink, fontSize: 11.5, fontWeight: 600, whiteSpace: "nowrap" }, children: "Mint" })
+                  ] })
+                ] }),
+                /* @__PURE__ */ jsxs("div", { style: { flex: 1 }, children: [
+                  /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint, marginBottom: 4 }, children: [
+                    "Burn \u2014 \u0441\u0432\u043E\u0438 (\u0435\u0441\u0442\u044C ",
+                    (founderHolding?.qty || 0).toLocaleString(),
+                    ")"
+                  ] }),
+                  /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 6 }, children: [
+                    /* @__PURE__ */ jsx("input", { type: "text", inputMode: "numeric", value: fmtInputNumber(burnAmount), onChange: (e) => setBurnAmount(parseInputNumber(e.target.value)), style: { ...inputStyle, flex: 1, padding: "6px 8px", fontSize: 12 } }),
+                    /* @__PURE__ */ jsx("button", { onClick: () => burnCoin(burnAmount), disabled: !(Number(burnAmount) > 0) || Number(burnAmount) > (founderHolding?.qty || 0), style: { padding: "6px 10px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.surface2, color: C.ink, fontSize: 11.5, fontWeight: 600, whiteSpace: "nowrap" }, children: "Burn" })
+                  ] })
+                ] })
               ] }),
               (playerVenture.vestingLockedTotal || 0) > (playerVenture.vestingReleased || 0) && /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.gold, marginTop: 4 }, children: [
                 "\u0412\u0435\u0441\u0442\u0438\u043D\u0433: \u0437\u0430\u0431\u043B\u043E\u043A\u0438\u0440\u043E\u0432\u0430\u043D\u043E ",
@@ -10021,6 +10143,8 @@ function MarketSandbox() {
                     /* @__PURE__ */ jsx("input", { type: "text", inputMode: "numeric", value: fmtInputNumber(adForm.budget), onChange: (e) => setAdForm((f) => ({ ...f, budget: parseInputNumber(e.target.value) })), style: { ...inputStyle, flex: 1 } }),
                     /* @__PURE__ */ jsx("select", { value: adForm.duration, onChange: (e) => setAdForm((f) => ({ ...f, duration: e.target.value })), style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, color: C.ink, fontSize: 13, padding: "0 10px" }, children: AD_DURATIONS.map((d) => /* @__PURE__ */ jsx("option", { value: d.id, children: d.label }, d.id)) })
                   ] }),
+                  /* @__PURE__ */ jsx("select", { value: adForm.channel, onChange: (e) => setAdForm((f) => ({ ...f, channel: e.target.value })), style: { width: "100%", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, color: C.ink, fontSize: 13, padding: "9px 10px", marginBottom: 8 }, children: COIN_AD_CHANNELS.map((ch) => /* @__PURE__ */ jsx("option", { value: ch.id, children: ch.label }, ch.id)) }),
+                  /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginBottom: 8 }, children: "\u0420\u0435\u0437\u0443\u043B\u044C\u0442\u0430\u0442 \u0432\u0435\u0440\u043E\u044F\u0442\u043D\u043E\u0441\u0442\u043D\u044B\u0439: \u0440\u0435\u043A\u043B\u0430\u043C\u0430 \u0441\u043E\u0437\u0434\u0430\u0451\u0442 \u043E\u0445\u0432\u0430\u0442 \u0438 \u0448\u0430\u043D\u0441 \u043D\u0430 \u043F\u043E\u043A\u0443\u043F\u043A\u0438, \u043D\u043E \u043D\u0435 \u0433\u0430\u0440\u0430\u043D\u0442\u0438\u0440\u0443\u0435\u0442 \u0438\u0445 \u2014 \u044D\u0444\u0444\u0435\u043A\u0442 \u0440\u0430\u0441\u0442\u044F\u0433\u0438\u0432\u0430\u0435\u0442\u0441\u044F \u043D\u0430 \u0432\u0440\u0435\u043C\u044F \u043A\u0430\u043C\u043F\u0430\u043D\u0438\u0438." }),
                   /* @__PURE__ */ jsxs("button", { onClick: launchAdCampaign, disabled: resolvedBal < adCampaignCost || !adTextValid, style: actionBtnStyle(resolvedBal >= adCampaignCost && adTextValid), children: [
                     /* @__PURE__ */ jsx(Sparkles, { size: 16 }),
                     " \u0417\u0430\u043F\u0443\u0441\u0442\u0438\u0442\u044C \u043A\u0430\u043C\u043F\u0430\u043D\u0438\u044E \u2014 ",
@@ -11791,32 +11915,12 @@ function MarketSandbox() {
             })(),
             form.kind === "crypto" && /* @__PURE__ */ jsxs("div", { style: { marginBottom: 14, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 12 }, children: [
               /* @__PURE__ */ jsx("div", { style: { fontSize: 12, fontWeight: 700, marginBottom: 8 }, children: "\u0422\u041E\u041A\u0415\u041D\u041E\u041C\u0418\u041A\u0410" }),
-              /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8, marginBottom: 10 }, children: [
-                /* @__PURE__ */ jsxs("div", { style: { flex: 1 }, children: [
-                  /* @__PURE__ */ jsx("label", { style: { fontSize: 10.5, color: C.inkDim }, children: "\u041E\u0431\u0449\u0438\u0439 \u0432\u044B\u043F\u0443\u0441\u043A (Total Supply)" }),
-                  /* @__PURE__ */ jsx("input", { type: "text", inputMode: "numeric", value: fmtInputNumber(form.cryptoSupply), onChange: (e) => setForm((f) => ({ ...f, cryptoSupply: parseInputNumber(e.target.value) })), style: inputStyle })
-                ] }),
-                /* @__PURE__ */ jsxs("div", { style: { flex: 1 }, children: [
-                  /* @__PURE__ */ jsx("label", { style: { fontSize: 10.5, color: C.inkDim }, children: "\u0421\u0442\u0430\u0440\u0442\u043E\u0432\u0430\u044F \u0446\u0435\u043D\u0430, $" }),
-                  /* @__PURE__ */ jsx("input", { type: "number", step: "0.01", value: form.cryptoStartPrice, onChange: (e) => setForm((f) => ({ ...f, cryptoStartPrice: e.target.value })), inputMode: "decimal", style: inputStyle })
-                ] })
+              /* @__PURE__ */ jsxs("div", { style: { marginBottom: 4 }, children: [
+                /* @__PURE__ */ jsx("label", { style: { fontSize: 10.5, color: C.inkDim }, children: "\u041F\u0435\u0440\u0432\u043E\u043D\u0430\u0447\u0430\u043B\u044C\u043D\u044B\u0439 \u0432\u044B\u043F\u0443\u0441\u043A (\u0441\u0440\u0430\u0437\u0443 \u0432 \u043E\u0431\u0440\u0430\u0449\u0435\u043D\u0438\u0438)" }),
+                /* @__PURE__ */ jsx("input", { type: "text", inputMode: "numeric", value: fmtInputNumber(form.cryptoSupply), onChange: (e) => setForm((f) => ({ ...f, cryptoSupply: parseInputNumber(e.target.value) })), style: inputStyle })
               ] }),
-              /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkDim, marginBottom: 6 }, children: "\u0420\u0430\u0441\u043F\u0440\u0435\u0434\u0435\u043B\u0435\u043D\u0438\u0435, % (\u0441\u0443\u043C\u043C\u0430 = 100)" }),
-              /* @__PURE__ */ jsx("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, marginBottom: 6 }, children: [
-                ["distFounder", "\u041E\u0441\u043D\u043E\u0432\u0430\u0442\u0435\u043B\u044C"],
-                ["distLiquidity", "\u041B\u0438\u043A\u0432\u0438\u0434\u043D\u043E\u0441\u0442\u044C"],
-                ["distPublic", "\u041E\u0442\u043A\u0440\u044B\u0442\u044B\u0439"],
-                ["distMarketing", "\u0420\u0435\u043A\u043B\u0430\u043C\u0430"],
-                ["distReserve", "\u0420\u0435\u0437\u0435\u0440\u0432"]
-              ].map(([key, label]) => /* @__PURE__ */ jsxs("div", { children: [
-                /* @__PURE__ */ jsx("label", { style: { fontSize: 9.5, color: C.inkFaint }, children: label }),
-                /* @__PURE__ */ jsx("input", { type: "number", value: form[key], onChange: (e) => setForm((f) => ({ ...f, [key]: e.target.value })), inputMode: "numeric", style: { ...inputStyle, padding: "8px 8px", fontSize: 12.5 } })
-              ] }, key)) }),
-              /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: cryptoDistValid ? C.inkFaint : C.red, marginTop: 2 }, children: [
-                "\u0421\u0443\u043C\u043C\u0430: ",
-                cryptoDistSum,
-                "% ",
-                cryptoDistSum !== 100 ? "\u2014 \u0434\u043E\u043B\u0436\u043D\u043E \u0431\u044B\u0442\u044C \u0440\u043E\u0432\u043D\u043E 100%" : (Number(form.distLiquidity) || 0) < 5 ? "\u2014 \u043B\u0438\u043A\u0432\u0438\u0434\u043D\u043E\u0441\u0442\u044C \u043C\u0438\u043D\u0438\u043C\u0443\u043C 5%, \u0438\u043D\u0430\u0447\u0435 \u043D\u0435\u0447\u0435\u043C \u0431\u0443\u0434\u0435\u0442 \u0442\u043E\u0440\u0433\u043E\u0432\u0430\u0442\u044C" : "\u2705"
+              /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint, marginTop: 6 }, children: [
+                "20% \u0443 \u043E\u0441\u043D\u043E\u0432\u0430\u0442\u0435\u043B\u044F (\u0447\u0430\u0441\u0442\u044C \u0441 vesting), 80% \u0441\u0440\u0430\u0437\u0443 \u0432 \u043B\u0438\u043A\u0432\u0438\u0434\u043D\u043E\u0441\u0442\u0438 \u043F\u0443\u043B\u0430. \u0421\u0442\u0430\u0440\u0442\u043E\u0432\u0430\u044F \u0446\u0435\u043D\u0430 \u0444\u0438\u043A\u0441\u0438\u0440\u043E\u0432\u0430\u043D\u0430: $0.20"
               ] })
             ] }),
             (() => {
