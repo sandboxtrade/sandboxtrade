@@ -1,4 +1,4 @@
-// Market Sandbox — V2.47.0 (Полная переработка механики собственной крипты: убраны все прямые applyImpact-скачки цены из переговоров с инвесторами/рекламы/маркетинга/R&D — теперь эти действия меняют только hype/trust/coinDemand, а цену двигают только настоящие сделки с пулом. Инвестор-раунды исполняются 3 траншами через scheduler той же формулой импакта, что и обычная сделка (sizeRatio×150×liqFactor, cap 92%) — вместо кастомного попа до 70%. Реклама переведена на модель банка: sqrt-диминишинг-ретёрнс по бюджету, выбор канала (соцсети/СМИ/инфлюенсеры/крипто-медиа), вероятностная конверсия 4 траншами вместо одного мгновенного попа в конце. Запуск монеты упрощён до название/тикер/supply — фиксированный сплит founder 20%/pool 80%, без ручного распределения %. Добавлены mintCoin/burnCoin: mint увеличивает supply и holdings без прямого движения цены (только небольшой удар по trust), burn — только из собственных доступных токенов (небольшой прирост trust). Ликвидность теперь чистое добавление poolUsd с любого счёта, не завязано на legacy reserveAllocation. Новый параметр coinDemand вплетён в органический 20-сек тик наравне с hype/trust. esbuild чист.)
+// Market Sandbox — V2.48.0 (Бизнес «Собственная крипта» полностью удалён из игры: убран единственный вход в создание — кнопка «Криптовалюта» в выборе типа бизнеса, форма запуска токена стала недостижимым мёртвым кодом. Существующие сейвы мигрируют автоматически: венчура игрока с kind=="crypto" вырезается из companies, playerVentureId сбрасывается, если указывал на неё, оставшиеся токены на балансе выкупаются по последней цене (та же логика, что и у ранее снятых компаний REMOVED_EMPLOYER_TICKERS) — игрок получает уведомление при следующей загрузке. NPC-активы сектора «Крипто» (LEDG/OPAL/TEHER и т.д.) не тронуты — это обычные акции без kind:"crypto", торгуются как раньше. Функции/константы AMM-пула, hype/trust/demand, mint/burn, инвестор-раундов и рекламных кампаний оставлены в файле как мёртвый код (см. MAP.md) — они больше не могут выполниться, т.к. новую крипто-венчуру создать нельзя. esbuild чист.)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -2932,7 +2932,7 @@ function MarketSandbox() {
         coinDemand: c.isPlayer && c.kind === "crypto" ? typeof c.coinDemand === "number" ? c.coinDemand : 20 : c.coinDemand,
         rugged: !!c.rugged
       };
-    }).filter((c) => c.isPlayer || !REMOVED_TICKERS.includes(c.ticker));
+    }).filter((c) => (c.isPlayer && c.kind === "crypto" ? false : c.isPlayer || !REMOVED_TICKERS.includes(c.ticker)));
     const knownTickers = new Set(restoredRaw.map((c) => c.ticker));
     const missingSeeds = seedCompanies().filter((c) => !knownTickers.has(c.ticker));
     const restored = [...restoredRaw, ...missingSeeds];
@@ -2947,6 +2947,12 @@ function MarketSandbox() {
         const price = oc && oc.price || 0;
         const qty = h && h.qty || 0;
         if (ticker && REMOVED_EMPLOYER_TICKERS.includes(ticker)) {
+          buyoutCash += price * qty;
+          return;
+        }
+        if (oc && oc.isPlayer && oc.kind === "crypto") {
+          // Бизнес «собственная крипта» полностью удалён из игры (V2.48.0) — выкупаем
+          // оставшиеся токены игрока по последней цене, как и другие снятые компании.
           buyoutCash += price * qty;
           return;
         }
@@ -2991,7 +2997,14 @@ function MarketSandbox() {
     setOnboarded(typeof data.onboarded === "boolean" ? data.onboarded : true);
     setHoldings(holdingsMigration.next);
     setIpHoldings(data.ipHoldings || {});
-    setPlayerVentureId(data.playerVentureId || null);
+    const removedCryptoVentureId = (() => {
+      const oc = oldCompaniesById[data.playerVentureId];
+      return oc && oc.isPlayer && oc.kind === "crypto" ? oc.id : null;
+    })();
+    setPlayerVentureId(removedCryptoVentureId ? null : data.playerVentureId || null);
+    if (removedCryptoVentureId) {
+      setTimeout(() => notify("\u0411\u0438\u0437\u043D\u0435\u0441 \xAB\u0421\u043E\u0431\u0441\u0442\u0432\u0435\u043D\u043D\u0430\u044F \u043A\u0440\u0438\u043F\u0442\u0430\xBB \u0443\u0431\u0440\u0430\u043D \u0438\u0437 \u0438\u0433\u0440\u044B \u2014 \u043E\u0441\u0442\u0430\u0432\u0448\u0438\u0435\u0441\u044F \u0442\u043E\u043A\u0435\u043D\u044B \u0432\u044B\u043A\u0443\u043F\u043B\u0435\u043D\u044B \u043F\u043E \u043F\u043E\u0441\u043B\u0435\u0434\u043D\u0435\u0439 \u0446\u0435\u043D\u0435", true), 800);
+    }
     setBonds(Array.isArray(data.bonds) ? data.bonds : []);
     setLeveragedPositions(Array.isArray(data.leveragedPositions) ? data.leveragedPositions : []);
     setResellShops(Array.isArray(data.resellShops) ? data.resellShops.map((s) => {
@@ -11604,14 +11617,7 @@ function MarketSandbox() {
               /* @__PURE__ */ jsx("div", { style: { fontSize: 18, fontWeight: 700, marginTop: 8 }, children: playerVenture || resellShops.length || factories.length || warehouses.length ? "\u0414\u043E\u0431\u0430\u0432\u0438\u0442\u044C \u0435\u0449\u0451 \u0431\u0438\u0437\u043D\u0435\u0441" : "\u0417\u0430\u043F\u0443\u0441\u0442\u0438 \u0441\u0432\u043E\u0439 \u0431\u0438\u0437\u043D\u0435\u0441" }),
               /* @__PURE__ */ jsx("div", { style: { fontSize: 13, color: C.inkDim, marginTop: 4 }, children: "\u0421 \u0447\u0435\u0433\u043E \u043D\u0430\u0447\u043D\u0451\u043C?" })
             ] }),
-            !playerVenture && /* @__PURE__ */ jsxs("button", { onClick: () => {
-              setBizPath("crypto");
-              setForm((f) => ({ ...f, kind: "crypto" }));
-            }, style: { ...choiceCardStyle(false), width: "100%", marginBottom: 10, display: "block" }, children: [
-              /* @__PURE__ */ jsx("div", { style: { fontWeight: 700, fontSize: 15 }, children: "\u041A\u0440\u0438\u043F\u0442\u043E\u0432\u0430\u043B\u044E\u0442\u0430" }),
-              /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginTop: 4 }, children: "\u0421\u0430\u043C\u044B\u0439 \u043F\u0440\u043E\u0441\u0442\u043E\u0439 \u0441\u0442\u0430\u0440\u0442 \xB7 \u043B\u0438\u0441\u0442\u0438\u043D\u0433 $300" })
-            ] }),
-            /* @__PURE__ */ jsxs("button", { onClick: () => setBizPath("real"), style: { ...choiceCardStyle(false), width: "100%", display: "block" }, children: [
+            !playerVenture && /* @__PURE__ */ jsxs("button", { onClick: () => setBizPath("real"), style: { ...choiceCardStyle(false), width: "100%", marginBottom: 10, display: "block" }, children: [
               /* @__PURE__ */ jsx("div", { style: { fontWeight: 700, fontSize: 15 }, children: "\u0420\u0435\u0430\u043B\u044C\u043D\u044B\u0439 \u0431\u0438\u0437\u043D\u0435\u0441" }),
               /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginTop: 4 }, children: "\u0417\u0430\u043A\u0443\u043F\u043A\u0438, \u0441\u043A\u043B\u0430\u0434, \u043B\u043E\u0433\u0438\u0441\u0442\u0438\u043A\u0430 \u2014 \u0431\u043B\u0438\u0436\u0435 \u043A \u0440\u0435\u0430\u043B\u044C\u043D\u043E\u0441\u0442\u0438" })
             ] })
