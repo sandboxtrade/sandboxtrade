@@ -1,4 +1,4 @@
-// Market Sandbox — V2.50.0 (Фикс: кнопка «Аренда недвижимости» перекидывала на другой бизнес — validIds-эффект для selectedBizId не знал про "rental", теперь знает. Прозрачность рейтинга магазина: показан qualityScore ("Качество ассортимента") под звёздами рейтинга с объяснением механики EMA (успешная продажа тянет рейтинг к 5, неуспешная — к ~1.8, вероятность успеха = qualityScore), и reviewScore каждого поставщика показан прямо на карточке поставщика — раньше было не видно, какой поставщик реально портит рейтинг.)
+// Market Sandbox — V2.51.0 (Аренда недвижимости пересобрана под реалистичную доходность и отдельный счёт бизнеса: baseRent у всех rentable-предметов поднят до правдоподобного уровня — коммерческое помещение 20k теперь даёт ≈600/цикл вместо ≈05/час (напр. home1 300, home2 1800, home3 7200, home4 13000, commercial1 2600, commercial2 1300, commercial3 9500, land1 220, land2 520, land3 1450, land4 5200 — все теперь ЗА ЦИКЛ, не за час). Выплата аренды перенесена с часового тика на RENTAL_CYCLE_MS=15 мин (тот же игровой цикл, что у склада/маркетплейса), и деньги больше не льются сразу на счёт ИП — копятся на внутреннем rentalCash бизнеса «Аренда недвижимости», откуда выводятся вручную (withdrawRentalCash) на счёт ИП, банковскую карту или серый счёт. incomePerHour у «готового бизнеса» и maintenance по-прежнему остаются на часовом тике — их не трогали. Фикс: selectedBizId validIds не знал про "rental" — кнопка аренды перекидывала на другой бизнес; исправлено. UI магазина/рейтинга: показан qualityScore и reviewScore поставщиков, чтобы было видно, что двигает рейтинг магазина.)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -583,17 +583,17 @@ var SHOP_ITEMS = [
   { id: "jet1", category: "\u041C\u0430\u0448\u0438\u043D\u044B", name: "\u0427\u0430\u0441\u0442\u043D\u044B\u0439 \u0441\u0430\u043C\u043E\u043B\u0451\u0442", price: 12e5, icon: "\u2708\uFE0F", ltv: 0.3, liquidity: "slow", maintenance: 900, ratingBonus: 10, unlocks: "\u041C\u0430\u043A\u0441\u0438\u043C\u0430\u043B\u044C\u043D\u044B\u0439 \u0441\u0442\u0430\u0442\u0443\u0441\u043D\u044B\u0439 \u0430\u043A\u0442\u0438\u0432 \u0438 \u0441\u0430\u043C\u044B\u0439 \u0431\u043E\u043B\u044C\u0448\u043E\u0439 \u043F\u043B\u044E\u0441 \u043A \u0434\u043E\u0432\u0435\u0440\u0438\u044E \u0431\u0430\u043D\u043A\u043E\u0432" },
   { id: "garage1", category: "\u041D\u0435\u0434\u0432\u0438\u0436\u0438\u043C\u043E\u0441\u0442\u044C \u0436\u0438\u043B\u0430\u044F", name: "\u0413\u0430\u0440\u0430\u0436", price: 8e3, icon: "\u{1F17F}\uFE0F", ltv: 0.3, liquidity: "normal", maintenance: 0, unlocks: "\u0421\u043D\u0438\u0436\u0430\u0435\u0442 \u0440\u0438\u0441\u043A \u043F\u0440\u043E\u0441\u0442\u043E\u044F \u0442\u0440\u0430\u043D\u0441\u043F\u043E\u0440\u0442\u0430, \u0434\u043E\u043F\u043E\u043B\u043D\u044F\u0435\u0442 \u0432\u043B\u0430\u0434\u0435\u043D\u0438\u0435 \u043C\u0430\u0448\u0438\u043D\u043E\u0439" },
   { id: "home0", category: "\u041D\u0435\u0434\u0432\u0438\u0436\u0438\u043C\u043E\u0441\u0442\u044C \u0436\u0438\u043B\u0430\u044F", name: "\u041A\u043E\u043C\u043D\u0430\u0442\u0430 \u0432 \u043A\u043E\u043C\u043C\u0443\u043D\u0430\u043B\u043A\u0435", price: 4e3, icon: "\u{1F6CF}\uFE0F", ltv: 0.35, liquidity: "normal", maintenance: 0, waivesRent: true, unlocks: "\u041E\u0442\u043C\u0435\u043D\u044F\u0435\u0442 \u0430\u0440\u0435\u043D\u0434\u0443 \u0436\u0438\u043B\u044C\u044F \u2014 \u0441\u0430\u043C\u044B\u0439 \u0434\u0435\u0448\u0451\u0432\u044B\u0439 \u0432\u0430\u0440\u0438\u0430\u043D\u0442 \u0441\u0432\u043E\u0435\u0433\u043E \u0436\u0438\u043B\u044C\u044F" },
-  { id: "home1", category: "\u041D\u0435\u0434\u0432\u0438\u0436\u0438\u043C\u043E\u0441\u0442\u044C \u0436\u0438\u043B\u0430\u044F", name: "\u041A\u0432\u0430\u0440\u0442\u0438\u0440\u0430-\u0441\u0442\u0443\u0434\u0438\u044F", price: 15e3, icon: "\u{1F3E2}", ltv: 0.55, liquidity: "normal", maintenance: 0, waivesRent: true, rentable: true, baseRent: 14, unlocks: "\u041E\u0442\u043C\u0435\u043D\u044F\u0435\u0442 \u0430\u0440\u0435\u043D\u0434\u0443 \u0436\u0438\u043B\u044C\u044F \xB7 \u043C\u043E\u0436\u043D\u043E \u0441\u0434\u0430\u0442\u044C \u0432 \u0430\u0440\u0435\u043D\u0434\u0443" },
-  { id: "home2", category: "\u041D\u0435\u0434\u0432\u0438\u0436\u0438\u043C\u043E\u0441\u0442\u044C \u0436\u0438\u043B\u0430\u044F", name: "\u0414\u043E\u043C \u0437\u0430 \u0433\u043E\u0440\u043E\u0434\u043E\u043C", price: 9e4, icon: "\u{1F3E1}", ltv: 0.6, liquidity: "normal", maintenance: 0, waivesRent: true, ratingBonus: 2, rentable: true, baseRent: 78, unlocks: "\u041E\u0442\u043C\u0435\u043D\u044F\u0435\u0442 \u0430\u0440\u0435\u043D\u0434\u0443 \u0436\u0438\u043B\u044C\u044F + \u043F\u043B\u044E\u0441 \u043A \u0434\u043E\u0432\u0435\u0440\u0438\u044E \u0431\u0430\u043D\u043A\u043E\u0432 \xB7 \u043C\u043E\u0436\u043D\u043E \u0441\u0434\u0430\u0442\u044C \u0432 \u0430\u0440\u0435\u043D\u0434\u0443" },
-  { id: "home3", category: "\u041D\u0435\u0434\u0432\u0438\u0436\u0438\u043C\u043E\u0441\u0442\u044C \u0436\u0438\u043B\u0430\u044F", name: "\u041E\u0441\u043E\u0431\u043D\u044F\u043A", price: 4e5, icon: "\u{1F3F0}", ltv: 0.65, liquidity: "slow", maintenance: 0, waivesRent: true, ratingBonus: 5, rentable: true, baseRent: 310, unlocks: "\u041E\u0442\u043C\u0435\u043D\u044F\u0435\u0442 \u0430\u0440\u0435\u043D\u0434\u0443 \u0436\u0438\u043B\u044C\u044F + \u0437\u0430\u043C\u0435\u0442\u043D\u044B\u0439 \u043F\u043B\u044E\u0441 \u043A \u0434\u043E\u0432\u0435\u0440\u0438\u044E \u0431\u0430\u043D\u043A\u043E\u0432 \xB7 \u043C\u043E\u0436\u043D\u043E \u0441\u0434\u0430\u0442\u044C \u0432 \u0430\u0440\u0435\u043D\u0434\u0443" },
-  { id: "home4", category: "\u041D\u0435\u0434\u0432\u0438\u0436\u0438\u043C\u043E\u0441\u0442\u044C \u0436\u0438\u043B\u0430\u044F", name: "\u041F\u0435\u043D\u0442\u0445\u0430\u0443\u0441 \u0432 \u0446\u0435\u043D\u0442\u0440\u0435", price: 8e5, icon: "\u{1F3D9}\uFE0F", ltv: 0.7, liquidity: "slow", maintenance: 0, waivesRent: true, ratingBonus: 8, rentable: true, baseRent: 640, unlocks: "\u041E\u0442\u043C\u0435\u043D\u044F\u0435\u0442 \u0430\u0440\u0435\u043D\u0434\u0443 \u0436\u0438\u043B\u044C\u044F + \u043C\u0430\u043A\u0441\u0438\u043C\u0430\u043B\u044C\u043D\u044B\u0439 \u043F\u043B\u044E\u0441 \u043A \u0434\u043E\u0432\u0435\u0440\u0438\u044E \u0431\u0430\u043D\u043A\u043E\u0432 \xB7 \u043C\u043E\u0436\u043D\u043E \u0441\u0434\u0430\u0442\u044C \u0432 \u0430\u0440\u0435\u043D\u0434\u0443" },
-  { id: "commercial1", category: "\u041A\u043E\u043C\u043C\u0435\u0440\u0447\u0435\u0441\u043A\u0438\u0435 \u043F\u043E\u043C\u0435\u0449\u0435\u043D\u0438\u044F", name: "\u041A\u043E\u043C\u043C\u0435\u0440\u0447\u0435\u0441\u043A\u043E\u0435 \u043F\u043E\u043C\u0435\u0449\u0435\u043D\u0438\u0435", price: 12e4, icon: "\u{1F3EC}", ltv: 0.5, liquidity: "slow", maintenance: 60, rentable: true, baseRent: 105, unlocks: "\u0422\u0440\u0435\u0431\u0443\u0435\u0442\u0441\u044F \u0434\u043B\u044F \u043E\u0442\u043A\u0440\u044B\u0442\u0438\u044F \u0441\u0432\u043E\u0435\u0433\u043E \u0431\u0430\u043D\u043A\u0430 \u0438 \u043C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441\u0430 \xB7 \u043C\u043E\u0436\u043D\u043E \u0441\u0434\u0430\u0442\u044C \u0432 \u0430\u0440\u0435\u043D\u0434\u0443" },
-  { id: "commercial2", category: "\u041A\u043E\u043C\u043C\u0435\u0440\u0447\u0435\u0441\u043A\u0438\u0435 \u043F\u043E\u043C\u0435\u0449\u0435\u043D\u0438\u044F", name: "\u041E\u0444\u0438\u0441\u043D\u044B\u0439 \u0431\u043B\u043E\u043A", price: 6e4, icon: "\u{1F3E2}", ltv: 0.5, liquidity: "slow", maintenance: 35, rentable: true, baseRent: 52, unlocks: "\u041C\u043E\u0436\u043D\u043E \u0441\u0434\u0430\u0442\u044C \u0432 \u0430\u0440\u0435\u043D\u0434\u0443" },
-  { id: "commercial3", category: "\u041A\u043E\u043C\u043C\u0435\u0440\u0447\u0435\u0441\u043A\u0438\u0435 \u043F\u043E\u043C\u0435\u0449\u0435\u043D\u0438\u044F", name: "\u042D\u0442\u0430\u0436 \u0431\u0438\u0437\u043D\u0435\u0441-\u0446\u0435\u043D\u0442\u0440\u0430", price: 5e5, icon: "\u{1F3D7}\uFE0F", ltv: 0.55, liquidity: "slow", maintenance: 220, rentable: true, baseRent: 420, unlocks: "\u041A\u0440\u0443\u043F\u043D\u044B\u0439 \u0430\u0440\u0435\u043D\u0434\u043D\u044B\u0439 \u0430\u043A\u0442\u0438\u0432 \xB7 \u043C\u043E\u0436\u043D\u043E \u0441\u0434\u0430\u0442\u044C \u0432 \u0430\u0440\u0435\u043D\u0434\u0443" },
-  { id: "land1", category: "\u0417\u0435\u043C\u043B\u044F", name: "\u0423\u0447\u0430\u0441\u0442\u043E\u043A \u043F\u043E\u0434 \u0418\u0416\u0421", price: 15e3, icon: "\u{1F33E}", ltv: 0.45, liquidity: "slow", maintenance: 0, rentable: true, baseRent: 12, unlocks: "\u041C\u043E\u0436\u043D\u043E \u0441\u0434\u0430\u0442\u044C \u0432 \u0430\u0440\u0435\u043D\u0434\u0443" },
-  { id: "land2", category: "\u0417\u0435\u043C\u043B\u044F", name: "\u0421\u0435\u043B\u044C\u0445\u043E\u0437\u0443\u0447\u0430\u0441\u0442\u043E\u043A", price: 35e3, icon: "\u{1F33E}", ltv: 0.45, liquidity: "slow", maintenance: 0, rentable: true, baseRent: 28, unlocks: "\u041C\u043E\u0436\u043D\u043E \u0441\u0434\u0430\u0442\u044C \u0432 \u0430\u0440\u0435\u043D\u0434\u0443" },
-  { id: "land3", category: "\u0417\u0435\u043C\u043B\u044F", name: "\u041F\u0440\u043E\u043C\u044B\u0448\u043B\u0435\u043D\u043D\u044B\u0439 \u0443\u0447\u0430\u0441\u0442\u043E\u043A", price: 9e4, icon: "\u{1F3ED}", ltv: 0.5, liquidity: "slow", maintenance: 0, rentable: true, baseRent: 82, unlocks: "\u041C\u043E\u0436\u043D\u043E \u0441\u0434\u0430\u0442\u044C \u0432 \u0430\u0440\u0435\u043D\u0434\u0443" },
-  { id: "land4", category: "\u0417\u0435\u043C\u043B\u044F", name: "\u0423\u0447\u0430\u0441\u0442\u043E\u043A \u0443 \u043C\u043E\u0440\u044F", price: 3e5, icon: "\u{1F3D6}\uFE0F", ltv: 0.55, liquidity: "slow", maintenance: 0, rentable: true, baseRent: 255, unlocks: "\u042D\u043B\u0438\u0442\u043D\u044B\u0439 \u0430\u0440\u0435\u043D\u0434\u043D\u044B\u0439 \u0430\u043A\u0442\u0438\u0432 \xB7 \u043C\u043E\u0436\u043D\u043E \u0441\u0434\u0430\u0442\u044C \u0432 \u0430\u0440\u0435\u043D\u0434\u0443" },
+  { id: "home1", category: "\u041D\u0435\u0434\u0432\u0438\u0436\u0438\u043C\u043E\u0441\u0442\u044C \u0436\u0438\u043B\u0430\u044F", name: "\u041A\u0432\u0430\u0440\u0442\u0438\u0440\u0430-\u0441\u0442\u0443\u0434\u0438\u044F", price: 15e3, icon: "\u{1F3E2}", ltv: 0.55, liquidity: "normal", maintenance: 0, waivesRent: true, rentable: true, baseRent: 300, unlocks: "\u041E\u0442\u043C\u0435\u043D\u044F\u0435\u0442 \u0430\u0440\u0435\u043D\u0434\u0443 \u0436\u0438\u043B\u044C\u044F \xB7 \u043C\u043E\u0436\u043D\u043E \u0441\u0434\u0430\u0442\u044C \u0432 \u0430\u0440\u0435\u043D\u0434\u0443" },
+  { id: "home2", category: "\u041D\u0435\u0434\u0432\u0438\u0436\u0438\u043C\u043E\u0441\u0442\u044C \u0436\u0438\u043B\u0430\u044F", name: "\u0414\u043E\u043C \u0437\u0430 \u0433\u043E\u0440\u043E\u0434\u043E\u043C", price: 9e4, icon: "\u{1F3E1}", ltv: 0.6, liquidity: "normal", maintenance: 0, waivesRent: true, ratingBonus: 2, rentable: true, baseRent: 1800, unlocks: "\u041E\u0442\u043C\u0435\u043D\u044F\u0435\u0442 \u0430\u0440\u0435\u043D\u0434\u0443 \u0436\u0438\u043B\u044C\u044F + \u043F\u043B\u044E\u0441 \u043A \u0434\u043E\u0432\u0435\u0440\u0438\u044E \u0431\u0430\u043D\u043A\u043E\u0432 \xB7 \u043C\u043E\u0436\u043D\u043E \u0441\u0434\u0430\u0442\u044C \u0432 \u0430\u0440\u0435\u043D\u0434\u0443" },
+  { id: "home3", category: "\u041D\u0435\u0434\u0432\u0438\u0436\u0438\u043C\u043E\u0441\u0442\u044C \u0436\u0438\u043B\u0430\u044F", name: "\u041E\u0441\u043E\u0431\u043D\u044F\u043A", price: 4e5, icon: "\u{1F3F0}", ltv: 0.65, liquidity: "slow", maintenance: 0, waivesRent: true, ratingBonus: 5, rentable: true, baseRent: 7200, unlocks: "\u041E\u0442\u043C\u0435\u043D\u044F\u0435\u0442 \u0430\u0440\u0435\u043D\u0434\u0443 \u0436\u0438\u043B\u044C\u044F + \u0437\u0430\u043C\u0435\u0442\u043D\u044B\u0439 \u043F\u043B\u044E\u0441 \u043A \u0434\u043E\u0432\u0435\u0440\u0438\u044E \u0431\u0430\u043D\u043A\u043E\u0432 \xB7 \u043C\u043E\u0436\u043D\u043E \u0441\u0434\u0430\u0442\u044C \u0432 \u0430\u0440\u0435\u043D\u0434\u0443" },
+  { id: "home4", category: "\u041D\u0435\u0434\u0432\u0438\u0436\u0438\u043C\u043E\u0441\u0442\u044C \u0436\u0438\u043B\u0430\u044F", name: "\u041F\u0435\u043D\u0442\u0445\u0430\u0443\u0441 \u0432 \u0446\u0435\u043D\u0442\u0440\u0435", price: 8e5, icon: "\u{1F3D9}\uFE0F", ltv: 0.7, liquidity: "slow", maintenance: 0, waivesRent: true, ratingBonus: 8, rentable: true, baseRent: 13000, unlocks: "\u041E\u0442\u043C\u0435\u043D\u044F\u0435\u0442 \u0430\u0440\u0435\u043D\u0434\u0443 \u0436\u0438\u043B\u044C\u044F + \u043C\u0430\u043A\u0441\u0438\u043C\u0430\u043B\u044C\u043D\u044B\u0439 \u043F\u043B\u044E\u0441 \u043A \u0434\u043E\u0432\u0435\u0440\u0438\u044E \u0431\u0430\u043D\u043A\u043E\u0432 \xB7 \u043C\u043E\u0436\u043D\u043E \u0441\u0434\u0430\u0442\u044C \u0432 \u0430\u0440\u0435\u043D\u0434\u0443" },
+  { id: "commercial1", category: "\u041A\u043E\u043C\u043C\u0435\u0440\u0447\u0435\u0441\u043A\u0438\u0435 \u043F\u043E\u043C\u0435\u0449\u0435\u043D\u0438\u044F", name: "\u041A\u043E\u043C\u043C\u0435\u0440\u0447\u0435\u0441\u043A\u043E\u0435 \u043F\u043E\u043C\u0435\u0449\u0435\u043D\u0438\u0435", price: 12e4, icon: "\u{1F3EC}", ltv: 0.5, liquidity: "slow", maintenance: 60, rentable: true, baseRent: 2600, unlocks: "\u0422\u0440\u0435\u0431\u0443\u0435\u0442\u0441\u044F \u0434\u043B\u044F \u043E\u0442\u043A\u0440\u044B\u0442\u0438\u044F \u0441\u0432\u043E\u0435\u0433\u043E \u0431\u0430\u043D\u043A\u0430 \u0438 \u043C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441\u0430 \xB7 \u043C\u043E\u0436\u043D\u043E \u0441\u0434\u0430\u0442\u044C \u0432 \u0430\u0440\u0435\u043D\u0434\u0443" },
+  { id: "commercial2", category: "\u041A\u043E\u043C\u043C\u0435\u0440\u0447\u0435\u0441\u043A\u0438\u0435 \u043F\u043E\u043C\u0435\u0449\u0435\u043D\u0438\u044F", name: "\u041E\u0444\u0438\u0441\u043D\u044B\u0439 \u0431\u043B\u043E\u043A", price: 6e4, icon: "\u{1F3E2}", ltv: 0.5, liquidity: "slow", maintenance: 35, rentable: true, baseRent: 1300, unlocks: "\u041C\u043E\u0436\u043D\u043E \u0441\u0434\u0430\u0442\u044C \u0432 \u0430\u0440\u0435\u043D\u0434\u0443" },
+  { id: "commercial3", category: "\u041A\u043E\u043C\u043C\u0435\u0440\u0447\u0435\u0441\u043A\u0438\u0435 \u043F\u043E\u043C\u0435\u0449\u0435\u043D\u0438\u044F", name: "\u042D\u0442\u0430\u0436 \u0431\u0438\u0437\u043D\u0435\u0441-\u0446\u0435\u043D\u0442\u0440\u0430", price: 5e5, icon: "\u{1F3D7}\uFE0F", ltv: 0.55, liquidity: "slow", maintenance: 220, rentable: true, baseRent: 9500, unlocks: "\u041A\u0440\u0443\u043F\u043D\u044B\u0439 \u0430\u0440\u0435\u043D\u0434\u043D\u044B\u0439 \u0430\u043A\u0442\u0438\u0432 \xB7 \u043C\u043E\u0436\u043D\u043E \u0441\u0434\u0430\u0442\u044C \u0432 \u0430\u0440\u0435\u043D\u0434\u0443" },
+  { id: "land1", category: "\u0417\u0435\u043C\u043B\u044F", name: "\u0423\u0447\u0430\u0441\u0442\u043E\u043A \u043F\u043E\u0434 \u0418\u0416\u0421", price: 15e3, icon: "\u{1F33E}", ltv: 0.45, liquidity: "slow", maintenance: 0, rentable: true, baseRent: 220, unlocks: "\u041C\u043E\u0436\u043D\u043E \u0441\u0434\u0430\u0442\u044C \u0432 \u0430\u0440\u0435\u043D\u0434\u0443" },
+  { id: "land2", category: "\u0417\u0435\u043C\u043B\u044F", name: "\u0421\u0435\u043B\u044C\u0445\u043E\u0437\u0443\u0447\u0430\u0441\u0442\u043E\u043A", price: 35e3, icon: "\u{1F33E}", ltv: 0.45, liquidity: "slow", maintenance: 0, rentable: true, baseRent: 520, unlocks: "\u041C\u043E\u0436\u043D\u043E \u0441\u0434\u0430\u0442\u044C \u0432 \u0430\u0440\u0435\u043D\u0434\u0443" },
+  { id: "land3", category: "\u0417\u0435\u043C\u043B\u044F", name: "\u041F\u0440\u043E\u043C\u044B\u0448\u043B\u0435\u043D\u043D\u044B\u0439 \u0443\u0447\u0430\u0441\u0442\u043E\u043A", price: 9e4, icon: "\u{1F3ED}", ltv: 0.5, liquidity: "slow", maintenance: 0, rentable: true, baseRent: 1450, unlocks: "\u041C\u043E\u0436\u043D\u043E \u0441\u0434\u0430\u0442\u044C \u0432 \u0430\u0440\u0435\u043D\u0434\u0443" },
+  { id: "land4", category: "\u0417\u0435\u043C\u043B\u044F", name: "\u0423\u0447\u0430\u0441\u0442\u043E\u043A \u0443 \u043C\u043E\u0440\u044F", price: 3e5, icon: "\u{1F3D6}\uFE0F", ltv: 0.55, liquidity: "slow", maintenance: 0, rentable: true, baseRent: 5200, unlocks: "\u042D\u043B\u0438\u0442\u043D\u044B\u0439 \u0430\u0440\u0435\u043D\u0434\u043D\u044B\u0439 \u0430\u043A\u0442\u0438\u0432 \xB7 \u043C\u043E\u0436\u043D\u043E \u0441\u0434\u0430\u0442\u044C \u0432 \u0430\u0440\u0435\u043D\u0434\u0443" },
   { id: "biz1", category: "\u0413\u043E\u0442\u043E\u0432\u044B\u0439 \u0431\u0438\u0437\u043D\u0435\u0441", name: "\u0412\u0435\u043D\u0434\u0438\u043D\u0433\u043E\u0432\u044B\u0439 \u0430\u0432\u0442\u043E\u043C\u0430\u0442", price: 3e3, icon: "\u{1F9C3}", ltv: 0.3, liquidity: "normal", maintenance: 1, incomePerHour: 6, unlocks: "\u041F\u0430\u0441\u0441\u0438\u0432\u043D\u044B\u0439 \u0434\u043E\u0445\u043E\u0434 \u0431\u0435\u0437 \u0443\u0447\u0430\u0441\u0442\u0438\u044F" },
   { id: "biz2", category: "\u0413\u043E\u0442\u043E\u0432\u044B\u0439 \u0431\u0438\u0437\u043D\u0435\u0441", name: "\u0410\u0432\u0442\u043E\u043C\u043E\u0439\u043A\u0430 \u0441\u0430\u043C\u043E\u043E\u0431\u0441\u043B\u0443\u0436\u0438\u0432\u0430\u043D\u0438\u044F", price: 4e4, icon: "\u{1F697}", ltv: 0.35, liquidity: "normal", maintenance: 8, incomePerHour: 55, unlocks: "\u041F\u0430\u0441\u0441\u0438\u0432\u043D\u044B\u0439 \u0434\u043E\u0445\u043E\u0434 \u0431\u0435\u0437 \u0443\u0447\u0430\u0441\u0442\u0438\u044F" },
   { id: "biz3", category: "\u0413\u043E\u0442\u043E\u0432\u044B\u0439 \u0431\u0438\u0437\u043D\u0435\u0441", name: "\u041C\u0438\u043D\u0438-\u043F\u0435\u043A\u0430\u0440\u043D\u044F", price: 9e4, icon: "\u{1F950}", ltv: 0.35, liquidity: "normal", maintenance: 20, incomePerHour: 140, unlocks: "\u041F\u0430\u0441\u0441\u0438\u0432\u043D\u044B\u0439 \u0434\u043E\u0445\u043E\u0434 \u0431\u0435\u0437 \u0443\u0447\u0430\u0441\u0442\u0438\u044F" },
@@ -605,6 +605,7 @@ var SHOP_ITEMS = [
 ];
 var PROPERTY_TICK_MS = 60 * 60 * 1e3;
 var PROPERTY_MARKET_TICK_MS = 90 * 1e3;
+var RENTAL_CYCLE_MS = 15 * 60 * 1e3;
 var PERSONAL_RENT_PER_HOUR = 160;
 var HOME_ITEM_IDS = ["home0", "home1", "home2", "home3", "home4"];
 var MARKET_SHOCK_THRESHOLD_PCT = 6;
@@ -2339,6 +2340,9 @@ function MarketSandbox() {
   const [ownedItems, setOwnedItems] = useState({});
   const [propertyMarketIndex, setPropertyMarketIndex] = useState({ "\u041D\u0435\u0434\u0432\u0438\u0436\u0438\u043C\u043E\u0441\u0442\u044C \u0436\u0438\u043B\u0430\u044F": 1, "\u0417\u0435\u043C\u043B\u044F": 1, "\u041A\u043E\u043C\u043C\u0435\u0440\u0447\u0435\u0441\u043A\u0438\u0435 \u043F\u043E\u043C\u0435\u0449\u0435\u043D\u0438\u044F": 1 });
   const [rentalBiz, setRentalBiz] = useState(false);
+  const [rentalCash, setRentalCash] = useState(0);
+  const [rentalWithdrawAmount, setRentalWithdrawAmount] = useState("");
+  const [rentalWithdrawTo, setRentalWithdrawTo] = useState("ip");
   const [leasedItems, setLeasedItems] = useState({});
   const [investorPersona, setInvestorPersona] = useState(null);
   const [leveragedPositions, setLeveragedPositions] = useState([]);
@@ -2489,6 +2493,7 @@ function MarketSandbox() {
   const leasedItemsRef = useRef({});
   const propertyMarketIndexRef = useRef({});
   const rentalBizRef = useRef(false);
+  const rentalCashRef = useRef(0);
   const tendersRef = useRef(tenders);
   const tenderTrackRecordRef = useRef(tenderTrackRecord);
   const nextTenderSpawnAtRef = useRef(nextTenderSpawnAt);
@@ -2640,6 +2645,9 @@ function MarketSandbox() {
   useEffect(() => {
     rentalBizRef.current = rentalBiz;
   }, [rentalBiz]);
+  useEffect(() => {
+    rentalCashRef.current = rentalCash;
+  }, [rentalCash]);
   useEffect(() => {
     tendersRef.current = tenders;
   }, [tenders]);
@@ -3061,6 +3069,7 @@ function MarketSandbox() {
     setGovBudget(data.govBudget && typeof data.govBudget === "object" ? { ...GOV_BUDGET_DEFAULT, ...data.govBudget } : GOV_BUDGET_DEFAULT);
     setOwnedItems(data.ownedItems || {});
     setRentalBiz(!!data.rentalBiz);
+    setRentalCash(Math.max(0, Number(data.rentalCash) || 0));
     setLeasedItems(data.leasedItems || {});
     setPropertyMarketIndex(data.propertyMarketIndex || { "\u041D\u0435\u0434\u0432\u0438\u0436\u0438\u043C\u043E\u0441\u0442\u044C \u0436\u0438\u043B\u0430\u044F": 1, "\u0417\u0435\u043C\u043B\u044F": 1, "\u041A\u043E\u043C\u043C\u0435\u0440\u0447\u0435\u0441\u043A\u0438\u0435 \u043F\u043E\u043C\u0435\u0449\u0435\u043D\u0438\u044F": 1 });
     setLoans(Array.isArray(data.loans) ? data.loans : []);
@@ -3233,6 +3242,7 @@ function MarketSandbox() {
     govBudget: govBudgetRef.current,
     ownedItems: ownedItemsRef.current,
     rentalBiz: rentalBizRef.current,
+    rentalCash: rentalCashRef.current,
     leasedItems: leasedItemsRef.current,
     propertyMarketIndex: propertyMarketIndexRef.current,
     loans: loansRef.current,
@@ -5424,8 +5434,6 @@ function MarketSandbox() {
     if (!loaded) return;
     const id = setInterval(() => {
       const items = ownedItemsRef.current;
-      const leased = leasedItemsRef.current;
-      const idx = propertyMarketIndexRef.current;
       let cost = HOME_ITEM_IDS.some((hid) => (items[hid] || 0) > 0) ? 0 : PERSONAL_RENT_PER_HOUR;
       let income = 0;
       Object.entries(items).forEach(([itemId, qty]) => {
@@ -5433,16 +5441,12 @@ function MarketSandbox() {
         if (!item || qty <= 0) return;
         if (item.maintenance) cost += item.maintenance * qty;
         if (item.incomePerHour) income += item.incomePerHour * qty;
-        if (item.rentable && (leased[itemId] || 0) > 0) {
-          const mult = idx[item.category] || 1;
-          income += Math.round(item.baseRent * mult) * Math.min(leased[itemId], qty);
-        }
       });
       const accounts = bankAccountsRef.current;
       const firstCardId = Object.keys(accounts).find((bId) => !accounts[bId].frozen);
       if (income > 0) {
         setIpCash((c) => c + income);
-        logTx("\u0414\u043E\u0445\u043E\u0434 \u043E\u0442 \u0430\u043A\u0442\u0438\u0432\u043E\u0432 (\u0431\u0438\u0437\u043D\u0435\u0441/\u0430\u0440\u0435\u043D\u0434\u0430)", income, "in");
+        logTx("\u0414\u043E\u0445\u043E\u0434 \u043E\u0442 \u0433\u043E\u0442\u043E\u0432\u043E\u0433\u043E \u0431\u0438\u0437\u043D\u0435\u0441\u0430", income, "in");
         setTimeout(saveGame, 50);
       }
       if (cost > 0 && firstCardId) {
@@ -5456,6 +5460,31 @@ function MarketSandbox() {
     }, PROPERTY_TICK_MS);
     return () => clearInterval(id);
   }, [loaded]);
+  useEffect(() => {
+    if (!loaded || !rentalBizRef.current) return;
+    const id = setInterval(() => {
+      if (!rentalBizRef.current) return;
+      const items = ownedItemsRef.current;
+      const leased = leasedItemsRef.current;
+      const idx = propertyMarketIndexRef.current;
+      // Аренда копится ВНУТРИ бизнеса (rentalCash), а не сразу на счёт ИП — выводить нужно
+      // вручную. Платит раз в игровой цикл (RENTAL_CYCLE_MS=15 мин), а не каждый час.
+      let income = 0;
+      Object.entries(items).forEach(([itemId, qty]) => {
+        const item = SHOP_ITEMS.find((i) => i.id === itemId);
+        if (!item || !item.rentable || qty <= 0) return;
+        const leasedQty = Math.min(leased[itemId] || 0, qty);
+        if (leasedQty <= 0) return;
+        const mult = idx[item.category] || 1;
+        income += Math.round(item.baseRent * mult) * leasedQty;
+      });
+      if (income > 0) {
+        setRentalCash((c) => c + income);
+        setTimeout(saveGame, 50);
+      }
+    }, RENTAL_CYCLE_MS);
+    return () => clearInterval(id);
+  }, [loaded, rentalBiz]);
   useEffect(() => {
     if (!loaded) return;
     const id = setInterval(() => {
@@ -8641,6 +8670,14 @@ function MarketSandbox() {
     });
     setTimeout(saveGame, 50);
   };
+  const withdrawRentalCash = (amountRaw, toAccount) => {
+    const amount = Math.max(0, Math.round(Number(amountRaw) || 0));
+    if (amount <= 0 || amount > rentalCash) return;
+    setRentalCash((c) => c - amount);
+    adjustAccountBalance(toAccount, amount);
+    logTx("\u0412\u044B\u0432\u043E\u0434 \u0438\u0437 \u00AB\u0410\u0440\u0435\u043D\u0434\u044B \u043D\u0435\u0434\u0432\u0438\u0436\u0438\u043C\u043E\u0441\u0442\u0438\u00BB", amount, "in");
+    setTimeout(saveGame, 50);
+  };
   const resetGame = () => {
     engineRef.current = {};
     setOnboarded(false);
@@ -8687,6 +8724,7 @@ function MarketSandbox() {
     setBondInputs({});
     setOwnedItems({});
     setRentalBiz(false);
+    setRentalCash(0);
     setLeasedItems({});
     setPropertyMarketIndex({ "\u041D\u0435\u0434\u0432\u0438\u0436\u0438\u043C\u043E\u0441\u0442\u044C \u0436\u0438\u043B\u0430\u044F": 1, "\u0417\u0435\u043C\u043B\u044F": 1, "\u041A\u043E\u043C\u043C\u0435\u0440\u0447\u0435\u0441\u043A\u0438\u0435 \u043F\u043E\u043C\u0435\u0449\u0435\u043D\u0438\u044F": 1 });
     setLeveragedPositions([]);
@@ -10383,17 +10421,37 @@ function MarketSandbox() {
           ] }),
           rentalBiz && selectedBizId === "rental" && (() => {
             const rentableItems = SHOP_ITEMS.filter((i) => i.rentable && (ownedItems[i.id] || 0) > 0);
-            const totalHourly = rentableItems.reduce((s, i) => {
+            const totalPerCycle = rentableItems.reduce((s, i) => {
               const leased = Math.min(leasedItems[i.id] || 0, ownedItems[i.id] || 0);
               return s + leased * Math.round(i.baseRent * (propertyMarketIndex[i.category] || 1));
             }, 0);
+            const withdrawOptions = [
+              { id: "ip", label: "\u0421\u0447\u0451\u0442 \u0418\u041F" },
+              ...BANK_ACCOUNTS.filter((b) => bankAccounts[b.id] && !bankAccounts[b.id].frozen).map((b) => ({ id: b.id, label: `${b.name} (\u2022\u2022\u2022\u2022 ${bankAccounts[b.id].cardLast4})` })),
+              ...greyAccount && !greyAccount.frozen ? [{ id: "grey", label: `${GREY_BANK.name} (\u2022\u2022\u2022\u2022 ${greyAccount.cardLast4})` }] : []
+            ];
+            const validWithdrawTo = withdrawOptions.some((o) => o.id === rentalWithdrawTo) ? rentalWithdrawTo : withdrawOptions[0]?.id || "ip";
             return /* @__PURE__ */ jsxs("div", { children: [
               /* @__PURE__ */ jsxs("div", { style: { background: "linear-gradient(135deg, #1a2418, #0c0c16)", border: `1px solid ${C.green}55`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
                 /* @__PURE__ */ jsx("div", { style: { fontWeight: 700, fontSize: 16, color: C.ink }, children: "\u0410\u0440\u0435\u043D\u0434\u0430 \u043D\u0435\u0434\u0432\u0438\u0436\u0438\u043C\u043E\u0441\u0442\u0438" }),
-                /* @__PURE__ */ jsxs("div", { style: { fontSize: 12, color: C.inkDim, marginTop: 4 }, children: [
-                  "\u0414\u043E\u0445\u043E\u0434 \u0441\u0435\u0439\u0447\u0430\u0441: ",
-                  /* @__PURE__ */ jsxs("b", { style: { color: C.green }, children: [fmt(totalHourly), "/\u0447\u0430\u0441"] })
+                /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginTop: 8 }, children: [
+                  /* @__PURE__ */ jsxs("div", { children: [
+                    /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint }, children: "\u041D\u0430 \u0441\u0447\u0451\u0442\u0435 \u0431\u0438\u0437\u043D\u0435\u0441\u0430" }),
+                    /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 22, fontWeight: 700, color: C.green }, children: fmt(Math.round(rentalCash)) })
+                  ] }),
+                  /* @__PURE__ */ jsxs("div", { style: { textAlign: "right" }, children: [
+                    /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint }, children: "\u0414\u043E\u0445\u043E\u0434/\u0446\u0438\u043A\u043B (15 \u043C\u0438\u043D)" }),
+                    /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 15, fontWeight: 700 }, children: fmt(totalPerCycle) })
+                  ] })
                 ] })
+              ] }),
+              /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 14, marginBottom: 14 }, children: [
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkDim, marginBottom: 8 }, children: "\u0412\u044B\u0432\u0435\u0441\u0442\u0438 \u0441\u043E \u0441\u0447\u0451\u0442\u0430 \u0431\u0438\u0437\u043D\u0435\u0441\u0430" }),
+                /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 6 }, children: [
+                  /* @__PURE__ */ jsx("input", { type: "text", inputMode: "numeric", value: fmtInputNumber(rentalWithdrawAmount), onChange: (e) => setRentalWithdrawAmount(parseInputNumber(e.target.value)), style: { ...inputStyle, flex: 1, padding: "8px 10px", fontSize: 13 } }),
+                  /* @__PURE__ */ jsx("select", { value: validWithdrawTo, onChange: (e) => setRentalWithdrawTo(e.target.value), style: { background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, color: C.ink, fontSize: 12.5, padding: "0 8px" }, children: withdrawOptions.map((o) => /* @__PURE__ */ jsx("option", { value: o.id, children: o.label }, o.id)) })
+                ] }),
+                /* @__PURE__ */ jsx("button", { onClick: () => withdrawRentalCash(rentalWithdrawAmount, validWithdrawTo), disabled: !(Number(rentalWithdrawAmount) > 0) || Number(rentalWithdrawAmount) > rentalCash, style: { width: "100%", marginTop: 8, padding: 10, borderRadius: 9, border: "none", fontWeight: 700, fontSize: 12.5, background: Number(rentalWithdrawAmount) > 0 && Number(rentalWithdrawAmount) <= rentalCash ? C.gold : C.surface2, color: Number(rentalWithdrawAmount) > 0 && Number(rentalWithdrawAmount) <= rentalCash ? "#161207" : C.inkFaint }, children: "\u0412\u044B\u0432\u0435\u0441\u0442\u0438" })
               ] }),
               rentableItems.length === 0 && /* @__PURE__ */ jsxs("div", { style: { textAlign: "center", padding: "24px 0", color: C.inkFaint, fontSize: 13 }, children: [
                 "\u041D\u0435\u0442 \u043F\u043E\u0434\u0445\u043E\u0434\u044F\u0449\u0438\u0445 \u0430\u043A\u0442\u0438\u0432\u043E\u0432. \u041A\u0443\u043F\u0438 \u043D\u0435\u0434\u0432\u0438\u0436\u0438\u043C\u043E\u0441\u0442\u044C, \u0437\u0435\u043C\u043B\u044E \u0438\u043B\u0438 \u043A\u043E\u043C\u043C\u0435\u0440\u0447\u0435\u0441\u043A\u0438\u0435 \u043F\u043E\u043C\u0435\u0449\u0435\u043D\u0438\u044F \u0432 \u043C\u0430\u0433\u0430\u0437\u0438\u043D\u0435 \u2014 \u0438\u0445 \u043C\u043E\u0436\u043D\u043E \u0431\u0443\u0434\u0435\u0442 \u0441\u0434\u0430\u0442\u044C \u0437\u0434\u0435\u0441\u044C \u0432 \u0430\u0440\u0435\u043D\u0434\u0443."
@@ -10415,7 +10473,7 @@ function MarketSandbox() {
                         leased,
                         " \xB7 \u0441\u0442\u0430\u0432\u043A\u0430 \u2248",
                         fmt(ratePerUnit),
-                        "/\u0447\u0430\u0441 \u0437\u0430 \u0448\u0442\u0443\u043A\u0443"
+                        "/\u0446\u0438\u043A\u043B \u0437\u0430 \u0448\u0442\u0443\u043A\u0443"
                       ] })
                     ] }),
                     /* @__PURE__ */ jsxs("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 13, fontWeight: 600, color: C.green }, children: ["+", fmt(leased * ratePerUnit)] })
@@ -12752,7 +12810,7 @@ function MarketSandbox() {
                   item.rentable && /* @__PURE__ */ jsxs(Fragment, { children: [
                     " \xB7 \u0410\u0440\u0435\u043D\u0434\u0430 \u2248",
                     fmt(Math.round(item.baseRent * (propertyMarketIndex[item.category] || 1))),
-                    "/\u0447\u0430\u0441 \u0437\u0430 \u0448\u0442\u0443\u043A\u0443"
+                    "/\u0446\u0438\u043A\u043B (15 \u043C\u0438\u043D) \u0437\u0430 \u0448\u0442\u0443\u043A\u0443"
                   ] }),
                   /* @__PURE__ */ jsx("br", {}),
                   "\u041E\u0442\u043A\u0440\u044B\u0432\u0430\u0435\u0442: ",
