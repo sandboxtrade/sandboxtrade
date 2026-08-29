@@ -1,4 +1,4 @@
-// Market Sandbox — V2.49.0 (Магазин разложен на 6 вкладок по категориям: Машины, Недвижимость жилая, Искусство, Земля, Готовый бизнес, Коммерческие помещения — SHOP_CATEGORIES/shopCategory, UI-фильтр в cabinetSubTab==="shop". Добавлены новые предметы: 4 участка земли (land1-4), 4 готовых бизнеса с пассивным доходом incomePerHour (biz1-4), ещё 2 уровня коммерческих помещений (commercial2/3), доп. арт-объект (art2); equipment1 переехал в «Готовый бизнес». Три категории (Недвижимость жилая/Земля/Коммерческие помещения) помечены rentable:true с полем baseRent. Новый плавающий индекс рынка недвижимости propertyMarketIndex — по категории, дрейфует раз в 90 сек с возвратом к среднему (0.75–1.35× от базовой цены, шаг ±1.2% + мин-реверсия) — покупка/продажа/залоговая стоимость теперь считаются через effectiveItemPrice() вместо статичной item.price. Новая механика — бизнес «Аренда недвижимости» (rentalBiz, открывается за 00 в выборе бизнеса): игрок сдаёт часть своих объектов из трёх арендопригодных категорий (leasedItems, setLeaseQty), почасовой тик начисляет доход по текущей ставке аренды (baseRent × индекс) на счёт ИП, тем же тиком выплачивается доход от «готового бизнеса» (incomePerHour). Сдан­ный в аренду актив нельзя продать, пока не снят с аренды. Save/load/resetGame обновлены под propertyMarketIndex/rentalBiz/leasedItems с обратной совместимостью для старых сейвов. esbuild чист.)
+// Market Sandbox — V2.50.0 (Фикс: кнопка «Аренда недвижимости» перекидывала на другой бизнес — validIds-эффект для selectedBizId не знал про "rental", теперь знает. Прозрачность рейтинга магазина: показан qualityScore ("Качество ассортимента") под звёздами рейтинга с объяснением механики EMA (успешная продажа тянет рейтинг к 5, неуспешная — к ~1.8, вероятность успеха = qualityScore), и reviewScore каждого поставщика показан прямо на карточке поставщика — раньше было не видно, какой поставщик реально портит рейтинг.)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -4301,11 +4301,11 @@ function MarketSandbox() {
     if (candidate && Math.random() < 0.08) setMarketplaceInvestorOffer(candidate);
   }, [marketplace, marketplaceInvestorOffer]);
   useEffect(() => {
-    const validIds = [...playerVentureId ? ["venture"] : [], ...marketplace ? ["marketplace"] : [], ...bank ? ["bank"] : [], ...resellShops.filter((s) => !s.mergedIntoMarketplace).map((s) => s.id), ...factories.map((f) => f.id), ...warehouses.filter((w) => !w.assignedToMarketplace).map((w) => w.id)];
+    const validIds = [...playerVentureId ? ["venture"] : [], ...marketplace ? ["marketplace"] : [], ...bank ? ["bank"] : [], ...rentalBiz ? ["rental"] : [], ...resellShops.filter((s) => !s.mergedIntoMarketplace).map((s) => s.id), ...factories.map((f) => f.id), ...warehouses.filter((w) => !w.assignedToMarketplace).map((w) => w.id)];
     if (selectedBizId !== null && !validIds.includes(selectedBizId)) {
       setSelectedBizId(validIds[0] || null);
     }
-  }, [playerVentureId, marketplace, bank, resellShops, factories, warehouses, selectedBizId]);
+  }, [playerVentureId, marketplace, bank, rentalBiz, resellShops, factories, warehouses, selectedBizId]);
   useEffect(() => {
     if (!loaded) return;
     const id = setInterval(() => {
@@ -11188,6 +11188,12 @@ function MarketSandbox() {
                     shop.rating.toFixed(1)
                   ] })
                 ] }),
+                /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint, marginTop: 8, lineHeight: 1.6 }, children: [
+                  "\u041A\u0430\u0447\u0435\u0441\u0442\u0432\u043E \u0430\u0441\u0441\u043E\u0440\u0442\u0438\u043C\u0435\u043D\u0442\u0430 (\u043E\u043F\u0440\u0435\u0434\u0435\u043B\u044F\u0435\u0442\u0441\u044F \u043F\u043E\u0441\u0442\u0430\u0432\u0449\u0438\u043A\u0430\u043C\u0438 \u0432 \u0441\u0442\u043E\u043A\u0435): ",
+                  /* @__PURE__ */ jsxs("b", { style: { color: shop.qualityScore >= 0.7 ? C.green : shop.qualityScore >= 0.5 ? C.gold : C.red }, children: [Math.round(shop.qualityScore * 100), "%"] }),
+                  /* @__PURE__ */ jsx("br", {}),
+                  "\u041A\u0430\u0436\u0434\u0430\u044F \u043F\u0440\u043E\u0434\u0430\u0436\u0430 \u0441 \u0432\u0435\u0440\u043E\u044F\u0442\u043D\u043E\u0441\u0442\u044C\u044E \xAB\u043A\u0430\u0447\u0435\u0441\u0442\u0432\u043E\xBB \u0442\u044F\u043D\u0435\u0442 \u0440\u0435\u0439\u0442\u0438\u043D\u0433 \u0432\u0432\u0435\u0440\u0445 (\u043A 5), \u0438\u043D\u0430\u0447\u0435 \u2014 \u0432\u043D\u0438\u0437 (\u043A ~1.8). \u0427\u0442\u043E\u0431\u044B \u043F\u043E\u0434\u043D\u044F\u0442\u044C \u0440\u0435\u0439\u0442\u0438\u043D\u0433 \u2014 \u0437\u0430\u043A\u0430\u0437\u044B\u0432\u0430\u0439 \u0443 \u043F\u043E\u0441\u0442\u0430\u0432\u0449\u0438\u043A\u043E\u0432 \u0441 \u0432\u044B\u0441\u043E\u043A\u0438\u043C \u043A\u0430\u0447\u0435\u0441\u0442\u0432\u043E\u043C 90%+, \u043D\u0435 \u0433\u043E\u043D\u0438\u0441\u044C \u0437\u0430 \u0441\u0430\u043C\u044B\u043C \u0434\u0435\u0448\u0451\u0432\u044B\u043C \u2014 \u0441\u043A\u0430\u0437\u044B\u0432\u0430\u0435\u0442\u0441\u044F \u043D\u0430 \u0440\u0435\u0439\u0442\u0438\u043D\u0433\u0435, \u043F\u0440\u043E\u0434\u0430\u0436\u0430\u0445 \u0438 \u0432\u043E\u0437\u043C\u043E\u0436\u043D\u043E\u0441\u0442\u0438 \u0441\u043B\u0438\u0442\u044C\u0441\u044F \u0441 ZZONE."
+                ] }),
                 /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 12, marginTop: 10, fontSize: 12, color: C.inkDim, flexWrap: "wrap" }, children: [
                   PRODUCT_CATEGORIES.map((cat) => {
                     const c = shop.categories?.[cat.id];
@@ -11368,6 +11374,11 @@ function MarketSandbox() {
                     supplierHealth.toFixed(1),
                     "% \xB7 ",
                     supplierHealth >= 10 ? "\u0441\u043F\u0440\u043E\u0441 \u0432\u044B\u0441\u043E\u043A\u0438\u0439, \u0434\u043E\u0440\u043E\u0436\u0435" : supplierHealth <= -10 ? "\u043F\u0440\u043E\u0441\u0435\u043B, \u0441\u043A\u0438\u0434\u043A\u0438" : "\u0441\u0442\u0430\u0431\u0438\u043B\u044C\u043D\u043E"
+                  ] }),
+                  /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: s.reviewScore >= 0.7 ? C.green : s.reviewScore >= 0.5 ? C.gold : C.red, marginTop: 2 }, children: [
+                    "\u041A\u0430\u0447\u0435\u0441\u0442\u0432\u043E \u043F\u043E\u0441\u0442\u0430\u0432\u043E\u043A: ",
+                    Math.round(s.reviewScore * 100),
+                    "% \xB7 \u0432\u043B\u0438\u044F\u0435\u0442 \u043D\u0430 \u0440\u0435\u0439\u0442\u0438\u043D\u0433 \u043C\u0430\u0433\u0430\u0437\u0438\u043D\u0430"
                   ] }),
                   /* @__PURE__ */ jsxs("div", { style: { fontSize: 11.5, color: C.inkDim, margin: "6px 0" }, children: [
                     s.desc,
