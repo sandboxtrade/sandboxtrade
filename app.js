@@ -1,4 +1,4 @@
-// Market Sandbox — V2.51.0 (Аренда недвижимости пересобрана под реалистичную доходность и отдельный счёт бизнеса: baseRent у всех rentable-предметов поднят до правдоподобного уровня — коммерческое помещение 20k теперь даёт ≈600/цикл вместо ≈05/час (напр. home1 300, home2 1800, home3 7200, home4 13000, commercial1 2600, commercial2 1300, commercial3 9500, land1 220, land2 520, land3 1450, land4 5200 — все теперь ЗА ЦИКЛ, не за час). Выплата аренды перенесена с часового тика на RENTAL_CYCLE_MS=15 мин (тот же игровой цикл, что у склада/маркетплейса), и деньги больше не льются сразу на счёт ИП — копятся на внутреннем rentalCash бизнеса «Аренда недвижимости», откуда выводятся вручную (withdrawRentalCash) на счёт ИП, банковскую карту или серый счёт. incomePerHour у «готового бизнеса» и maintenance по-прежнему остаются на часовом тике — их не трогали. Фикс: selectedBizId validIds не знал про "rental" — кнопка аренды перекидывала на другой бизнес; исправлено. UI магазина/рейтинга: показан qualityScore и reviewScore поставщиков, чтобы было видно, что двигает рейтинг магазина.)
+// Market Sandbox — V2.52.0 (Darknet: новая вкладка «Влияние» — «Рыночное влияние» (4 уровня: Локальный толчок $350k/5-15%, Раскачка актива $3M/15-50%, Агрессивная раскачка $15M/30-100%, Системное воздействие $60M/сектор 10-30% на каждый актив). 95% исполнитель реально работает / 5% скам (деньги теряются без эффекта). НЕ трогает price/marketCap напрямую фиксированным числом: скошенный ролл силы (min+(max-min)*rand^1.5) × darknetLiquidityFactor (чем меньше market cap актива относительно REF_MCAP=1.5B, тем сильнее относительный эффект, clamp 0.5-2.5x) × darknetManipulationDampening (анти-фарм по частым операциям на один актив, поле darknetManipulation на компании, decay 4/мин). Эффект разбит 40% мгновенный applyImpact + 60% в decaying darknetMomentum (геометрическое затухание ×0.82 каждую минуту через applyImpact на отдельном тике DARKNET_MOMENTUM_TICK_MS=60с — хвост ~19-20 минут вместо мгновенного фиксированного %). Риск разворота: вероятность растёт от силы импульса и текущего manipulation, при срабатывании через 12-25 мин планируется частичный откат (-30..-65% от полученного движения) с новостным постом. Заказ асинхронный — результат приходит через 15-35 сек (scheduleEvent), карточки статуса операций в UI (ожидание/успех %/скам). esbuild чист.)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -568,6 +568,28 @@ var IP_TURNOVER_CAP = 1e5;
 var IP_WEALTH_TAX_RATE = 0.07;
 var BLACKMARKET_HEAT_THRESHOLD = 25;
 var BLACKMARKET_FREEZE_MS = 8 * 60 * 1e3;
+// ---- Darknet: «Рыночное влияние» ----
+// 95% исполнитель реально работает, 5% скам (теряешь деньги без эффекта на рынок).
+// Успех НЕ гарантирует прибыль игроку — создаёт сильный, но затухающий импульс через
+// applyImpact + инерцию (darknetMomentum), а не мгновенный фиксированный %.
+var DARKNET_INFLUENCE_SCAM_CHANCE = 0.05;
+var DARKNET_INFLUENCE_REF_MCAP = 1.5e9;
+var DARKNET_MOMENTUM_TICK_MS = 60 * 1e3;
+var DARKNET_MOMENTUM_DECAY = 0.82;
+var DARKNET_MANIPULATION_DECAY_PER_TICK = 4;
+var DARKNET_INFLUENCE_TIERS = [
+  { id: "local", name: "\u041B\u043E\u043A\u0430\u043B\u044C\u043D\u044B\u0439 \u0442\u043E\u043B\u0447\u043E\u043A", cost: 350e3, min: 5, max: 15, reversalBase: 0.06, sector: false },
+  { id: "pump", name: "\u0420\u0430\u0441\u043A\u0430\u0447\u043A\u0430 \u0430\u043A\u0442\u0438\u0432\u0430", cost: 3e6, min: 15, max: 50, reversalBase: 0.2, sector: false },
+  { id: "aggressive", name: "\u0410\u0433\u0440\u0435\u0441\u0441\u0438\u0432\u043D\u0430\u044F \u0440\u0430\u0441\u043A\u0430\u0447\u043A\u0430", cost: 15e6, min: 30, max: 100, reversalBase: 0.4, sector: false },
+  { id: "systemic", name: "\u0421\u0438\u0441\u0442\u0435\u043C\u043D\u043E\u0435 \u0432\u043E\u0437\u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0435", cost: 6e7, min: 10, max: 30, reversalBase: 0.25, sector: true }
+];
+function darknetLiquidityFactor(company) {
+  const mcap = Math.max(1e6, (company.price || 1) * (company.supply || 1e6));
+  return Math.max(0.5, Math.min(2.5, Math.sqrt(DARKNET_INFLUENCE_REF_MCAP / mcap)));
+}
+function darknetManipulationDampening(manipulation) {
+  return 1 / (1 + Math.max(0, manipulation || 0) / 60);
+}
 var MULE_WARMUP_TARGET = 60;
 var MULE_WARMUP_SMALL_TX_GAIN = 8;
 var MULE_THEFT_CHECK_MS = 9e4;
@@ -2414,6 +2436,9 @@ function MarketSandbox() {
   const [launderInputs, setLaunderInputs] = useState({});
   const [blackMarketOffers, setBlackMarketOffers] = useState([]);
   const [darkTab, setDarkTab] = useState("services");
+  const [darknetInfluenceTier, setDarknetInfluenceTier] = useState(DARKNET_INFLUENCE_TIERS[0].id);
+  const [darknetInfluenceTarget, setDarknetInfluenceTarget] = useState("");
+  const [darknetInfluenceJobs, setDarknetInfluenceJobs] = useState([]);
   const [blackMarketVolume, setBlackMarketVolume] = useState(0);
   const [blackMarketHeat, setBlackMarketHeat] = useState(0);
   const [blackMarketRoundsDone, setBlackMarketRoundsDone] = useState(0);
@@ -2466,6 +2491,7 @@ function MarketSandbox() {
   const blackMarketVolumeRef = useRef(blackMarketVolume);
   const blackMarketHeatRef = useRef(blackMarketHeat);
   const blackMarketRoundsRef = useRef([]);
+  const darknetInfluenceJobsRef = useRef([]);
   const launderStatsRef = useRef({ total: 0, byMule: {} });
   const blackMarketRoundsDoneRef = useRef(blackMarketRoundsDone);
   const blackMarketMuleRoundsRef = useRef(blackMarketMuleRounds);
@@ -2570,6 +2596,9 @@ function MarketSandbox() {
   useEffect(() => {
     blackMarketRoundsRef.current = blackMarketRounds;
   }, [blackMarketRounds]);
+  useEffect(() => {
+    darknetInfluenceJobsRef.current = darknetInfluenceJobs;
+  }, [darknetInfluenceJobs]);
   useEffect(() => {
     launderStatsRef.current = launderStats;
   }, [launderStats]);
@@ -3160,6 +3189,7 @@ function MarketSandbox() {
     setBlackMarketOwnRounds(typeof data.blackMarketOwnRounds === "number" ? data.blackMarketOwnRounds : 0);
     const restoredRounds = Array.isArray(data.blackMarketRounds) ? data.blackMarketRounds : data.blackMarketRound ? [data.blackMarketRound] : [];
     setBlackMarketRounds(restoredRounds);
+    setDarknetInfluenceJobs(Array.isArray(data.darknetInfluenceJobs) ? data.darknetInfluenceJobs.slice(-8) : []);
     blackMarketRoundsRef.current = restoredRounds;
     const restoredLaunder = data.launderStats && typeof data.launderStats === "object" ? data.launderStats : { total: 0, byMule: {} };
     setLaunderStats(restoredLaunder);
@@ -3277,6 +3307,7 @@ function MarketSandbox() {
     blackMarketMuleRounds: blackMarketMuleRoundsRef.current,
     blackMarketOwnRounds: blackMarketOwnRoundsRef.current,
     blackMarketRounds: blackMarketRoundsRef.current,
+    darknetInfluenceJobs: darknetInfluenceJobsRef.current,
     launderStats: launderStatsRef.current,
     muleCards: muleCardsRef.current,
     muleHoldings: muleHoldingsRef.current,
@@ -3312,6 +3343,8 @@ function MarketSandbox() {
       coinHype: c.coinHype,
       coinTrust: c.coinTrust,
       coinDemand: c.coinDemand,
+      darknetMomentum: c.darknetMomentum,
+      darknetManipulation: c.darknetManipulation,
       isPlayer: c.isPlayer,
       kind: c.kind,
       strategy: c.strategy,
@@ -3785,6 +3818,36 @@ function MarketSandbox() {
         adjustAccountBalance(ev.account, usdIn);
         logTx(`\u0418\u043D\u0432\u0435\u0441\u0442\u043E\u0440 \xB7 \u0442\u0440\u0430\u043D\u0448 ${c.ticker}`, usdIn, "in");
       }
+    } else if (ev.kind === "darknet_influence_resolve") {
+      if (!c) return;
+      const tier = DARKNET_INFLUENCE_TIERS.find((t) => t.id === ev.tierId);
+      if (!tier) return;
+      const liqFactor = darknetLiquidityFactor(c);
+      const dampening = darknetManipulationDampening(c.darknetManipulation);
+      // Правая скошенность: чаще средний результат, изредка — очень сильный (не фиксированный %).
+      const roll = Math.pow(Math.random(), 1.5);
+      const totalPct = (tier.min + (tier.max - tier.min) * roll) * liqFactor * dampening;
+      const instantPct = totalPct * 0.4;
+      const momentumInitial = totalPct * 0.6 * 0.18;
+      applyImpact(c.id, instantPct);
+      flagLeveragedPumpPattern(c.id, instantPct);
+      setCompanies((prev) => prev.map((x) => x.id === c.id ? { ...x, darknetMomentum: (x.darknetMomentum || 0) + momentumInitial, darknetManipulation: Math.min(150, (x.darknetManipulation || 0) + 30) } : x));
+      if (ev.isSectorLead || !tier.sector) {
+        setDarknetInfluenceJobs((prev) => prev.map((j) => j.id === ev.jobId ? { ...j, status: "success", resultPct: totalPct } : j));
+        pushPost({ text: `${c.ticker}: \u0440\u0435\u0437\u043A\u0438\u0439 \u0432\u0441\u043F\u043B\u0435\u0441\u043A \u043E\u0431\u044A\u0451\u043C\u0430 \u0438 \u0438\u043D\u0442\u0435\u0440\u0435\u0441\u0430 \u043A \u0430\u043A\u0442\u0438\u0432\u0443 \u2014 \u0440\u044B\u043D\u043E\u043A \u0437\u0430\u043C\u0435\u0442\u043D\u043E \u0437\u0430\u0448\u0435\u0432\u0435\u043B\u0438\u043B\u0441\u044F`, positive: true, isMacro: false, ticker: c.ticker, importance: 3 });
+      }
+      const reversalChance = Math.min(0.75, tier.reversalBase + totalPct / 400 + (c.darknetManipulation || 0) / 300);
+      if (Math.random() < reversalChance) {
+        const reversalDelay = 12 * 60 * 1e3 + Math.random() * 13 * 60 * 1e3;
+        scheduleEvent({ id: makeId("sched"), kind: "darknet_influence_reversal", companyId: c.id, ticker: c.ticker, reversalPct: -totalPct * (0.3 + Math.random() * 0.35), dueAt: Date.now() + reversalDelay });
+      }
+      if ((c.darknetManipulation || 0) >= 90) {
+        pushPost({ text: `${c.ticker}: \u0430\u043D\u0430\u043B\u0438\u0442\u0438\u043A\u0438 \u0437\u0430\u043C\u0435\u0442\u0438\u043B\u0438 \u043F\u043E\u0434\u043E\u0437\u0440\u0438\u0442\u0435\u043B\u044C\u043D\u0443\u044E \u0442\u043E\u0440\u0433\u043E\u0432\u0443\u044E \u0430\u043A\u0442\u0438\u0432\u043D\u043E\u0441\u0442\u044C \u0432\u043E\u043A\u0440\u0443\u0433 ${c.ticker}`, positive: false, isMacro: false, ticker: c.ticker, importance: 2 });
+      }
+    } else if (ev.kind === "darknet_influence_reversal") {
+      if (!c) return;
+      applyImpact(c.id, ev.reversalPct);
+      pushPost({ text: `${c.ticker}: \u0438\u043C\u043F\u0443\u043B\u044C\u0441 \u0432\u044B\u0434\u044B\u0445\u0430\u0435\u0442\u0441\u044F \u2014 \u0447\u0430\u0441\u0442\u044C \u0434\u0435\u0440\u0436\u0430\u0442\u0435\u043B\u0435\u0439 \u0444\u0438\u043A\u0441\u0438\u0440\u0443\u0435\u0442 \u043F\u0440\u0438\u0431\u044B\u043B\u044C, \u0446\u0435\u043D\u0430 \u043E\u0442\u043A\u0430\u0442\u044B\u0432\u0430\u0435\u0442\u0441\u044F`, positive: false, isMacro: false, ticker: c.ticker, importance: 2 });
     } else if (ev.kind === "oil_confirm") {
       const bank = OIL_EVENT_BANKS[ev.bankKey];
       if (!bank) return;
@@ -5500,6 +5563,33 @@ function MarketSandbox() {
     }, PROPERTY_MARKET_TICK_MS);
     return () => clearInterval(id);
   }, [loaded]);
+  useEffect(() => {
+    if (!loaded) return;
+    const id = setInterval(() => {
+      const list = companiesRef.current;
+      const updates = [];
+      list.forEach((c) => {
+        if (!c.darknetMomentum && !c.darknetManipulation) return;
+        if (Math.abs(c.darknetMomentum || 0) >= 0.05) {
+          // Инерция от Darknet «Рыночное влияние»: не мгновенный скачок, а серия
+          // затухающих доп-импульсов через ту же applyImpact, что и обычные события —
+          // геометрическое затухание ×DARKNET_MOMENTUM_DECAY даёт хвост ~20-30 мин.
+          applyImpact(c.id, c.darknetMomentum);
+        }
+        const nextMomentum = Math.abs(c.darknetMomentum || 0) < 0.05 ? 0 : c.darknetMomentum * DARKNET_MOMENTUM_DECAY;
+        const nextManipulation = Math.max(0, (c.darknetManipulation || 0) - DARKNET_MANIPULATION_DECAY_PER_TICK);
+        updates.push({ id: c.id, nextMomentum, nextManipulation });
+      });
+      if (updates.length) {
+        setCompanies((prev) => prev.map((c) => {
+          const u = updates.find((x) => x.id === c.id);
+          return u ? { ...c, darknetMomentum: u.nextMomentum, darknetManipulation: u.nextManipulation } : c;
+        }));
+        setTimeout(saveGame, 50);
+      }
+    }, DARKNET_MOMENTUM_TICK_MS);
+    return () => clearInterval(id);
+  }, [loaded]);
   const executeTrade = (companyId, side, qty, account = "personal") => {
     const company = companies.find((c) => c.id === companyId);
     if (!company || qty <= 0) return;
@@ -6726,6 +6816,34 @@ function MarketSandbox() {
     }, TENDER_MAINTENANCE_MS);
     return () => clearInterval(id);
   }, [loaded]);
+  const orderDarknetInfluence = (tierId, targetId) => {
+    const tier = DARKNET_INFLUENCE_TIERS.find((t) => t.id === tierId);
+    if (!tier || !targetId) return;
+    const src = resolvedPayFrom;
+    if (getAccountBalance(src) < tier.cost) {
+      notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u2014 \u043D\u0443\u0436\u043D\u043E ${fmt(tier.cost)}`);
+      return;
+    }
+    const targets = tier.sector ? companiesRef.current.filter((c) => c.sector === targetId && !c.isCommodity) : [companiesRef.current.find((c) => c.id === targetId)].filter(Boolean);
+    if (!targets.length) return;
+    adjustAccountBalance(src, -tier.cost);
+    logTx(`Darknet \xB7 ${tier.name}`, tier.cost, "out");
+    const jobId = makeId("dkinf");
+    const isScam = Math.random() < DARKNET_INFLUENCE_SCAM_CHANCE;
+    const label = tier.sector ? targetId : targets[0].ticker;
+    if (isScam) {
+      setDarknetInfluenceJobs((prev) => [{ id: jobId, tierId, label, status: "scam", createdAt: Date.now() }, ...prev].slice(0, 8));
+      setTimeout(() => notify("Darknet: \u0441\u0432\u044F\u0437\u044C \u0441 \u0438\u0441\u043F\u043E\u043B\u043D\u0438\u0442\u0435\u043B\u0435\u043C \u043F\u043E\u0442\u0435\u0440\u044F\u043D\u0430 \u2014 \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u044F \u043D\u0435 \u043F\u0440\u043E\u0432\u0435\u0434\u0435\u043D\u0430", false), 1200);
+      setTimeout(saveGame, 50);
+      return;
+    }
+    setDarknetInfluenceJobs((prev) => [{ id: jobId, tierId, label, status: "pending", createdAt: Date.now() }, ...prev].slice(0, 8));
+    const resolveDelay = 15e3 + Math.random() * 20e3;
+    targets.forEach((t) => {
+      scheduleEvent({ id: makeId("sched"), kind: "darknet_influence_resolve", companyId: t.id, ticker: t.ticker, tierId, jobId, isSectorLead: t.id === targets[0].id, dueAt: Date.now() + resolveDelay });
+    });
+    setTimeout(saveGame, 50);
+  };
   const refreshBlackMarketOffers = () => {
     const offers = Array.from({ length: BLACKMARKET_JOB_COUNT }, () => ({ id: makeId("bmoffer"), amount: Math.round((500 + Math.random() * 19500) / 50) * 50 }));
     setBlackMarketOffers(offers);
@@ -8773,6 +8891,7 @@ function MarketSandbox() {
     setGreyTransferDest("ip");
     setGreyFeedback(null);
     setBlackMarketRounds([]);
+    setDarknetInfluenceJobs([]);
     setLaunderStats({ total: 0, byMule: {} });
     launderStatsRef.current = { total: 0, byMule: {} };
     setBlackMarketVolume(0);
@@ -12195,7 +12314,7 @@ function MarketSandbox() {
         activeTab === "darkshop" && /* @__PURE__ */ jsxs("div", { children: [
           /* @__PURE__ */ jsxs("div", { style: { background: "linear-gradient(135deg, #1a1226, #120808)", border: `1px solid #8b3ad655`, borderRadius: 14, padding: 16, marginBottom: 16 }, children: [
             /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: "#c39bf0", textTransform: "uppercase", letterSpacing: 1.5 }, children: "\u0414\u0430\u0440\u043A\u043D\u0435\u0442" }),
-            /* @__PURE__ */ jsx("div", { style: { fontSize: 18, fontWeight: 700, marginTop: 4 }, children: darkTab === "services" ? "\u041F\u0440\u0438\u0451\u043C \u043F\u043B\u0430\u0442\u0435\u0436\u0435\u0439" : "\u041C\u0430\u0433\u0430\u0437\u0438\u043D" }),
+            /* @__PURE__ */ jsx("div", { style: { fontSize: 18, fontWeight: 700, marginTop: 4 }, children: darkTab === "services" ? "\u041F\u0440\u0438\u0451\u043C \u043F\u043B\u0430\u0442\u0435\u0436\u0435\u0439" : darkTab === "influence" ? "\u0420\u044B\u043D\u043E\u0447\u043D\u043E\u0435 \u0432\u043B\u0438\u044F\u043D\u0438\u0435" : "\u041C\u0430\u0433\u0430\u0437\u0438\u043D" }),
             blackMarketRoundsDone > 0 && darkTab === "services" && /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkFaint, marginTop: 8 }, children: [
               "\u041A\u0440\u0443\u0433\u043E\u0432 \u043F\u0440\u043E\u0439\u0434\u0435\u043D\u043E: ",
               blackMarketRoundsDone
@@ -12214,7 +12333,8 @@ function MarketSandbox() {
           ] }),
           /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 6, marginBottom: 16 }, children: [
             /* @__PURE__ */ jsx("button", { onClick: () => setDarkTab("services"), style: segStyle(darkTab === "services"), children: "\u0423\u0441\u043B\u0443\u0433\u0438" }),
-            /* @__PURE__ */ jsx("button", { onClick: () => setDarkTab("goods"), style: segStyle(darkTab === "goods"), children: "\u0422\u043E\u0432\u0430\u0440\u044B" })
+            /* @__PURE__ */ jsx("button", { onClick: () => setDarkTab("goods"), style: segStyle(darkTab === "goods"), children: "\u0422\u043E\u0432\u0430\u0440\u044B" }),
+            /* @__PURE__ */ jsx("button", { onClick: () => setDarkTab("influence"), style: segStyle(darkTab === "influence"), children: "\u0412\u043B\u0438\u044F\u043D\u0438\u0435" })
           ] }),
           darkTab === "services" && /* @__PURE__ */ jsxs("div", { children: [
             /* @__PURE__ */ jsx("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 12, marginBottom: 14, fontSize: 11.5, color: C.inkDim, lineHeight: 1.6 }, children: "\u041B\u0435\u043D\u0442\u0430 \u0437\u0430\u043A\u0430\u0437\u043E\u0432 \u043D\u0430 \u043F\u0440\u0438\u0451\u043C \u043F\u043B\u0430\u0442\u0435\u0436\u0435\u0439: $500\u2013$1000 \u2014 \u043A\u043E\u043C\u0438\u0441\u0441\u0438\u044F 20%, \u0434\u043E $5000 \u2014 16%, \u0434\u043E $10 000 \u2014 12%, \u0434\u043E $20 000 \u2014 10%. \u041E\u0441\u0442\u0430\u0432\u043B\u044F\u0435\u0448\u044C \u0441\u0435\u0431\u0435 \u043A\u043E\u043C\u0438\u0441\u0441\u0438\u044E, \u043E\u0441\u0442\u0430\u043B\u044C\u043D\u043E\u0435 \u0437\u0430 10 \u043C\u0438\u043D\u0443\u0442 \u043D\u0443\u0436\u043D\u043E \u0437\u0430\u043A\u0443\u043F\u0438\u0442\u044C \u043A\u0440\u0438\u043F\u0442\u0443 \u0438 \u043E\u0442\u043F\u0440\u0430\u0432\u0438\u0442\u044C \u043F\u043E\u043B\u0443\u0447\u0430\u0442\u0435\u043B\u044E. \u0421\u0432\u043E\u044F \u043C\u043E\u043D\u0435\u0442\u0430 \u0442\u043E\u0436\u0435 \u043F\u043E\u0434\u0445\u043E\u0434\u0438\u0442 \u2014 \u043D\u043E \u0435\u0441\u043B\u0438 \u0435\u0451 \u043D\u0430\u043A\u0430\u0447\u0438\u0432\u0430\u0442\u044C \u0434\u0435\u043D\u044C\u0433\u0430\u043C\u0438 \u0431\u0435\u0437 \u043F\u043E\u043D\u044F\u0442\u043D\u043E\u0433\u043E \u0432\u044B\u0445\u043E\u0434\u0430, \u0444\u0438\u043D\u043C\u043E\u043D\u0438\u0442\u043E\u0440\u0438\u043D\u0433 \u043E\u0431\u0440\u0430\u0449\u0430\u0435\u0442 \u043D\u0430 \u044D\u0442\u043E \u043E\u0441\u043E\u0431\u043E\u0435 \u0432\u043D\u0438\u043C\u0430\u043D\u0438\u0435. \u0427\u0435\u0440\u0435\u0437 \u0418\u041F \u0431\u0435\u0437 \u0440\u0435\u0430\u043B\u044C\u043D\u043E\u0433\u043E \u043E\u0431\u043E\u0440\u043E\u0442\u0430 \u0432 \u0442\u043E\u0432\u0430\u0440\u043A\u0435 \u2014 \u0441\u043F\u0430\u043B\u044F\u0442 \u0441 \u043F\u0435\u0440\u0432\u043E\u0433\u043E \u0436\u0435 \u0437\u0430\u0445\u043E\u0434\u0430. \u0420\u0430\u0441\u043A\u0440\u0443\u0447\u0435\u043D\u043D\u044B\u0439 \u043C\u0430\u0433\u0430\u0437\u0438\u043D \u0441 \u0445\u043E\u0440\u043E\u0448\u0435\u0439 \u0432\u044B\u0440\u0443\u0447\u043A\u043E\u0439 \u043F\u0440\u0438\u043A\u0440\u044B\u0432\u0430\u0435\u0442 \u0438 \u043F\u043E\u0437\u0432\u043E\u043B\u044F\u0435\u0442 \u0433\u043E\u043D\u044F\u0442\u044C \u0441\u0443\u043C\u043C\u044B \u043A\u0443\u0434\u0430 \u0441\u043F\u043E\u043A\u043E\u0439\u043D\u0435\u0435." }),
@@ -12438,6 +12558,59 @@ function MarketSandbox() {
                 });
               })()
             ] })
+          ] }),
+          darkTab === "influence" && /* @__PURE__ */ jsxs("div", { children: [
+            /* @__PURE__ */ jsx("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 12, marginBottom: 14, fontSize: 11.5, color: C.inkDim, lineHeight: 1.6 }, children: "\u041D\u0430\u0434\u0451\u0436\u043D\u043E\u0441\u0442\u044C \u0438\u0441\u043F\u043E\u043B\u043D\u0438\u0442\u0435\u043B\u044F: 95%. \u041E\u043F\u0435\u0440\u0430\u0446\u0438\u044F \u0441\u043E\u0437\u0434\u0430\u0451\u0442 \u0441\u0438\u043B\u044C\u043D\u044B\u0439 \u0438\u043C\u043F\u0443\u043B\u044C\u0441 \u0441\u043F\u0440\u043E\u0441\u0430, \u0430 \u0434\u0430\u043B\u044C\u0448\u0435 \u0446\u0435\u043D\u0443 \u0434\u0432\u0438\u0433\u0430\u0435\u0442 \u0441\u0430\u043C \u0440\u044B\u043D\u043E\u043A. \u0420\u0435\u0437\u0443\u043B\u044C\u0442\u0430\u0442 \u043D\u0435 \u0433\u0430\u0440\u0430\u043D\u0442\u0438\u0440\u0443\u0435\u0442 \u043F\u0440\u0438\u0431\u044B\u043B\u044C \u2014 \u0432\u043E\u0437\u043C\u043E\u0436\u0435\u043D \u043E\u0442\u043A\u0430\u0442." }),
+            darknetInfluenceJobs.length > 0 && /* @__PURE__ */ jsxs("div", { style: { marginBottom: 14 }, children: [
+              /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkDim, marginBottom: 6, textTransform: "uppercase", letterSpacing: 1 }, children: "\u041F\u043E\u0441\u043B\u0435\u0434\u043D\u0438\u0435 \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u0438" }),
+              darknetInfluenceJobs.map((j) => {
+                const tierDef = DARKNET_INFLUENCE_TIERS.find((t) => t.id === j.tierId);
+                return /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 12px", marginBottom: 6, fontSize: 12 }, children: [
+                  /* @__PURE__ */ jsxs("div", { children: [
+                    /* @__PURE__ */ jsx("div", { style: { fontWeight: 600 }, children: `${tierDef?.name || j.tierId} \xB7 ${j.label}` }),
+                    /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint }, children: j.status === "pending" ? "\u0412\u044B\u043F\u043E\u043B\u043D\u044F\u0435\u0442\u0441\u044F\u2026" : j.status === "scam" ? "\u0421\u0432\u044F\u0437\u044C \u043F\u043E\u0442\u0435\u0440\u044F\u043D\u0430 \u2014 \u0441\u043A\u0430\u043C" : "\u0417\u0430\u0432\u0435\u0440\u0448\u0435\u043D\u043E" })
+                  ] }),
+                  /* @__PURE__ */ jsx("div", { style: { fontWeight: 700, color: j.status === "scam" ? C.red : j.status === "success" ? C.green : C.inkFaint }, children: j.status === "success" ? `+${j.resultPct.toFixed(1)}%` : j.status === "scam" ? "\u2212100%" : "\u2026" })
+                ] }, j.id);
+              })
+            ] }),
+            DARKNET_INFLUENCE_TIERS.map((tier) => {
+              const isSector = tier.sector;
+              const sectorList = Array.from(new Set(companies.filter((c) => !c.isCommodity).map((c) => c.sector)));
+              const targetList = isSector ? sectorList : companies.filter((c) => !c.isCommodity && !c.rugged);
+              const currentTarget = darknetInfluenceTier === tier.id ? darknetInfluenceTarget : "";
+              const selectedTarget = currentTarget || (targetList[0] ? isSector ? targetList[0] : targetList[0].id : "");
+              const targetCompany = !isSector ? companies.find((c) => c.id === selectedTarget) : null;
+              const canAfford = getAccountBalance(resolvedPayFrom) >= tier.cost;
+              return /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
+                /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start" }, children: [
+                  /* @__PURE__ */ jsx("div", { style: { fontWeight: 700, fontSize: 14 }, children: tier.name.toUpperCase() }),
+                  /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 13, fontWeight: 700 }, children: fmt(tier.cost) })
+                ] }),
+                /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkDim, marginTop: 6, lineHeight: 1.6 }, children: [
+                  isSector ? "\u0412\u043E\u0437\u0434\u0435\u0439\u0441\u0442\u0432\u0443\u0435\u0442 \u043D\u0430 \u0432\u0435\u0441\u044C \u0441\u0435\u043A\u0442\u043E\u0440" : "\u0412\u043E\u0437\u0434\u0435\u0439\u0441\u0442\u0432\u0443\u0435\u0442 \u043D\u0430 \u043E\u0434\u0438\u043D \u0430\u043A\u0442\u0438\u0432",
+                  " \xB7 \u043F\u043E\u0442\u0435\u043D\u0446\u0438\u0430\u043B\u044C\u043D\u043E\u0435 \u0434\u0432\u0438\u0436\u0435\u043D\u0438\u0435 ",
+                  tier.min,
+                  "\u2013",
+                  tier.max,
+                  "%+",
+                  /* @__PURE__ */ jsx("br", {}),
+                  "\u041D\u0430\u0434\u0451\u0436\u043D\u043E\u0441\u0442\u044C \u0438\u0441\u043F\u043E\u043B\u043D\u0438\u0442\u0435\u043B\u044F: 95% \xB7 \u0420\u0438\u0441\u043A \u043E\u0431\u0440\u0430\u0442\u043D\u043E\u0439 \u0440\u0435\u0430\u043A\u0446\u0438\u0438: ",
+                  tier.reversalBase >= 0.3 ? "\u0432\u044B\u0441\u043E\u043A\u0438\u0439" : tier.reversalBase >= 0.15 ? "\u0441\u0440\u0435\u0434\u043D\u0438\u0439" : "\u043D\u0438\u0437\u043A\u0438\u0439"
+                ] }),
+                /* @__PURE__ */ jsx("select", { value: selectedTarget, onChange: (e) => {
+                  setDarknetInfluenceTier(tier.id);
+                  setDarknetInfluenceTarget(e.target.value);
+                }, style: { width: "100%", marginTop: 10, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, color: C.ink, fontSize: 13, padding: "10px 10px" }, children: isSector ? sectorList.map((s) => /* @__PURE__ */ jsx("option", { value: s, children: s }, s)) : targetList.map((c) => /* @__PURE__ */ jsxs("option", { value: c.id, children: [c.ticker, " \u2014 ", c.name] }, c.id)) }),
+                targetCompany && /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint, marginTop: 6 }, children: [
+                  "\u0422\u0435\u043A\u0443\u0449\u0430\u044F \u0446\u0435\u043D\u0430: ",
+                  fmt(targetCompany.price),
+                  targetCompany.darknetManipulation > 20 && /* @__PURE__ */ jsx("span", { style: { color: C.red }, children: " \xB7 \u0430\u043A\u0442\u0438\u0432 \u0443\u0436\u0435 \u043F\u043E\u0434 \u0432\u043D\u0438\u043C\u0430\u043D\u0438\u0435\u043C \u2014 \u044D\u0444\u0444\u0435\u043A\u0442 \u0441\u043B\u0430\u0431\u0435\u0435" })
+                ] }),
+                /* @__PURE__ */ jsx("button", { onClick: () => orderDarknetInfluence(tier.id, isSector ? selectedTarget : selectedTarget), disabled: !canAfford || !selectedTarget, style: { width: "100%", marginTop: 10, padding: 11, borderRadius: 10, border: "none", fontWeight: 700, fontSize: 13, background: canAfford && selectedTarget ? "#8b3ad6" : C.surface2, color: canAfford && selectedTarget ? "#fff" : C.inkFaint }, children: "\u0417\u0410\u041A\u0410\u0417\u0410\u0422\u042C" })
+              ] }, tier.id);
+            }),
+            /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkFaint, textAlign: "center", lineHeight: 1.6 }, children: "\u0420\u0435\u0437\u0443\u043B\u044C\u0442\u0430\u0442 \u043D\u0435 \u0444\u0438\u043A\u0441\u0438\u0440\u043E\u0432\u0430\u043D \u0438 \u0437\u0430\u0432\u0438\u0441\u0438\u0442 \u043E\u0442 \u0441\u043E\u0441\u0442\u043E\u044F\u043D\u0438\u044F \u0440\u044B\u043D\u043A\u0430. \u0421\u043B\u0438\u0448\u043A\u043E\u043C \u0447\u0430\u0441\u0442\u044B\u0435 \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u0438 \u043D\u0430 \u043E\u0434\u0438\u043D \u0430\u043A\u0442\u0438\u0432 \u0441\u043D\u0438\u0436\u0430\u044E\u0442 \u044D\u0444\u0444\u0435\u043A\u0442\u0438\u0432\u043D\u043E\u0441\u0442\u044C \u0438 \u043F\u043E\u0432\u044B\u0448\u0430\u044E\u0442 \u0440\u0438\u0441\u043A \u0432\u043D\u0438\u043C\u0430\u043D\u0438\u044F." })
           ] })
         ] }),
         activeTab === "cabinet" && /* @__PURE__ */ jsxs("div", { children: [
