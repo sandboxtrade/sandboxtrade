@@ -1,4 +1,4 @@
-// Market Sandbox — V2.52.0 (Darknet: новая вкладка «Влияние» — «Рыночное влияние» (4 уровня: Локальный толчок $350k/5-15%, Раскачка актива $3M/15-50%, Агрессивная раскачка $15M/30-100%, Системное воздействие $60M/сектор 10-30% на каждый актив). 95% исполнитель реально работает / 5% скам (деньги теряются без эффекта). НЕ трогает price/marketCap напрямую фиксированным числом: скошенный ролл силы (min+(max-min)*rand^1.5) × darknetLiquidityFactor (чем меньше market cap актива относительно REF_MCAP=1.5B, тем сильнее относительный эффект, clamp 0.5-2.5x) × darknetManipulationDampening (анти-фарм по частым операциям на один актив, поле darknetManipulation на компании, decay 4/мин). Эффект разбит 40% мгновенный applyImpact + 60% в decaying darknetMomentum (геометрическое затухание ×0.82 каждую минуту через applyImpact на отдельном тике DARKNET_MOMENTUM_TICK_MS=60с — хвост ~19-20 минут вместо мгновенного фиксированного %). Риск разворота: вероятность растёт от силы импульса и текущего manipulation, при срабатывании через 12-25 мин планируется частичный откат (-30..-65% от полученного движения) с новостным постом. Заказ асинхронный — результат приходит через 15-35 сек (scheduleEvent), карточки статуса операций в UI (ожидание/успех %/скам). esbuild чист.)
+// Market Sandbox — V2.53.0 (Darknet «Влияние»: оплата теперь ТОЛЬКО криптой — выбор актива сектора «Крипто» (LEDG/OPAL/TEHER) и счёта (личный holdings или ООО ipHoldings), нужное количество считается по текущей цене (cost/price) и списывается напрямую из холдингов без прохода через биржу/кэш — раньше платилось с любого счёта (карта/ИП/серый), теперь orderDarknetInfluence(tierId, targetId, cryptoId, account) требует реальный крипто-баланс на выбранном счету. UI показывает нужное количество токенов и доступный баланс перед заказом.)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -2438,6 +2438,8 @@ function MarketSandbox() {
   const [darkTab, setDarkTab] = useState("services");
   const [darknetInfluenceTier, setDarknetInfluenceTier] = useState(DARKNET_INFLUENCE_TIERS[0].id);
   const [darknetInfluenceTarget, setDarknetInfluenceTarget] = useState("");
+  const [darknetPayCrypto, setDarknetPayCrypto] = useState("");
+  const [darknetPayAccount, setDarknetPayAccount] = useState("personal");
   const [darknetInfluenceJobs, setDarknetInfluenceJobs] = useState([]);
   const [blackMarketVolume, setBlackMarketVolume] = useState(0);
   const [blackMarketHeat, setBlackMarketHeat] = useState(0);
@@ -6816,18 +6818,33 @@ function MarketSandbox() {
     }, TENDER_MAINTENANCE_MS);
     return () => clearInterval(id);
   }, [loaded]);
-  const orderDarknetInfluence = (tierId, targetId) => {
+  const orderDarknetInfluence = (tierId, targetId, cryptoId, payAccount) => {
     const tier = DARKNET_INFLUENCE_TIERS.find((t) => t.id === tierId);
-    if (!tier || !targetId) return;
-    const src = resolvedPayFrom;
-    if (getAccountBalance(src) < tier.cost) {
-      notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u2014 \u043D\u0443\u0436\u043D\u043E ${fmt(tier.cost)}`);
+    if (!tier || !targetId || !cryptoId) return;
+    const cryptoAsset = companiesRef.current.find((c) => c.id === cryptoId);
+    if (!cryptoAsset || cryptoAsset.price <= 0) return;
+    const useIp = payAccount === "ip";
+    const holdingsMap = useIp ? ipHoldings : holdings;
+    const setHoldingsMap = useIp ? setIpHoldings : setHoldings;
+    const qtyNeeded = tier.cost / cryptoAsset.price;
+    const held = holdingsMap[cryptoId]?.qty || 0;
+    if (held < qtyNeeded) {
+      notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E ${cryptoAsset.ticker} \u043D\u0430 ${useIp ? "\u0441\u0447\u0451\u0442\u0435 \u041E\u041E\u041E" : "\u043B\u0438\u0447\u043D\u043E\u043C \u0441\u0447\u0451\u0442\u0435"} \u2014 \u043D\u0443\u0436\u043D\u043E ${qtyNeeded.toFixed(4)}, \u0435\u0441\u0442\u044C ${held.toFixed(4)}`);
       return;
     }
     const targets = tier.sector ? companiesRef.current.filter((c) => c.sector === targetId && !c.isCommodity) : [companiesRef.current.find((c) => c.id === targetId)].filter(Boolean);
     if (!targets.length) return;
-    adjustAccountBalance(src, -tier.cost);
-    logTx(`Darknet \xB7 ${tier.name}`, tier.cost, "out");
+    setHoldingsMap((h) => {
+      const prevH = h[cryptoId];
+      const newQty = prevH.qty - qtyNeeded;
+      if (newQty <= 1e-9) {
+        const rest = { ...h };
+        delete rest[cryptoId];
+        return rest;
+      }
+      return { ...h, [cryptoId]: { ...prevH, qty: newQty } };
+    });
+    logTx(`Darknet \xB7 ${tier.name} (${qtyNeeded.toFixed(4)} ${cryptoAsset.ticker})`, tier.cost, "out");
     const jobId = makeId("dkinf");
     const isScam = Math.random() < DARKNET_INFLUENCE_SCAM_CHANCE;
     const label = tier.sector ? targetId : targets[0].ticker;
@@ -12560,7 +12577,31 @@ function MarketSandbox() {
             ] })
           ] }),
           darkTab === "influence" && /* @__PURE__ */ jsxs("div", { children: [
-            /* @__PURE__ */ jsx("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 12, marginBottom: 14, fontSize: 11.5, color: C.inkDim, lineHeight: 1.6 }, children: "\u041D\u0430\u0434\u0451\u0436\u043D\u043E\u0441\u0442\u044C \u0438\u0441\u043F\u043E\u043B\u043D\u0438\u0442\u0435\u043B\u044F: 95%. \u041E\u043F\u0435\u0440\u0430\u0446\u0438\u044F \u0441\u043E\u0437\u0434\u0430\u0451\u0442 \u0441\u0438\u043B\u044C\u043D\u044B\u0439 \u0438\u043C\u043F\u0443\u043B\u044C\u0441 \u0441\u043F\u0440\u043E\u0441\u0430, \u0430 \u0434\u0430\u043B\u044C\u0448\u0435 \u0446\u0435\u043D\u0443 \u0434\u0432\u0438\u0433\u0430\u0435\u0442 \u0441\u0430\u043C \u0440\u044B\u043D\u043E\u043A. \u0420\u0435\u0437\u0443\u043B\u044C\u0442\u0430\u0442 \u043D\u0435 \u0433\u0430\u0440\u0430\u043D\u0442\u0438\u0440\u0443\u0435\u0442 \u043F\u0440\u0438\u0431\u044B\u043B\u044C \u2014 \u0432\u043E\u0437\u043C\u043E\u0436\u0435\u043D \u043E\u0442\u043A\u0430\u0442." }),
+            /* @__PURE__ */ jsx("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 12, marginBottom: 14, fontSize: 11.5, color: C.inkDim, lineHeight: 1.6 }, children: "\u041D\u0430\u0434\u0451\u0436\u043D\u043E\u0441\u0442\u044C \u0438\u0441\u043F\u043E\u043B\u043D\u0438\u0442\u0435\u043B\u044F: 95%. \u041E\u043F\u0435\u0440\u0430\u0446\u0438\u044F \u0441\u043E\u0437\u0434\u0430\u0451\u0442 \u0441\u0438\u043B\u044C\u043D\u044B\u0439 \u0438\u043C\u043F\u0443\u043B\u044C\u0441 \u0441\u043F\u0440\u043E\u0441\u0430, \u0430 \u0434\u0430\u043B\u044C\u0448\u0435 \u0446\u0435\u043D\u0443 \u0434\u0432\u0438\u0433\u0430\u0435\u0442 \u0441\u0430\u043C \u0440\u044B\u043D\u043E\u043A. \u0420\u0435\u0437\u0443\u043B\u044C\u0442\u0430\u0442 \u043D\u0435 \u0433\u0430\u0440\u0430\u043D\u0442\u0438\u0440\u0443\u0435\u0442 \u043F\u0440\u0438\u0431\u044B\u043B\u044C \u2014 \u0432\u043E\u0437\u043C\u043E\u0436\u0435\u043D \u043E\u0442\u043A\u0430\u0442. \u041E\u043F\u043B\u0430\u0442\u0430 \u2014 \u0442\u043E\u043B\u044C\u043A\u043E \u043A\u0440\u0438\u043F\u0442\u043E\u0439, \u0441 \u043B\u0438\u0447\u043D\u043E\u0433\u043E \u0441\u0447\u0451\u0442\u0430 \u0438\u043B\u0438 \u0441\u0447\u0451\u0442\u0430 \u041E\u041E\u041E." }),
+            (() => {
+              const cryptoAssets = companies.filter((c) => c.sector === "\u041A\u0440\u0438\u043F\u0442\u043E");
+              const selectedCrypto = cryptoAssets.some((c) => c.id === darknetPayCrypto) ? darknetPayCrypto : cryptoAssets[0]?.id || "";
+              const holdingsMap = darknetPayAccount === "ip" ? ipHoldings : holdings;
+              const balanceQty = holdingsMap[selectedCrypto]?.qty || 0;
+              const cryptoAsset = cryptoAssets.find((c) => c.id === selectedCrypto);
+              return /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 12, marginBottom: 14 }, children: [
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkDim, marginBottom: 8 }, children: "\u0427\u0435\u043C \u043F\u043B\u0430\u0442\u0438\u0448\u044C" }),
+                /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 6, marginBottom: 8 }, children: [
+                  /* @__PURE__ */ jsx("select", { value: selectedCrypto, onChange: (e) => setDarknetPayCrypto(e.target.value), style: { flex: 1, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, color: C.ink, fontSize: 13, padding: "9px 10px" }, children: cryptoAssets.map((c) => /* @__PURE__ */ jsxs("option", { value: c.id, children: [c.ticker, " \u2014 ", c.name] }, c.id)) }),
+                  /* @__PURE__ */ jsxs("select", { value: darknetPayAccount, onChange: (e) => setDarknetPayAccount(e.target.value), style: { background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, color: C.ink, fontSize: 13, padding: "9px 10px" }, children: [
+                    /* @__PURE__ */ jsx("option", { value: "personal", children: "\u041B\u0438\u0447\u043D\u044B\u0439 \u0441\u0447\u0451\u0442" }),
+                    /* @__PURE__ */ jsx("option", { value: "ip", children: "\u0421\u0447\u0451\u0442 \u041E\u041E\u041E" })
+                  ] })
+                ] }),
+                /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkFaint }, children: [
+                  "\u0414\u043E\u0441\u0442\u0443\u043F\u043D\u043E: ",
+                  balanceQty.toFixed(4),
+                  " ",
+                  cryptoAsset?.ticker || "",
+                  cryptoAsset ? ` (\u2248${fmt(balanceQty * cryptoAsset.price)})` : ""
+                ] })
+              ] });
+            })(),
             darknetInfluenceJobs.length > 0 && /* @__PURE__ */ jsxs("div", { style: { marginBottom: 14 }, children: [
               /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkDim, marginBottom: 6, textTransform: "uppercase", letterSpacing: 1 }, children: "\u041F\u043E\u0441\u043B\u0435\u0434\u043D\u0438\u0435 \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u0438" }),
               darknetInfluenceJobs.map((j) => {
@@ -12581,11 +12622,20 @@ function MarketSandbox() {
               const currentTarget = darknetInfluenceTier === tier.id ? darknetInfluenceTarget : "";
               const selectedTarget = currentTarget || (targetList[0] ? isSector ? targetList[0] : targetList[0].id : "");
               const targetCompany = !isSector ? companies.find((c) => c.id === selectedTarget) : null;
-              const canAfford = getAccountBalance(resolvedPayFrom) >= tier.cost;
+              const cryptoAssets = companies.filter((c) => c.sector === "\u041A\u0440\u0438\u043F\u0442\u043E");
+              const selectedCrypto = cryptoAssets.some((c) => c.id === darknetPayCrypto) ? darknetPayCrypto : cryptoAssets[0]?.id || "";
+              const cryptoAsset = cryptoAssets.find((c) => c.id === selectedCrypto);
+              const holdingsMap = darknetPayAccount === "ip" ? ipHoldings : holdings;
+              const balanceQty = holdingsMap[selectedCrypto]?.qty || 0;
+              const qtyNeeded = cryptoAsset ? tier.cost / cryptoAsset.price : Infinity;
+              const canAfford = !!cryptoAsset && balanceQty >= qtyNeeded;
               return /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
                 /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start" }, children: [
                   /* @__PURE__ */ jsx("div", { style: { fontWeight: 700, fontSize: 14 }, children: tier.name.toUpperCase() }),
-                  /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 13, fontWeight: 700 }, children: fmt(tier.cost) })
+                  /* @__PURE__ */ jsxs("div", { style: { textAlign: "right" }, children: [
+                    /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 13, fontWeight: 700 }, children: fmt(tier.cost) }),
+                    cryptoAsset && /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint }, children: ["\u2248", qtyNeeded.toFixed(4), " ", cryptoAsset.ticker] })
+                  ] })
                 ] }),
                 /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkDim, marginTop: 6, lineHeight: 1.6 }, children: [
                   isSector ? "\u0412\u043E\u0437\u0434\u0435\u0439\u0441\u0442\u0432\u0443\u0435\u0442 \u043D\u0430 \u0432\u0435\u0441\u044C \u0441\u0435\u043A\u0442\u043E\u0440" : "\u0412\u043E\u0437\u0434\u0435\u0439\u0441\u0442\u0432\u0443\u0435\u0442 \u043D\u0430 \u043E\u0434\u0438\u043D \u0430\u043A\u0442\u0438\u0432",
@@ -12607,7 +12657,7 @@ function MarketSandbox() {
                   fmt(targetCompany.price),
                   targetCompany.darknetManipulation > 20 && /* @__PURE__ */ jsx("span", { style: { color: C.red }, children: " \xB7 \u0430\u043A\u0442\u0438\u0432 \u0443\u0436\u0435 \u043F\u043E\u0434 \u0432\u043D\u0438\u043C\u0430\u043D\u0438\u0435\u043C \u2014 \u044D\u0444\u0444\u0435\u043A\u0442 \u0441\u043B\u0430\u0431\u0435\u0435" })
                 ] }),
-                /* @__PURE__ */ jsx("button", { onClick: () => orderDarknetInfluence(tier.id, isSector ? selectedTarget : selectedTarget), disabled: !canAfford || !selectedTarget, style: { width: "100%", marginTop: 10, padding: 11, borderRadius: 10, border: "none", fontWeight: 700, fontSize: 13, background: canAfford && selectedTarget ? "#8b3ad6" : C.surface2, color: canAfford && selectedTarget ? "#fff" : C.inkFaint }, children: "\u0417\u0410\u041A\u0410\u0417\u0410\u0422\u042C" })
+                /* @__PURE__ */ jsx("button", { onClick: () => orderDarknetInfluence(tier.id, selectedTarget, selectedCrypto, darknetPayAccount), disabled: !canAfford || !selectedTarget, style: { width: "100%", marginTop: 10, padding: 11, borderRadius: 10, border: "none", fontWeight: 700, fontSize: 13, background: canAfford && selectedTarget ? "#8b3ad6" : C.surface2, color: canAfford && selectedTarget ? "#fff" : C.inkFaint }, children: canAfford ? "\u0417\u0410\u041A\u0410\u0417\u0410\u0422\u042C" : "\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u043A\u0440\u0438\u043F\u0442\u044B" })
               ] }, tier.id);
             }),
             /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkFaint, textAlign: "center", lineHeight: 1.6 }, children: "\u0420\u0435\u0437\u0443\u043B\u044C\u0442\u0430\u0442 \u043D\u0435 \u0444\u0438\u043A\u0441\u0438\u0440\u043E\u0432\u0430\u043D \u0438 \u0437\u0430\u0432\u0438\u0441\u0438\u0442 \u043E\u0442 \u0441\u043E\u0441\u0442\u043E\u044F\u043D\u0438\u044F \u0440\u044B\u043D\u043A\u0430. \u0421\u043B\u0438\u0448\u043A\u043E\u043C \u0447\u0430\u0441\u0442\u044B\u0435 \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u0438 \u043D\u0430 \u043E\u0434\u0438\u043D \u0430\u043A\u0442\u0438\u0432 \u0441\u043D\u0438\u0436\u0430\u044E\u0442 \u044D\u0444\u0444\u0435\u043A\u0442\u0438\u0432\u043D\u043E\u0441\u0442\u044C \u0438 \u043F\u043E\u0432\u044B\u0448\u0430\u044E\u0442 \u0440\u0438\u0441\u043A \u0432\u043D\u0438\u043C\u0430\u043D\u0438\u044F." })
