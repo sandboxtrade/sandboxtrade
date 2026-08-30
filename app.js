@@ -1,4 +1,4 @@
-// Market Sandbox — V2.53.0 (Darknet «Влияние»: оплата теперь ТОЛЬКО криптой — выбор актива сектора «Крипто» (LEDG/OPAL/TEHER) и счёта (личный holdings или ООО ipHoldings), нужное количество считается по текущей цене (cost/price) и списывается напрямую из холдингов без прохода через биржу/кэш — раньше платилось с любого счёта (карта/ИП/серый), теперь orderDarknetInfluence(tierId, targetId, cryptoId, account) требует реальный крипто-баланс на выбранном счету. UI показывает нужное количество токенов и доступный баланс перед заказом.)
+// Market Sandbox — V2.54.0 (Фикс: продажа активов со счёта своего банка (useBank в executeTrade) начисляла личный НДФЛ 13% на прибыль через accrueTax — тот же путь, что у обычных личных сделок. Банк как бизнес не должен платить физлицом налог с торговой прибыли вообще (это отдельная точка учёта, ООО/ИП или banking-профит модель, не физ. НДФЛ). Условие сужено: . Проверено — leveraged-позиции (openLeveragedPosition/closeLeveragedPosition) банк как источник маржи вообще не поддерживают (только personal/банковские карты/muleCards), так что там менять было нечего.)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -5696,7 +5696,7 @@ function MarketSandbox() {
         setQuarterRevenue((r) => r + grossProceeds);
       } else if (useFakeIp) {
         setFakeIps((prev) => prev[account] ? { ...prev, [account]: { ...prev[account], quarterRevenue: prev[account].quarterRevenue + grossProceeds } } : prev);
-      } else if (!useGrey && !useMule && profit > 0) {
+      } else if (!useGrey && !useMule && !useBank && profit > 0) {
         accrueTax(`\u041D\u0430\u043B\u043E\u0433 \u0441 \u043F\u0440\u0438\u0431\u044B\u043B\u0438 (${company.ticker})`, Math.round(profit * 0.13));
       }
       logTx(`\u041F\u0440\u043E\u0434\u0430\u0436\u0430 ${company.ticker} \xD7${qty}${acctTag}`, grossProceeds, "in");
