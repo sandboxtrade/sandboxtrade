@@ -1,4 +1,4 @@
-// Market Sandbox — V2.54.0 (Фикс: продажа активов со счёта своего банка (useBank в executeTrade) начисляла личный НДФЛ 13% на прибыль через accrueTax — тот же путь, что у обычных личных сделок. Банк как бизнес не должен платить физлицом налог с торговой прибыли вообще (это отдельная точка учёта, ООО/ИП или banking-профит модель, не физ. НДФЛ). Условие сужено: . Проверено — leveraged-позиции (openLeveragedPosition/closeLeveragedPosition) банк как источник маржи вообще не поддерживают (только personal/банковские карты/muleCards), так что там менять было нечего.)
+// Market Sandbox — V2.55.0 (Банк: новый раздел «Кредитование компаний» в панели своего банка. Обновляющийся список заявок (CORP_LOAN_OFFERS_COUNT=5, авто-рефреш раз в CORP_LOAN_OFFER_REFRESH_MS=8 мин + ручная кнопка «Обновить») от случайных NPC-компаний (не крипта, не венчуры игрока) на суммы $2M-$500M (CORP_LOAN_MIN/MAX) — размер заявки завязан на market cap компании И жёстко капается capital банка × 2.5 (corpLoanMaxRequestable) — при капитале $20M заявок на $100M физически не сгенерируется. Ставку по каждой заявке игрок предлагает сам (negotiateCorpLoan) — шанс согласия компании (corpLoanAcceptChance) падает почти до нуля при завышенной ставке относительно скрытой fairRatePct (зависит от риск-тира по волатильности компании), высокий при разумной/заниженной. Срок фиксирован 12 циклов (CORP_LOAN_TERM_CYCLES, цикл = 15 мин = CORP_LOAN_CYCLE_MS, как и у остальной игры). Выданная сумма сразу списывается с bank.capital; далее отдельный 10-сек тик автоматически (без участия игрока) гасит по installmentAmount каждый цикл на bank.capital, с шансом дефолта за цикл по риск-тиру (corpLoanDefaultChancePerCycle) — при дефолте кредит списывается целиком, новость в ленту. Полностью выплаченный кредит (12/12 циклов) убирается из списка. Сохранение/загрузка/resetGame — обратная совместимость для старых сейвов (пустые массивы по умолчанию). esbuild чист.)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -1143,6 +1143,28 @@ var BANK_CARD_CREDIT_RATE_MIN = 0.001;
 var BANK_CARD_CREDIT_RATE_MAX = 0.99;
 var BANK_CARD_TERM_CYCLES = 12;
 var BANK_CARD_REPAY_FRACTION = 1 / BANK_CARD_TERM_CYCLES;
+// ---- Кредитование компаний (индивидуальные заявки, не пул) ----
+var CORP_LOAN_MIN = 2e6;
+var CORP_LOAN_MAX = 500e6;
+var CORP_LOAN_TERM_CYCLES = 12;
+var CORP_LOAN_CYCLE_MS = 15 * 60 * 1e3;
+var CORP_LOAN_OFFERS_COUNT = 5;
+var CORP_LOAN_OFFER_REFRESH_MS = 8 * 60 * 1e3;
+var CORP_LOAN_OFFER_TTL_MS = 25 * 60 * 1e3;
+function corpLoanMaxRequestable(bankCapital) {
+  return Math.max(0, Math.min(CORP_LOAN_MAX, bankCapital * 2.5));
+}
+function corpLoanFairRatePct(riskTier) {
+  return [10, 18, 30][riskTier] + Math.random() * [6, 10, 15][riskTier];
+}
+function corpLoanAcceptChance(proposedRatePct, fairRatePct) {
+  const ratio = proposedRatePct / Math.max(1, fairRatePct);
+  if (ratio <= 1) return Math.min(0.95, 0.6 + 0.35 * (1 - ratio));
+  return Math.max(0.05, 0.6 - (ratio - 1) * 0.8);
+}
+function corpLoanDefaultChancePerCycle(riskTier) {
+  return [0.015, 0.035, 0.06][riskTier];
+}
 var BANK_CARD_CREDIT_BASE_DEMAND = 1.2e6;
 var BANK_NPC_AVG_CARD_CREDIT_RATE = 0.35;
 var BANK_CARD_FEE_MIN = 0.005;
@@ -2340,6 +2362,10 @@ function MarketSandbox() {
   const [bankTransferAmount, setBankTransferAmount] = useState("");
   const [bankCreditInvestAmount, setBankCreditInvestAmount] = useState("");
   const [bankCardCreditInvestAmount, setBankCardCreditInvestAmount] = useState("");
+  const [corpLoanOffers, setCorpLoanOffers] = useState([]);
+  const [corpLoans, setCorpLoans] = useState([]);
+  const [corpLoanRateInputs, setCorpLoanRateInputs] = useState({});
+  const [corpLoanOffersNextRefreshAt, setCorpLoanOffersNextRefreshAt] = useState(0);
   const [zzoneBiz, setZzoneBiz] = useState({ marketShare: ZZONE_MARKET_SHARE_START, commissionRate: MARKETPLACE_FEE, baseCommission: MARKETPLACE_FEE, aggressionLevel: 0, reactionsTriggered: [] });
   const [bigSellers, setBigSellers] = useState([]);
   const [marketplaceInvestorOffer, setMarketplaceInvestorOffer] = useState(null);
@@ -2473,6 +2499,9 @@ function MarketSandbox() {
   const playerSocialProfileRef = useRef({ trust: 50, postLog: [], lastPostAt: 0 });
   const marketplaceRef = useRef(null);
   const bankRef = useRef(null);
+  const corpLoansRef = useRef([]);
+  const corpLoanOffersRef = useRef([]);
+  const corpLoanOffersNextRefreshAtRef = useRef(0);
   const zzoneBizRef = useRef({ marketShare: ZZONE_MARKET_SHARE_START, commissionRate: MARKETPLACE_FEE, baseCommission: MARKETPLACE_FEE, aggressionLevel: 0, reactionsTriggered: [] });
   const bigSellersRef = useRef([]);
   const onboardedRef = useRef(onboarded);
@@ -2757,6 +2786,15 @@ function MarketSandbox() {
   useEffect(() => {
     bankRef.current = bank;
   }, [bank]);
+  useEffect(() => {
+    corpLoansRef.current = corpLoans;
+  }, [corpLoans]);
+  useEffect(() => {
+    corpLoanOffersRef.current = corpLoanOffers;
+  }, [corpLoanOffers]);
+  useEffect(() => {
+    corpLoanOffersNextRefreshAtRef.current = corpLoanOffersNextRefreshAt;
+  }, [corpLoanOffersNextRefreshAt]);
   useEffect(() => {
     zzoneBizRef.current = zzoneBiz;
   }, [zzoneBiz]);
@@ -3131,6 +3169,9 @@ function MarketSandbox() {
       })());
     }
     setBank(data.bank && typeof data.bank === "object" ? { trust: 50, reputation: 50, quarterRevenue: 0, quarterEndsAt: Date.now() + QUARTER_MS, totalDefaulted: 0, defaultedSinceCycle: 0, maxCapitalReached: data.bank.capital || BANK_MIN_CAPITAL, holdings: {}, creditPoolAllocated: 0, cardCreditRate: BANK_NPC_AVG_CARD_CREDIT_RATE, cardCreditPoolAllocated: 0, cardCreditOutstanding: 0, totalCardCreditIssuedAmount: 0, depositReserve: 0, depositRate: BANK_NPC_AVG_DEPOSIT_RATE, deposits: [], nextDepositPayoutAt: Date.now() + BANK_DEPOSIT_PAYOUT_INTERVAL_MS, depositOverdueSince: null, depositEscalated: false, totalDepositInterestPaid: 0, totalDepositPrincipalReturned: 0, totalDepositsOpened: 0, totalDepositsAmount: 0, totalLoansIssuedCount: 0, totalLoansIssuedAmount: 0, marketingCampaigns: [], marketingHistory: [], missedDepositPayments: 0, lastCycleBreakdown: null, creditOutstanding: 0, lastTickAt: Date.now(), accum: { creditIncome: 0, newLoansIssued: 0, principalRepaid: 0, tradingPnl: 0, cardIncome: 0, cardCreditIncome: 0, depositInflow: 0, depositInterestPaid: 0, depositPrincipalReturned: 0 }, ...data.bank } : null);
+    setCorpLoans(Array.isArray(data.corpLoans) ? data.corpLoans : []);
+    setCorpLoanOffers(Array.isArray(data.corpLoanOffers) ? data.corpLoanOffers : []);
+    setCorpLoanOffersNextRefreshAt(data.corpLoanOffersNextRefreshAt || 0);
     setMarketplace(data.marketplace && typeof data.marketplace === "object" ? (() => {
       const saved = data.marketplace;
       return {
@@ -3294,6 +3335,9 @@ function MarketSandbox() {
     playerSocialProfile: playerSocialProfileRef.current,
     marketplace: marketplaceRef.current,
     bank: bankRef.current,
+    corpLoans: corpLoansRef.current,
+    corpLoanOffers: corpLoanOffersRef.current,
+    corpLoanOffersNextRefreshAt: corpLoanOffersNextRefreshAtRef.current,
     zzoneBiz: zzoneBizRef.current,
     bigSellers: bigSellersRef.current,
     bankAccounts: bankAccountsRef.current,
@@ -5592,6 +5636,55 @@ function MarketSandbox() {
     }, DARKNET_MOMENTUM_TICK_MS);
     return () => clearInterval(id);
   }, [loaded]);
+  useEffect(() => {
+    if (!loaded) return;
+    const id = setInterval(() => {
+      const now = Date.now();
+      const list = corpLoansRef.current;
+      if (!list.length) return;
+      let bankIncome = 0;
+      let changed = false;
+      const completed = [];
+      const next = list.map((l) => {
+        if (now < l.nextPayoutAt) return l;
+        changed = true;
+        // Компания платит АВТОМАТИЧЕСКИ каждый цикл (не игрок вручную, как со своими
+        // личными кредитами) — с шансом дефолта в зависимости от риск-тира.
+        if (Math.random() < corpLoanDefaultChancePerCycle(l.riskTier)) {
+          pushPost({ text: `${l.ticker}: \u043A\u043E\u043C\u043F\u0430\u043D\u0438\u044F \u0434\u043E\u043F\u0443\u0441\u0442\u0438\u043B\u0430 \u0434\u0435\u0444\u043E\u043B\u0442 \u043F\u043E \u043A\u0440\u0435\u0434\u0438\u0442\u0443 \u043F\u0435\u0440\u0435\u0434 \u0431\u0430\u043D\u043A\u043E\u043C`, positive: false, isMacro: false, ticker: l.ticker, importance: 2 });
+          completed.push(l.id);
+          return null;
+        }
+        bankIncome += l.installmentAmount;
+        const cyclesPaid = l.cyclesPaid + 1;
+        const balance = Math.max(0, l.balance - l.installmentAmount);
+        if (cyclesPaid >= CORP_LOAN_TERM_CYCLES) {
+          completed.push(l.id);
+          return null;
+        }
+        return { ...l, cyclesPaid, balance, nextPayoutAt: l.nextPayoutAt + CORP_LOAN_CYCLE_MS };
+      }).filter(Boolean);
+      if (changed) {
+        setCorpLoans(next);
+        if (bankIncome > 0) {
+          setBank((prev) => prev ? { ...prev, capital: prev.capital + bankIncome } : prev);
+          logTx("\u0412\u044B\u043F\u043B\u0430\u0442\u0430 \u043F\u043E \u043A\u0440\u0435\u0434\u0438\u0442\u0443 \u043A\u043E\u043C\u043F\u0430\u043D\u0438\u0438", bankIncome, "in");
+        }
+        setTimeout(saveGame, 50);
+      }
+    }, 1e4);
+    return () => clearInterval(id);
+  }, [loaded]);
+  useEffect(() => {
+    if (!loaded || !bank) return;
+    if (Date.now() >= corpLoanOffersNextRefreshAtRef.current) {
+      refreshCorpLoanOffers();
+    }
+    const id = setInterval(() => {
+      refreshCorpLoanOffers();
+    }, CORP_LOAN_OFFER_REFRESH_MS);
+    return () => clearInterval(id);
+  }, [loaded, !!bank]);
   const executeTrade = (companyId, side, qty, account = "personal") => {
     const company = companies.find((c) => c.id === companyId);
     if (!company || qty <= 0) return;
@@ -7848,6 +7941,57 @@ function MarketSandbox() {
     notify(`Выплачено ${fmt(paid)} по вкладам`, true);
     setTimeout(saveGame, 50);
   };
+  const refreshCorpLoanOffers = () => {
+    const b = bankRef.current;
+    if (!b) return;
+    const maxReq = corpLoanMaxRequestable(b.capital);
+    if (maxReq < CORP_LOAN_MIN) {
+      setCorpLoanOffers([]);
+      setCorpLoanOffersNextRefreshAt(Date.now() + CORP_LOAN_OFFER_REFRESH_MS);
+      return;
+    }
+    const busyIds = new Set([...corpLoansRef.current.map((l) => l.companyId), ...corpLoanOffersRef.current.map((o) => o.companyId)]);
+    const pool = companiesRef.current.filter((c) => !c.isPlayer && !c.isCommodity && c.sector !== "\u041A\u0440\u0438\u043F\u0442\u043E" && !busyIds.has(c.id));
+    const picks = [];
+    const shuffled = [...pool].sort(() => Math.random() - 0.5);
+    for (const c of shuffled) {
+      if (picks.length >= CORP_LOAN_OFFERS_COUNT) break;
+      const mcap = Math.max(1e6, c.price * c.supply);
+      const sizeScale = Math.max(0.25, Math.min(3, mcap / 500e6));
+      const riskTier = c.vol >= 1.4 ? 2 : c.vol >= 0.9 ? 1 : 0;
+      const rawAmount = CORP_LOAN_MIN + sizeScale * Math.random() * 150e6;
+      const amount = Math.round(Math.max(CORP_LOAN_MIN, Math.min(maxReq, CORP_LOAN_MAX, rawAmount)) / 1e5) * 1e5;
+      if (amount < CORP_LOAN_MIN) continue;
+      picks.push({ id: makeId("corpoffer"), companyId: c.id, ticker: c.ticker, name: c.name, amount, riskTier, fairRatePct: Math.round(corpLoanFairRatePct(riskTier) * 10) / 10, createdAt: Date.now(), expiresAt: Date.now() + CORP_LOAN_OFFER_TTL_MS });
+    }
+    setCorpLoanOffers((prev) => [...prev.filter((o) => o.expiresAt > Date.now()), ...picks].slice(0, CORP_LOAN_OFFERS_COUNT + 2));
+    setCorpLoanOffersNextRefreshAt(Date.now() + CORP_LOAN_OFFER_REFRESH_MS);
+    setTimeout(saveGame, 50);
+  };
+  const negotiateCorpLoan = (offerId, proposedRatePctRaw) => {
+    const b = bankRef.current;
+    const offer = corpLoanOffersRef.current.find((o) => o.id === offerId);
+    if (!b || !offer) return;
+    if (b.capital < offer.amount) {
+      notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u043A\u0430\u043F\u0438\u0442\u0430\u043B\u0430 \u0431\u0430\u043D\u043A\u0430 \u2014 \u043D\u0443\u0436\u043D\u043E ${fmt(offer.amount)}`, false);
+      return;
+    }
+    const proposedRatePct = Math.max(1, Math.min(80, Number(proposedRatePctRaw) || 0));
+    const accepted = Math.random() < corpLoanAcceptChance(proposedRatePct, offer.fairRatePct);
+    setCorpLoanOffers((prev) => prev.filter((o) => o.id !== offerId));
+    if (!accepted) {
+      notify(`${offer.ticker}: \u0441\u0442\u0430\u0432\u043A\u0430 ${proposedRatePct}% \u043D\u0435 \u0443\u0441\u0442\u0440\u043E\u0438\u043B\u0430 \u043A\u043E\u043C\u043F\u0430\u043D\u0438\u044E \u2014 \u043E\u0442\u043A\u0430\u0437`, false);
+      setTimeout(saveGame, 50);
+      return;
+    }
+    const totalDue = Math.round(offer.amount * (1 + proposedRatePct / 100));
+    const installmentAmount = Math.round(totalDue / CORP_LOAN_TERM_CYCLES);
+    setBank((prev) => prev ? { ...prev, capital: prev.capital - offer.amount } : prev);
+    setCorpLoans((prev) => [...prev, { id: makeId("corploan"), companyId: offer.companyId, ticker: offer.ticker, name: offer.name, principal: offer.amount, ratePct: proposedRatePct, riskTier: offer.riskTier, totalDue, installmentAmount, balance: totalDue, cyclesPaid: 0, nextPayoutAt: Date.now() + CORP_LOAN_CYCLE_MS, defaulted: false, createdAt: Date.now() }]);
+    logTx(`\u041A\u0440\u0435\u0434\u0438\u0442 \u043A\u043E\u043C\u043F\u0430\u043D\u0438\u0438 \xB7 ${offer.ticker}`, offer.amount, "out");
+    notify(`${offer.ticker} \u0441\u043E\u0433\u043B\u0430\u0441\u0438\u043B\u0430\u0441\u044C \u043D\u0430 ${proposedRatePct}% \u2014 \u0432\u044B\u0434\u0430\u043D\u043E ${fmt(offer.amount)}, \u043A \u0432\u043E\u0437\u0432\u0440\u0430\u0442\u0443 ${fmt(totalDue)}`, true);
+    setTimeout(saveGame, 50);
+  };
   const startBankIpo = () => {
     const b = bankRef.current;
     if (!b || b.isPublic) return;
@@ -8836,6 +8980,9 @@ function MarketSandbox() {
     courtStandingRef.current = 70;
     setNetWorthHistory([]);
     setLoans([]);
+    setCorpLoans([]);
+    setCorpLoanOffers([]);
+    setCorpLoanOffersNextRefreshAt(0);
     setJob(null);
     setJobHistory({});
     setJobCooldown(0);
@@ -10879,6 +11026,61 @@ function MarketSandbox() {
                 /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginTop: 4 }, children: "\u041D\u0438\u0436\u0435 \u043A\u043E\u043C\u0438\u0441\u0441\u0438\u044F \u2014 \u0431\u043E\u043B\u044C\u0448\u0435 \u043A\u043B\u0438\u0435\u043D\u0442\u043E\u0432 \u043F\u0440\u0438\u0432\u043B\u0435\u043A\u0430\u0435\u0442 \u0440\u0435\u043A\u043B\u0430\u043C\u0430, \u043D\u043E \u043C\u0435\u043D\u044C\u0448\u0435 \u0434\u043E\u0445\u043E\u0434 \u0441 \u043A\u0430\u0436\u0434\u043E\u0433\u043E" }),
                 /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint }, children: ["\u0421\u0440\u0435\u0434\u043D\u044F\u044F \u043F\u043E \u0440\u044B\u043D\u043A\u0443 \u2248 ", (BANK_NPC_AVG_CARD_FEE * 100).toFixed(1), "%. \u041D\u0438\u0436\u0435 \u0440\u044B\u043D\u043A\u0430 \u2014 \u043A\u043B\u0438\u0435\u043D\u0442\u044B \u0443\u0445\u043E\u0434\u044F\u0442 \u043A \u0432\u0430\u043C \u0441\u0430\u043C\u0438, \u0432\u044B\u0448\u0435 \u2014 \u043A \u043A\u043E\u043D\u043A\u0443\u0440\u0435\u043D\u0442\u0430\u043C"] })
               ] }),
+              (() => {
+                const activeCorpLoans = corpLoans;
+                const totalOutstanding = activeCorpLoans.reduce((s, l) => s + l.balance, 0);
+                const riskLabel = (t) => t >= 2 ? "\u0432\u044B\u0441\u043E\u043A\u0438\u0439" : t >= 1 ? "\u0441\u0440\u0435\u0434\u043D\u0438\u0439" : "\u043D\u0438\u0437\u043A\u0438\u0439";
+                const riskColor = (t) => t >= 2 ? C.red : t >= 1 ? C.gold : C.green;
+                const secToRefresh = Math.max(0, Math.ceil((corpLoanOffersNextRefreshAt - Date.now()) / 1e3));
+                return /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
+                  /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }, children: [
+                    /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, textTransform: "uppercase", letterSpacing: 1, fontWeight: 700 }, children: "\u041A\u0440\u0435\u0434\u0438\u0442\u043E\u0432\u0430\u043D\u0438\u0435 \u043A\u043E\u043C\u043F\u0430\u043D\u0438\u0439" }),
+                    /* @__PURE__ */ jsx("button", { onClick: refreshCorpLoanOffers, style: { fontSize: 10.5, color: C.inkFaint, background: "none", border: `1px solid ${C.border}`, borderRadius: 8, padding: "4px 8px" }, children: "\u041E\u0431\u043D\u043E\u0432\u0438\u0442\u044C" })
+                  ] }),
+                  activeCorpLoans.length > 0 && /* @__PURE__ */ jsxs("div", { style: { marginBottom: 14 }, children: [
+                    /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkFaint, marginBottom: 8 }, children: ["\u0412\u044B\u0434\u0430\u043D\u043E \u043A\u043E\u043C\u043F\u0430\u043D\u0438\u044F\u043C: ", /* @__PURE__ */ jsx("b", { style: { color: C.ink }, children: fmt(totalOutstanding) }), " \u043E\u0441\u0442\u0430\u0442\u043E\u043A"] }),
+                    activeCorpLoans.map((l) => {
+                      const secLeftL = Math.max(0, Math.ceil((l.nextPayoutAt - Date.now()) / 1e3));
+                      return /* @__PURE__ */ jsxs("div", { style: { background: C.surface2, borderRadius: 10, padding: "10px 12px", marginBottom: 6 }, children: [
+                        /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12.5 }, children: [
+                          /* @__PURE__ */ jsxs("span", { style: { fontWeight: 600 }, children: [l.ticker, " \xB7 ", l.ratePct, "%"] }),
+                          /* @__PURE__ */ jsxs("span", { style: { fontFamily: "'JetBrains Mono', monospace" }, children: [fmt(l.balance), " \u043E\u0441\u0442."] })
+                        ] }),
+                        /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint, marginTop: 4 }, children: [
+                          "\u0426\u0438\u043A\u043B ", l.cyclesPaid + 1, "/", CORP_LOAN_TERM_CYCLES, " \xB7 \u0441\u043B\u0435\u0434\u0443\u044E\u0449\u0438\u0439 \u043F\u043B\u0430\u0442\u0451\u0436 ", fmt(l.installmentAmount), " \u0447\u0435\u0440\u0435\u0437 ", Math.floor(secLeftL / 60), ":", String(secLeftL % 60).padStart(2, "0")
+                        ] }),
+                        /* @__PURE__ */ jsx("div", { style: { height: 4, background: C.surface, borderRadius: 2, marginTop: 6, overflow: "hidden" }, children: /* @__PURE__ */ jsx("div", { style: { width: `${Math.round(l.cyclesPaid / CORP_LOAN_TERM_CYCLES * 100)}%`, height: "100%", background: C.violet } }) })
+                      ] }, l.id);
+                    })
+                  ] }),
+                  /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint, marginBottom: 8 }, children: [
+                    "\u0417\u0430\u044F\u0432\u043A\u0438 \u043D\u0430 \u043A\u0440\u0435\u0434\u0438\u0442 \u043E\u0442 $", (CORP_LOAN_MIN / 1e6).toFixed(0), "\u041C \u0434\u043E $", (CORP_LOAN_MAX / 1e6).toFixed(0), "\u041C \u2014 \u0441\u0443\u043C\u043C\u0430 \u043E\u0433\u0440\u0430\u043D\u0438\u0447\u0435\u043D\u0430 \u043A\u0430\u043F\u0438\u0442\u0430\u043B\u043E\u043C \u0431\u0430\u043D\u043A\u0430. \u0421\u0440\u043E\u043A \u2014 ",
+                    CORP_LOAN_TERM_CYCLES, " \u0446\u0438\u043A\u043B\u043E\u0432, \u043F\u043B\u0430\u0442\u0451\u0436\u0438 \u043F\u0440\u0438\u0445\u043E\u0434\u044F\u0442 \u0430\u0432\u0442\u043E\u043C\u0430\u0442\u0438\u0447\u0435\u0441\u043A\u0438 \u0440\u0430\u0437 \u0432 \u0446\u0438\u043A\u043B. \u0421\u0442\u0430\u0432\u043A\u0443 \u043D\u0430\u0434\u043E \u0441\u043E\u0433\u043B\u0430\u0441\u043E\u0432\u0430\u0442\u044C \u0441 \u043A\u0430\u0436\u0434\u043E\u0439 \u043A\u043E\u043C\u043F\u0430\u043D\u0438\u0435\u0439 \u043E\u0442\u0434\u0435\u043B\u044C\u043D\u043E \u2014 \u0441\u043B\u0438\u0448\u043A\u043E\u043C \u0430\u043B\u0447\u043D\u0430\u044F \u043C\u043E\u0436\u0435\u0442 \u043D\u0435 \u0443\u0441\u0442\u0440\u043E\u0438\u0442\u044C.",
+                    /* @__PURE__ */ jsx("br", {}),
+                    "\u0421\u043B\u0435\u0434\u0443\u044E\u0449\u0435\u0435 \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 \u0437\u0430\u044F\u0432\u043E\u043A \u0447\u0435\u0440\u0435\u0437 ", Math.floor(secToRefresh / 60), " \u043C\u0438\u043D"
+                  ] }),
+                  corpLoanOffers.length === 0 && /* @__PURE__ */ jsx("div", { style: { textAlign: "center", padding: "16px 0", color: C.inkFaint, fontSize: 12.5 }, children: corpLoanMaxRequestable(bank.capital) < CORP_LOAN_MIN ? "\u041A\u0430\u043F\u0438\u0442\u0430\u043B \u0431\u0430\u043D\u043A\u0430 \u0441\u043B\u0438\u0448\u043A\u043E\u043C \u043C\u0430\u043B\u0435\u043D\u044C\u043A\u0438\u0439 \u0434\u043B\u044F \u0442\u0430\u043A\u0438\u0445 \u0437\u0430\u044F\u0432\u043E\u043A" : "\u041D\u0435\u0442 \u0430\u043A\u0442\u0438\u0432\u043D\u044B\u0445 \u0437\u0430\u044F\u0432\u043E\u043A \u0441\u0435\u0439\u0447\u0430\u0441" }),
+                  corpLoanOffers.map((o) => {
+                    const rateInput = corpLoanRateInputs[o.id] ?? String(o.fairRatePct);
+                    const canFund = bank.capital >= o.amount;
+                    return /* @__PURE__ */ jsxs("div", { style: { background: C.surface2, borderRadius: 10, padding: 12, marginBottom: 8 }, children: [
+                      /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start" }, children: [
+                        /* @__PURE__ */ jsxs("div", { children: [
+                          /* @__PURE__ */ jsxs("div", { style: { fontWeight: 600, fontSize: 13 }, children: [o.ticker, " \u2014 ", o.name] }),
+                          /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: riskColor(o.riskTier) }, children: ["\u0420\u0438\u0441\u043A: ", riskLabel(o.riskTier)] })
+                        ] }),
+                        /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 13, fontWeight: 700 }, children: fmt(o.amount) })
+                      ] }),
+                      /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 6, marginTop: 8, alignItems: "center" }, children: [
+                        /* @__PURE__ */ jsx("input", { type: "number", step: "0.5", value: rateInput, onChange: (e) => setCorpLoanRateInputs((prev) => ({ ...prev, [o.id]: e.target.value })), style: { ...inputStyle, flex: 1, padding: "7px 8px", fontSize: 12.5 } }),
+                        /* @__PURE__ */ jsx("span", { style: { fontSize: 11.5, color: C.inkFaint }, children: "%" }),
+                        /* @__PURE__ */ jsx("button", { onClick: () => negotiateCorpLoan(o.id, rateInput), disabled: !canFund, style: { padding: "7px 14px", borderRadius: 8, border: "none", fontWeight: 700, fontSize: 12, background: canFund ? C.violet : C.surface, color: canFund ? "#fff" : C.inkFaint, whiteSpace: "nowrap" }, children: "\u0414\u043E\u0433\u043E\u0432\u043E\u0440\u0438\u0442\u044C\u0441\u044F" })
+                      ] }),
+                      !canFund && /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.red, marginTop: 4 }, children: "\u041D\u0435 \u0445\u0432\u0430\u0442\u0430\u0435\u0442 \u043A\u0430\u043F\u0438\u0442\u0430\u043B\u0430 \u0431\u0430\u043D\u043A\u0430" })
+                    ] }, o.id);
+                  })
+                ] });
+              })(),
               (() => {
                 const now = Date.now();
                 const campaigns = bank.marketingCampaigns || [];
