@@ -1,4 +1,4 @@
-// Market Sandbox — V2.55.0 (Банк: новый раздел «Кредитование компаний» в панели своего банка. Обновляющийся список заявок (CORP_LOAN_OFFERS_COUNT=5, авто-рефреш раз в CORP_LOAN_OFFER_REFRESH_MS=8 мин + ручная кнопка «Обновить») от случайных NPC-компаний (не крипта, не венчуры игрока) на суммы $2M-$500M (CORP_LOAN_MIN/MAX) — размер заявки завязан на market cap компании И жёстко капается capital банка × 2.5 (corpLoanMaxRequestable) — при капитале $20M заявок на $100M физически не сгенерируется. Ставку по каждой заявке игрок предлагает сам (negotiateCorpLoan) — шанс согласия компании (corpLoanAcceptChance) падает почти до нуля при завышенной ставке относительно скрытой fairRatePct (зависит от риск-тира по волатильности компании), высокий при разумной/заниженной. Срок фиксирован 12 циклов (CORP_LOAN_TERM_CYCLES, цикл = 15 мин = CORP_LOAN_CYCLE_MS, как и у остальной игры). Выданная сумма сразу списывается с bank.capital; далее отдельный 10-сек тик автоматически (без участия игрока) гасит по installmentAmount каждый цикл на bank.capital, с шансом дефолта за цикл по риск-тиру (corpLoanDefaultChancePerCycle) — при дефолте кредит списывается целиком, новость в ленту. Полностью выплаченный кредит (12/12 циклов) убирается из списка. Сохранение/загрузка/resetGame — обратная совместимость для старых сейвов (пустые массивы по умолчанию). esbuild чист.)
+// Market Sandbox — V2.56.0 (Панель своего банка разбита на 5 вкладок вместо одной длинной прокрутки: Обзор (счёт банка/IP-переводы, IPO, портфель), Кредиты (личные+карточные ставки, кредитование компаний), Вклады, Трейдеры, Маркетинг банка — новое состояние bankSubTab, таб-бар сразу под hero-карточкой (имя/капитал/доверие — остаётся видимой всегда). Каждый существующий блок просто получил условие `bankSubTab === "X" &&` перед собой — порядок и содержимое блоков не менялись, только видимость. esbuild чист.)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -2310,6 +2310,7 @@ function MarketSandbox() {
   const [activeTab, setActiveTab] = useState("market");
   const [cabinetSubTab, setCabinetSubTab] = useState("card");
   const [shopCategory, setShopCategory] = useState(SHOP_CATEGORIES[0]);
+  const [bankSubTab, setBankSubTab] = useState("overview");
   const [selectedId, setSelectedId] = useState(null);
   const [feedPosts, setFeedPosts] = useState([]);
   const [pendingCount, setPendingCount] = useState(0);
@@ -10832,7 +10833,14 @@ function MarketSandbox() {
                 ] }),
                 /* @__PURE__ */ jsx("div", { style: { height: 5, background: C.surface2, borderRadius: 3, marginTop: 4, overflow: "hidden" }, children: /* @__PURE__ */ jsx("div", { style: { width: `${Math.round(bank.trust || 50)}%`, height: "100%", background: C.gold } }) })
               ] }),
-              /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.violet}55`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
+              /* @__PURE__ */ jsx("div", { style: { display: "flex", gap: 6, overflowX: "auto", marginBottom: 14, paddingBottom: 2 }, children: [
+                { id: "overview", label: "\u041E\u0431\u0437\u043E\u0440" },
+                { id: "credits", label: "\u041A\u0440\u0435\u0434\u0438\u0442\u044B" },
+                { id: "deposits", label: "\u0412\u043A\u043B\u0430\u0434\u044B" },
+                { id: "traders", label: "\u0422\u0440\u0435\u0439\u0434\u0435\u0440\u044B" },
+                { id: "marketing", label: "\u041C\u0430\u0440\u043A\u0435\u0442\u0438\u043D\u0433" }
+              ].map((t) => /* @__PURE__ */ jsx("button", { onClick: () => setBankSubTab(t.id), style: { flexShrink: 0, padding: "8px 14px", borderRadius: 16, border: `1px solid ${bankSubTab === t.id ? C.gold : C.border}`, background: bankSubTab === t.id ? `${C.gold}22` : C.surface, color: bankSubTab === t.id ? C.gold : C.inkDim, fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap" }, children: t.label }, t.id)) }),
+              bankSubTab === "overview" && /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.violet}55`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
                 /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }, children: [
                   /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.violet, textTransform: "uppercase", letterSpacing: 1, fontWeight: 700 }, children: "\u0421\u0447\u0451\u0442 \u0431\u0430\u043D\u043A\u0430" }),
                   /* @__PURE__ */ jsxs("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 13, color: C.inkFaint }, children: ["\u041D\u0430 \u0418\u041F: ", fmt(ipCash)] })
@@ -10845,7 +10853,7 @@ function MarketSandbox() {
                 !bank.isPublic && bankHeroBs && bankHeroBs.equity >= BANK_IPO_CAPITAL_THRESHOLD && /* @__PURE__ */ jsx("button", { onClick: startBankIpo, style: { ...actionBtnStyle(true), marginTop: 10, marginBottom: 0 }, children: `\u0412\u044B\u0432\u0435\u0441\u0442\u0438 \u0431\u0430\u043D\u043A \u043D\u0430 IPO \xB7 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E \u0441 ${fmt(BANK_IPO_CAPITAL_THRESHOLD)}` }),
                 !bank.isPublic && bankHeroBs && bankHeroBs.equity < BANK_IPO_CAPITAL_THRESHOLD && /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint, marginTop: 10 }, children: ["\u0414\u043E IPO: ", fmt(Math.max(0, BANK_IPO_CAPITAL_THRESHOLD - bankHeroBs.equity)), " \u043A \u0447\u0438\u0441\u0442\u043E\u043C\u0443 \u043A\u0430\u043F\u0438\u0442\u0430\u043B\u0443 \u0431\u0430\u043D\u043A\u0430"] })
               ] }),
-              (() => {
+              bankSubTab === "overview" && (() => {
                 const positions = Object.entries(bank.holdings || {}).map(([cid, h]) => {
                   const c = companies.find((x) => x.id === cid);
                   if (!c || !h.qty) return null;
@@ -10889,7 +10897,7 @@ function MarketSandbox() {
                   /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginTop: 6 }, children: "\u0410\u043A\u0442\u0438\u0432\u044B \u043F\u0440\u0438\u043D\u0430\u0434\u043B\u0435\u0436\u0430\u0442 \u0431\u0430\u043D\u043A\u0443, \u043E\u0442\u0434\u0435\u043B\u044C\u043D\u043E \u043E\u0442 \u043B\u0438\u0447\u043D\u043E\u0433\u043E \u043F\u043E\u0440\u0442\u0444\u0435\u043B\u044F. \u041F\u0440\u0438 \u043E\u0442\u043A\u0440\u044B\u0442\u0438\u0438 \u0441\u0434\u0435\u043B\u043A\u0438 \u0432\u044B\u0431\u0435\u0440\u0438 \u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A \u00AB\u0421\u0447\u0451\u0442 \u0431\u0430\u043D\u043A\u0430\u00BB, \u0435\u0441\u043B\u0438 \u043E\u043D \u043D\u0435 \u0432\u044B\u0431\u0440\u0430\u043D \u0430\u0432\u0442\u043E\u043C\u0430\u0442\u0438\u0447\u0435\u0441\u043A\u0438." })
                 ] });
               })(),
-              (() => {
+              bankSubTab === "credits" && (() => {
                 const bs = bankBalanceSheet(bank, companies);
                 if (!bs) return null;
                 const statusMap = { green: ["\uD83D\uDFE2 \u041D\u043E\u0440\u043C\u0430", C.green], yellow: ["\uD83D\uDFE1 \u041D\u0430\u043F\u0440\u044F\u0436\u0435\u043D\u0438\u0435", "#E0C34A"], orange: ["\uD83D\uDFE0 \u0414\u0435\u0444\u0438\u0446\u0438\u0442", "#E08A3C"], red: ["\uD83D\uDD34 \u041A\u0440\u0438\u0442\u0438\u0447\u0435\u0441\u043A\u0438\u0439", C.red] };
@@ -11026,7 +11034,7 @@ function MarketSandbox() {
                 /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginTop: 4 }, children: "\u041D\u0438\u0436\u0435 \u043A\u043E\u043C\u0438\u0441\u0441\u0438\u044F \u2014 \u0431\u043E\u043B\u044C\u0448\u0435 \u043A\u043B\u0438\u0435\u043D\u0442\u043E\u0432 \u043F\u0440\u0438\u0432\u043B\u0435\u043A\u0430\u0435\u0442 \u0440\u0435\u043A\u043B\u0430\u043C\u0430, \u043D\u043E \u043C\u0435\u043D\u044C\u0448\u0435 \u0434\u043E\u0445\u043E\u0434 \u0441 \u043A\u0430\u0436\u0434\u043E\u0433\u043E" }),
                 /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint }, children: ["\u0421\u0440\u0435\u0434\u043D\u044F\u044F \u043F\u043E \u0440\u044B\u043D\u043A\u0443 \u2248 ", (BANK_NPC_AVG_CARD_FEE * 100).toFixed(1), "%. \u041D\u0438\u0436\u0435 \u0440\u044B\u043D\u043A\u0430 \u2014 \u043A\u043B\u0438\u0435\u043D\u0442\u044B \u0443\u0445\u043E\u0434\u044F\u0442 \u043A \u0432\u0430\u043C \u0441\u0430\u043C\u0438, \u0432\u044B\u0448\u0435 \u2014 \u043A \u043A\u043E\u043D\u043A\u0443\u0440\u0435\u043D\u0442\u0430\u043C"] })
               ] }),
-              (() => {
+              bankSubTab === "credits" && (() => {
                 const activeCorpLoans = corpLoans;
                 const totalOutstanding = activeCorpLoans.reduce((s, l) => s + l.balance, 0);
                 const riskLabel = (t) => t >= 2 ? "\u0432\u044B\u0441\u043E\u043A\u0438\u0439" : t >= 1 ? "\u0441\u0440\u0435\u0434\u043D\u0438\u0439" : "\u043D\u0438\u0437\u043A\u0438\u0439";
@@ -11081,7 +11089,7 @@ function MarketSandbox() {
                   })
                 ] });
               })(),
-              (() => {
+              bankSubTab === "marketing" && (() => {
                 const now = Date.now();
                 const campaigns = bank.marketingCampaigns || [];
                 const history = bank.marketingHistory || [];
@@ -11153,7 +11161,7 @@ function MarketSandbox() {
                   ] })
                 ] });
               })(),
-              (() => {
+              bankSubTab === "deposits" && (() => {
                 const now = Date.now();
                 const deps = bank.deposits || [];
                 const activePrincipal = deps.reduce((s, d) => s + d.principal, 0);
@@ -11238,7 +11246,7 @@ function MarketSandbox() {
                   ] })
                 ] });
               })(),
-              /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
+              bankSubTab === "traders" && /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
                 /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }, children: "\u0422\u0440\u0435\u0439\u0434\u0435\u0440\u044B \xB7 \u043A\u043E\u043C\u0438\u0441\u0441\u0438\u044F 10% \u0441 \u043F\u0440\u0438\u0431\u044B\u043B\u0438, \u0432\u044B\u043F\u043B\u0430\u0442\u0430 \u0432\u0440\u0443\u0447\u043D\u0443\u044E" }),
                 bank.traders.map((t) => {
                   const owed = Math.max(0, Math.round(Math.max(0, t.pnlTotal || 0) * bankTraderCommission() - (t.commissionPaid || 0)));
