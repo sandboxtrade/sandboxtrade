@@ -590,6 +590,84 @@ function darknetLiquidityFactor(company) {
 function darknetManipulationDampening(manipulation) {
   return 1 / (1 + Math.max(0, manipulation || 0) / 60);
 }
+// ---- Darknet: «Вброс» (негативная информационная атака на актив) ----
+// Зеркало «Рыночного влияния», но вниз. Отличия по балансу:
+//  * исполнителя чаще кидают (вброс дешевле заказать — больше мусорных подрядчиков);
+//  * паника отыгрывается быстрее жадности: мгновенная часть импульса больше, хвост короче;
+//  * вместо «отката» — разоблачение: слух не подтверждается, цена отскакивает вверх,
+//    и с некоторым шансом след ведёт к заказчику (подозрение + heat).
+var DARKNET_FUD_SCAM_CHANCE = 0.09;
+var DARKNET_FUD_EXPOSE_CHANCE = 0.35;
+var DARKNET_FUD_TIERS = [
+  {
+    id: "fud_rumor",
+    name: "Слух в чатах",
+    cost: 25e4,
+    min: 4,
+    max: 14,
+    debunkBase: 0.1,
+    heat: 6,
+    sector: false,
+    posts: [
+      "{t}: в отраслевых чатах обсуждают задержки выплат подрядчикам",
+      "{t}: анонимный источник сообщает о проблемах с ликвидностью",
+      "{t}: несколько трейдеров пишут о срыве крупного контракта"
+    ]
+  },
+  {
+    id: "fud_leak",
+    name: "Слив «документов»",
+    cost: 22e5,
+    min: 12,
+    max: 42,
+    debunkBase: 0.22,
+    heat: 14,
+    sector: false,
+    posts: [
+      "{t}: в сеть выложены внутренние документы — якобы дыра в отчётности",
+      "{t}: утечка переписки менеджмента, речь о скрытых обязательствах",
+      "{t}: опубликован «черновик аудита» с крупными списаниями"
+    ]
+  },
+  {
+    id: "fud_smear",
+    name: "Кампания компромата",
+    cost: 13e6,
+    min: 25,
+    max: 85,
+    debunkBase: 0.42,
+    heat: 28,
+    sector: false,
+    posts: [
+      "{t}: серия публикаций обвиняет руководство в выводе активов",
+      "{t}: сообщения о готовящихся обысках и заморозке счетов",
+      "{t}: крупные партнёры якобы приостанавливают работу с компанией"
+    ]
+  },
+  {
+    id: "fud_sector",
+    name: "Отраслевая паника",
+    cost: 55e6,
+    min: 8,
+    max: 26,
+    debunkBase: 0.28,
+    heat: 40,
+    sector: true,
+    posts: [
+      "Сектор {t}: расходятся сообщения о готовящихся ограничениях",
+      "Сектор {t}: анонимные источники говорят о проверках по всей отрасли",
+      "Сектор {t}: слухи о пересмотре условий для всех игроков"
+    ]
+  }
+];
+function darknetFudHeadline(tier, label) {
+  const arr = tier && tier.posts ? tier.posts : [];
+  const tpl = arr.length ? arr[Math.floor(Math.random() * arr.length)] : "{t}: поток негативных сообщений вокруг актива";
+  return tpl.split("{t}").join(label);
+}
+function findDarknetTier(id) {
+  return DARKNET_INFLUENCE_TIERS.find((t) => t.id === id) || DARKNET_FUD_TIERS.find((t) => t.id === id) || null;
+}
 var MULE_WARMUP_TARGET = 60;
 var MULE_WARMUP_SMALL_TX_GAIN = 8;
 var MULE_THEFT_CHECK_MS = 9e4;
@@ -2464,6 +2542,7 @@ function MarketSandbox() {
   const [blackMarketOffers, setBlackMarketOffers] = useState([]);
   const [darkTab, setDarkTab] = useState("services");
   const [darknetInfluenceTier, setDarknetInfluenceTier] = useState(DARKNET_INFLUENCE_TIERS[0].id);
+  const [darknetFudMode, setDarknetFudMode] = useState("pump");
   const [darknetInfluenceTarget, setDarknetInfluenceTarget] = useState("");
   const [darknetPayCrypto, setDarknetPayCrypto] = useState("");
   const [darknetPayAccount, setDarknetPayAccount] = useState("personal");
@@ -3895,6 +3974,42 @@ function MarketSandbox() {
       if (!c) return;
       applyImpact(c.id, ev.reversalPct);
       pushPost({ text: `${c.ticker}: \u0438\u043C\u043F\u0443\u043B\u044C\u0441 \u0432\u044B\u0434\u044B\u0445\u0430\u0435\u0442\u0441\u044F \u2014 \u0447\u0430\u0441\u0442\u044C \u0434\u0435\u0440\u0436\u0430\u0442\u0435\u043B\u0435\u0439 \u0444\u0438\u043A\u0441\u0438\u0440\u0443\u0435\u0442 \u043F\u0440\u0438\u0431\u044B\u043B\u044C, \u0446\u0435\u043D\u0430 \u043E\u0442\u043A\u0430\u0442\u044B\u0432\u0430\u0435\u0442\u0441\u044F`, positive: false, isMacro: false, ticker: c.ticker, importance: 2 });
+    } else if (ev.kind === "darknet_fud_resolve") {
+      if (!c) return;
+      const tier = DARKNET_FUD_TIERS.find((t) => t.id === ev.tierId);
+      if (!tier) return;
+      const liqFactor = darknetLiquidityFactor(c);
+      const dampening = darknetManipulationDampening(c.darknetManipulation);
+      const roll = Math.pow(Math.random(), 1.5);
+      const totalPct = (tier.min + (tier.max - tier.min) * roll) * liqFactor * dampening;
+      // Паника быстрее жадности: 55% движения сразу, остальное — затухающим хвостом.
+      const instantPct = totalPct * 0.55;
+      const momentumInitial = totalPct * 0.45 * 0.18;
+      applyImpact(c.id, -instantPct);
+      setCompanies((prev) => prev.map((x) => x.id === c.id ? { ...x, darknetMomentum: (x.darknetMomentum || 0) - momentumInitial, darknetManipulation: Math.min(150, (x.darknetManipulation || 0) + 30) } : x));
+      if (ev.isSectorLead || !tier.sector) {
+        setDarknetInfluenceJobs((prev) => prev.map((j) => j.id === ev.jobId ? { ...j, status: "success", resultPct: -totalPct } : j));
+        pushPost({ role: "insider", kind: "rumor", text: darknetFudHeadline(tier, ev.headlineLabel || c.ticker), positive: false, isMacro: false, ticker: tier.sector ? null : c.ticker, importance: tier.sector ? 3 : 2 });
+      }
+      const debunkChance = Math.min(0.8, tier.debunkBase + totalPct / 300 + (c.darknetManipulation || 0) / 300);
+      if (Math.random() < debunkChance) {
+        const debunkDelay = 9 * 60 * 1e3 + Math.random() * 14 * 60 * 1e3;
+        scheduleEvent({ id: makeId("sched"), kind: "darknet_fud_debunk", companyId: c.id, ticker: c.ticker, reboundPct: totalPct * (0.35 + Math.random() * 0.45), exposePlayer: (ev.isSectorLead || !tier.sector) && Math.random() < DARKNET_FUD_EXPOSE_CHANCE, tierId: tier.id, dueAt: Date.now() + debunkDelay });
+      }
+      if ((c.darknetManipulation || 0) >= 90) {
+        pushPost({ text: `${c.ticker}: аналитики отмечают неестественный информационный фон вокруг бумаги`, positive: false, isMacro: false, ticker: c.ticker, importance: 2 });
+      }
+    } else if (ev.kind === "darknet_fud_debunk") {
+      if (!c) return;
+      applyImpact(c.id, ev.reboundPct);
+      pushPost({ role: "official", kind: "development", text: `${c.ticker}: сообщения о проблемах не подтвердились — источник оказался анонимным вбросом, цена отыгрывает падение`, positive: true, isMacro: false, ticker: c.ticker, importance: 2 });
+      if (ev.exposePlayer) {
+        const tier = DARKNET_FUD_TIERS.find((t) => t.id === ev.tierId);
+        flagSuspicion(Math.min(60, 14 + (tier ? tier.heat : 10)));
+        setBlackMarketHeat((h) => Math.min(200, h + (tier ? tier.heat : 10) * 0.8));
+        pushPost({ text: `Расследование по вбросу вокруг ${c.ticker}: журналисты вышли на цепочку криптоплатежей за публикации`, positive: false, isMacro: false, ticker: c.ticker, importance: 3 });
+        notify("Вброс разоблачён — след ведёт к оплате, подозрение выросло", false);
+      }
     } else if (ev.kind === "oil_confirm") {
       const bank = OIL_EVENT_BANKS[ev.bankKey];
       if (!bank) return;
@@ -6952,6 +7067,50 @@ function MarketSandbox() {
     const resolveDelay = 15e3 + Math.random() * 20e3;
     targets.forEach((t) => {
       scheduleEvent({ id: makeId("sched"), kind: "darknet_influence_resolve", companyId: t.id, ticker: t.ticker, tierId, jobId, isSectorLead: t.id === targets[0].id, dueAt: Date.now() + resolveDelay });
+    });
+    setTimeout(saveGame, 50);
+  };
+  const orderDarknetFud = (tierId, targetId, cryptoId, payAccount) => {
+    const tier = DARKNET_FUD_TIERS.find((t) => t.id === tierId);
+    if (!tier || !targetId || !cryptoId) return;
+    const cryptoAsset = companiesRef.current.find((c) => c.id === cryptoId);
+    if (!cryptoAsset || cryptoAsset.price <= 0) return;
+    const useIp = payAccount === "ip";
+    const holdingsMap = useIp ? ipHoldings : holdings;
+    const setHoldingsMap = useIp ? setIpHoldings : setHoldings;
+    const qtyNeeded = tier.cost / cryptoAsset.price;
+    const held = holdingsMap[cryptoId]?.qty || 0;
+    if (held < qtyNeeded) {
+      notify(`Недостаточно ${cryptoAsset.ticker} на ${useIp ? "счёте ООО" : "личном счёте"} — нужно ${qtyNeeded.toFixed(4)}, есть ${held.toFixed(4)}`);
+      return;
+    }
+    const targets = tier.sector ? companiesRef.current.filter((c) => c.sector === targetId && !c.isCommodity) : [companiesRef.current.find((c) => c.id === targetId)].filter(Boolean);
+    if (!targets.length) return;
+    setHoldingsMap((h) => {
+      const prevH = h[cryptoId];
+      const newQty = prevH.qty - qtyNeeded;
+      if (newQty <= 1e-9) {
+        const rest = { ...h };
+        delete rest[cryptoId];
+        return rest;
+      }
+      return { ...h, [cryptoId]: { ...prevH, qty: newQty } };
+    });
+    logTx(`Darknet \xB7 ${tier.name} (${qtyNeeded.toFixed(4)} ${cryptoAsset.ticker})`, tier.cost, "out");
+    setBlackMarketHeat((h) => Math.min(200, h + tier.heat));
+    const jobId = makeId("dkfud");
+    const isScam = Math.random() < DARKNET_FUD_SCAM_CHANCE;
+    const label = tier.sector ? targetId : targets[0].ticker;
+    if (isScam) {
+      setDarknetInfluenceJobs((prev) => [{ id: jobId, tierId, label, dir: "fud", status: "scam", createdAt: Date.now() }, ...prev].slice(0, 8));
+      setTimeout(() => notify("Darknet: подрядчик пропал, материал так и не вышел", false), 1200);
+      setTimeout(saveGame, 50);
+      return;
+    }
+    setDarknetInfluenceJobs((prev) => [{ id: jobId, tierId, label, dir: "fud", status: "pending", createdAt: Date.now() }, ...prev].slice(0, 8));
+    const resolveDelay = 15e3 + Math.random() * 20e3;
+    targets.forEach((t) => {
+      scheduleEvent({ id: makeId("sched"), kind: "darknet_fud_resolve", companyId: t.id, ticker: t.ticker, tierId, jobId, headlineLabel: label, isSectorLead: t.id === targets[0].id, dueAt: Date.now() + resolveDelay });
     });
     setTimeout(saveGame, 50);
   };
@@ -12812,20 +12971,26 @@ function MarketSandbox() {
                 ] })
               ] });
             })(),
+            /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 6, marginBottom: 14 }, children: [
+              /* @__PURE__ */ jsx("button", { onClick: () => { setDarknetFudMode("pump"); setDarknetInfluenceTarget(""); }, style: { flex: 1, padding: "10px 8px", borderRadius: 10, border: `1px solid ${darknetFudMode === "pump" ? "#8b3ad6" : C.border}`, background: darknetFudMode === "pump" ? "#8b3ad622" : C.surface, color: darknetFudMode === "pump" ? "#c39bf0" : C.inkDim, fontWeight: 700, fontSize: 12.5 }, children: "\u2191 \u0420\u0430\u0437\u0433\u043E\u043D" }),
+              /* @__PURE__ */ jsx("button", { onClick: () => { setDarknetFudMode("fud"); setDarknetInfluenceTarget(""); }, style: { flex: 1, padding: "10px 8px", borderRadius: 10, border: `1px solid ${darknetFudMode === "fud" ? C.red : C.border}`, background: darknetFudMode === "fud" ? `${C.red}22` : C.surface, color: darknetFudMode === "fud" ? C.red : C.inkDim, fontWeight: 700, fontSize: 12.5 }, children: "\u2193 \u0412\u0431\u0440\u043E\u0441" })
+            ] }),
+            darknetFudMode === "fud" && /* @__PURE__ */ jsx("div", { style: { background: `${C.red}12`, border: `1px solid ${C.red}44`, borderRadius: 12, padding: 12, marginBottom: 14, fontSize: 11.5, color: C.inkDim, lineHeight: 1.6 }, children: "\u0417\u0430\u043A\u0430\u0437 \u043D\u0435\u0433\u0430\u0442\u0438\u0432\u043D\u043E\u0439 \u043F\u0443\u0431\u043B\u0438\u043A\u0430\u0446\u0438\u0438: \u0446\u0435\u043D\u0430 \u043F\u0430\u0434\u0430\u0435\u0442 \u0440\u0435\u0437\u043A\u043E, \u043D\u043E \u043D\u0435\u043D\u0430\u0434\u043E\u043B\u0433\u043E. \u0415\u0441\u043B\u0438 \u0432\u0431\u0440\u043E\u0441 \u0440\u0430\u0437\u043E\u0431\u043B\u0430\u0447\u0430\u0442 \u2014 \u0446\u0435\u043D\u0430 \u043E\u0442\u0441\u043A\u043E\u0447\u0438\u0442, \u0430 \u0441\u043B\u0435\u0434 \u043C\u043E\u0436\u0435\u0442 \u0432\u044B\u0432\u0435\u0441\u0442\u0438 \u043D\u0430 \u0437\u0430\u043A\u0430\u0437\u0447\u0438\u043A\u0430. \u0417\u0430\u0440\u0430\u0431\u043E\u0442\u043E\u043A \u2014 \u043D\u0430 \u0432\u044B\u043A\u0443\u043F\u0435 \u043F\u0440\u043E\u0432\u0430\u043B\u0430." }),
             darknetInfluenceJobs.length > 0 && /* @__PURE__ */ jsxs("div", { style: { marginBottom: 14 }, children: [
               /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkDim, marginBottom: 6, textTransform: "uppercase", letterSpacing: 1 }, children: "\u041F\u043E\u0441\u043B\u0435\u0434\u043D\u0438\u0435 \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u0438" }),
               darknetInfluenceJobs.map((j) => {
-                const tierDef = DARKNET_INFLUENCE_TIERS.find((t) => t.id === j.tierId);
+                const tierDef = findDarknetTier(j.tierId);
                 return /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 12px", marginBottom: 6, fontSize: 12 }, children: [
                   /* @__PURE__ */ jsxs("div", { children: [
                     /* @__PURE__ */ jsx("div", { style: { fontWeight: 600 }, children: `${tierDef?.name || j.tierId} \xB7 ${j.label}` }),
                     /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint }, children: j.status === "pending" ? "\u0412\u044B\u043F\u043E\u043B\u043D\u044F\u0435\u0442\u0441\u044F\u2026" : j.status === "scam" ? "\u0421\u0432\u044F\u0437\u044C \u043F\u043E\u0442\u0435\u0440\u044F\u043D\u0430 \u2014 \u0441\u043A\u0430\u043C" : "\u0417\u0430\u0432\u0435\u0440\u0448\u0435\u043D\u043E" })
                   ] }),
-                  /* @__PURE__ */ jsx("div", { style: { fontWeight: 700, color: j.status === "scam" ? C.red : j.status === "success" ? C.green : C.inkFaint }, children: j.status === "success" ? `+${j.resultPct.toFixed(1)}%` : j.status === "scam" ? "\u2212100%" : "\u2026" })
+                  /* @__PURE__ */ jsx("div", { style: { fontWeight: 700, color: j.status === "scam" ? C.red : j.status === "success" ? (j.resultPct >= 0 ? C.green : C.red) : C.inkFaint }, children: j.status === "success" ? `${j.resultPct >= 0 ? "+" : "\u2212"}${Math.abs(j.resultPct).toFixed(1)}%` : j.status === "scam" ? "\u2212100%" : "\u2026" })
                 ] }, j.id);
               })
             ] }),
-            DARKNET_INFLUENCE_TIERS.map((tier) => {
+            (darknetFudMode === "fud" ? DARKNET_FUD_TIERS : DARKNET_INFLUENCE_TIERS).map((tier) => {
+              const isFud = darknetFudMode === "fud";
               const isSector = tier.sector;
               const sectorList = Array.from(new Set(companies.filter((c) => !c.isCommodity).map((c) => c.sector)));
               const targetList = isSector ? sectorList : companies.filter((c) => !c.isCommodity && !c.rugged);
@@ -12850,13 +13015,19 @@ function MarketSandbox() {
                 /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkDim, marginTop: 6, lineHeight: 1.6 }, children: [
                   isSector ? "\u0412\u043E\u0437\u0434\u0435\u0439\u0441\u0442\u0432\u0443\u0435\u0442 \u043D\u0430 \u0432\u0435\u0441\u044C \u0441\u0435\u043A\u0442\u043E\u0440" : "\u0412\u043E\u0437\u0434\u0435\u0439\u0441\u0442\u0432\u0443\u0435\u0442 \u043D\u0430 \u043E\u0434\u0438\u043D \u0430\u043A\u0442\u0438\u0432",
                   " \xB7 \u043F\u043E\u0442\u0435\u043D\u0446\u0438\u0430\u043B\u044C\u043D\u043E\u0435 \u0434\u0432\u0438\u0436\u0435\u043D\u0438\u0435 ",
+                  isFud ? "\u2212" : "",
                   tier.min,
                   "\u2013",
+                  isFud ? "\u2212" : "",
                   tier.max,
-                  "%+",
+                  isFud ? "%" : "%+",
                   /* @__PURE__ */ jsx("br", {}),
-                  "\u041D\u0430\u0434\u0451\u0436\u043D\u043E\u0441\u0442\u044C \u0438\u0441\u043F\u043E\u043B\u043D\u0438\u0442\u0435\u043B\u044F: 95% \xB7 \u0420\u0438\u0441\u043A \u043E\u0431\u0440\u0430\u0442\u043D\u043E\u0439 \u0440\u0435\u0430\u043A\u0446\u0438\u0438: ",
-                  tier.reversalBase >= 0.3 ? "\u0432\u044B\u0441\u043E\u043A\u0438\u0439" : tier.reversalBase >= 0.15 ? "\u0441\u0440\u0435\u0434\u043D\u0438\u0439" : "\u043D\u0438\u0437\u043A\u0438\u0439"
+                  isFud ? "\u041D\u0430\u0434\u0451\u0436\u043D\u043E\u0441\u0442\u044C \u0438\u0441\u043F\u043E\u043B\u043D\u0438\u0442\u0435\u043B\u044F: 91% \xB7 \u0420\u0438\u0441\u043A \u0440\u0430\u0437\u043E\u0431\u043B\u0430\u0447\u0435\u043D\u0438\u044F: " : "\u041D\u0430\u0434\u0451\u0436\u043D\u043E\u0441\u0442\u044C \u0438\u0441\u043F\u043E\u043B\u043D\u0438\u0442\u0435\u043B\u044F: 95% \xB7 \u0420\u0438\u0441\u043A \u043E\u0431\u0440\u0430\u0442\u043D\u043E\u0439 \u0440\u0435\u0430\u043A\u0446\u0438\u0438: ",
+                  (() => {
+                    const base = isFud ? tier.debunkBase : tier.reversalBase;
+                    return base >= 0.3 ? "\u0432\u044B\u0441\u043E\u043A\u0438\u0439" : base >= 0.15 ? "\u0441\u0440\u0435\u0434\u043D\u0438\u0439" : "\u043D\u0438\u0437\u043A\u0438\u0439";
+                  })(),
+                  isFud ? ` \xB7 heat +${tier.heat}` : ""
                 ] }),
                 /* @__PURE__ */ jsx("select", { value: selectedTarget, onChange: (e) => {
                   setDarknetInfluenceTier(tier.id);
@@ -12867,7 +13038,7 @@ function MarketSandbox() {
                   fmt(targetCompany.price),
                   targetCompany.darknetManipulation > 20 && /* @__PURE__ */ jsx("span", { style: { color: C.red }, children: " \xB7 \u0430\u043A\u0442\u0438\u0432 \u0443\u0436\u0435 \u043F\u043E\u0434 \u0432\u043D\u0438\u043C\u0430\u043D\u0438\u0435\u043C \u2014 \u044D\u0444\u0444\u0435\u043A\u0442 \u0441\u043B\u0430\u0431\u0435\u0435" })
                 ] }),
-                /* @__PURE__ */ jsx("button", { onClick: () => orderDarknetInfluence(tier.id, selectedTarget, selectedCrypto, darknetPayAccount), disabled: !canAfford || !selectedTarget, style: { width: "100%", marginTop: 10, padding: 11, borderRadius: 10, border: "none", fontWeight: 700, fontSize: 13, background: canAfford && selectedTarget ? "#8b3ad6" : C.surface2, color: canAfford && selectedTarget ? "#fff" : C.inkFaint }, children: canAfford ? "\u0417\u0410\u041A\u0410\u0417\u0410\u0422\u042C" : "\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u043A\u0440\u0438\u043F\u0442\u044B" })
+                /* @__PURE__ */ jsx("button", { onClick: () => (isFud ? orderDarknetFud : orderDarknetInfluence)(tier.id, selectedTarget, selectedCrypto, darknetPayAccount), disabled: !canAfford || !selectedTarget, style: { width: "100%", marginTop: 10, padding: 11, borderRadius: 10, border: "none", fontWeight: 700, fontSize: 13, background: canAfford && selectedTarget ? (isFud ? "#c0392b" : "#8b3ad6") : C.surface2, color: canAfford && selectedTarget ? "#fff" : C.inkFaint }, children: canAfford ? "\u0417\u0410\u041A\u0410\u0417\u0410\u0422\u042C" : "\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u043A\u0440\u0438\u043F\u0442\u044B" })
               ] }, tier.id);
             }),
             /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkFaint, textAlign: "center", lineHeight: 1.6 }, children: "\u0420\u0435\u0437\u0443\u043B\u044C\u0442\u0430\u0442 \u043D\u0435 \u0444\u0438\u043A\u0441\u0438\u0440\u043E\u0432\u0430\u043D \u0438 \u0437\u0430\u0432\u0438\u0441\u0438\u0442 \u043E\u0442 \u0441\u043E\u0441\u0442\u043E\u044F\u043D\u0438\u044F \u0440\u044B\u043D\u043A\u0430. \u0421\u043B\u0438\u0448\u043A\u043E\u043C \u0447\u0430\u0441\u0442\u044B\u0435 \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u0438 \u043D\u0430 \u043E\u0434\u0438\u043D \u0430\u043A\u0442\u0438\u0432 \u0441\u043D\u0438\u0436\u0430\u044E\u0442 \u044D\u0444\u0444\u0435\u043A\u0442\u0438\u0432\u043D\u043E\u0441\u0442\u044C \u0438 \u043F\u043E\u0432\u044B\u0448\u0430\u044E\u0442 \u0440\u0438\u0441\u043A \u0432\u043D\u0438\u043C\u0430\u043D\u0438\u044F." })
