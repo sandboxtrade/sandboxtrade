@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#0b1018">
+<meta name="theme-color" content="#0B0E14">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>STATE · Финансовая песочница</title>
@@ -26,6 +26,32 @@
 .liquidity-table{overflow-x:auto}.liquidity-table table{border-collapse:collapse;width:100%;font-size:14px;font-variant-numeric:tabular-nums}.liquidity-table th{color:var(--muted);font-size:12px;font-weight:500;text-align:right}.liquidity-table th:first-child,.liquidity-table td:first-child{text-align:left}.liquidity-table td{text-align:right;padding:12px 6px;border-bottom:1px solid var(--line)}.liquidity-table small{display:block;font-size:12px;color:var(--muted)}.liquidity-table+p{margin-top:15px;font-size:13px}
 @media(max-width:760px){.candle-readout>div{grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.interactive-chart{height:300px;min-height:300px}.trade-confirm{max-height:90dvh}.chart-nav{gap:4px}.chart-nav button{padding:9px 10px}.quote-box .row{font-size:13px}}
 
+
+/* Compact mobile cabinet, matching the original game's palette and density. */
+:root{--bg:#0B0E14;--surface:#12161F;--raised:#1A2029;--line:#232A36;--text:#E7EAEE;--muted:#929BAA;--gold:#E8B14C;--green:#3FD68C;--red:#FF5C5C;font-size:14px}
+body{max-width:480px;margin:auto;background:var(--bg)}
+.topbar{background:var(--bg);padding-left:16px;padding-right:16px;border-bottom:0}
+.brand-mark{display:none}.brand small{font-size:11px}.brand b{letter-spacing:.08em}
+.world-clock{background:var(--bg);padding:0 16px 10px;border-bottom:1px solid var(--line)}
+.clock-meta{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;font-size:12px}.clock-meta small{font-size:11px}
+#time{display:none}main.reading,main.wide{max-width:480px;padding:16px 14px 110px}
+h1{font-size:22px}h2{font-size:16px;margin-bottom:12px}h3{font-size:15px}
+.card,.news-card,.hero{padding:14px;border-radius:12px;margin-bottom:12px}
+.big{font-size:34px}.balance{padding:4px 0 16px;margin-bottom:16px}.balance .quick{margin-top:14px}
+.stat{padding:12px}.stat strong{font-size:18px}.stats{border-radius:10px;margin-bottom:12px}
+.business-card{padding:12px 0}.business-card strong{font-size:15px}.tile-icon{width:36px;height:36px;border-radius:9px;background:var(--raised)}
+.launch-card{padding:14px;border-radius:12px}.launch-card strong{font-size:16px}.launch-card p{font-size:13px}
+.muted,.sub,p{font-size:13px}.row{padding:10px 0}.empty{padding:16px;border:1px solid var(--line);margin:12px 0}
+.subtabs{margin-bottom:14px}.subtabs button{padding:10px;font-size:13px}
+.trade-layout{display:block}.chart-area{border-right:0}.exchange{border-radius:10px}.market-bottom{display:block}
+.market-list{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:0 14px}
+.market-summary{margin-bottom:14px}.asset-row{padding:15px 0}.asset-row:last-child{border-bottom:0}
+.news-card h2{font-size:17px}.news-card p{font-size:14px;line-height:1.6}.news-byline{margin-bottom:12px}
+#nav{max-width:480px;margin:auto;background:var(--surface);gap:0;padding-top:4px}#nav button{font-size:11px}
+#nav button.active{background:transparent}.trade-layout .order-panel{padding:14px}
+.modal-backdrop{align-items:flex-end;padding:0}.modal{width:min(480px,100%);border-radius:18px 18px 0 0;padding:20px 16px calc(20px + env(safe-area-inset-bottom))}
+#app[aria-busy=true]{opacity:1}.chart-legend{display:none}button{font-size:14px}
+@media(min-width:600px){body{border-left:1px solid var(--line);border-right:1px solid var(--line);min-height:100dvh}}
 </style>
 </head>
 <body>
