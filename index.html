@@ -52,10 +52,43 @@ h1{font-size:22px}h2{font-size:16px;margin-bottom:12px}h3{font-size:15px}
 .modal-backdrop{align-items:flex-end;padding:0}.modal{width:min(480px,100%);border-radius:18px 18px 0 0;padding:20px 16px calc(20px + env(safe-area-inset-bottom))}
 #app[aria-busy=true]{opacity:1}.chart-legend{display:none}button{font-size:14px}
 @media(min-width:600px){body{border-left:1px solid var(--line);border-right:1px solid var(--line);min-height:100dvh}}
+
+/* Live market and business cabinet */
+:root{--bg:#0B0E14;--surface:#11161F;--raised:#1B212B;--muted:#929BAA;--gold:#E8B14C;--violet:#8B6BFF}
+h1{font-size:24px;letter-spacing:-.025em}.card,.hero{border-radius:16px;padding:16px}.card h2{font-size:14px;letter-spacing:.045em;color:var(--muted)}
+.topbar{padding-top:calc(env(safe-area-inset-top) + 16px)}.brand b{font-size:18px;letter-spacing:0}.brand small{text-transform:uppercase;letter-spacing:.1em;margin-top:2px}
+.wallet-cards{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px}
+.wallet-cards section{border:1px solid var(--line);border-radius:16px;background:var(--surface);padding:14px;min-width:0;display:flex;flex-direction:column;justify-content:space-between;min-height:138px}
+.wallet-cards small{font-size:12px;color:var(--muted)}.wallet-cards strong{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:clamp(16px,4.8vw,23px);letter-spacing:-.045em;margin:12px 0;overflow-wrap:anywhere}
+.wallet-link{background:#8B6BFF20;color:#A38AFF;border:0;width:100%;font-size:12px}.mini-chart{display:block;width:100%;height:32px}
+.balance{border-bottom:0;padding-bottom:0}.balance .quick{margin-top:0}.balance .quick button{font-size:13px;padding:10px}.launch-card{border-radius:16px}
+.flow-card{background:var(--surface);border:1px solid #E8B14C55;border-radius:16px;padding:16px;margin-bottom:14px}
+.flow-card .section-head{font-size:12px;gap:8px}.flow-card .section-head>b{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:18px}
+.flow-card small{font-size:11px;color:var(--muted)}.live-dot{display:inline-block;width:6px;height:6px;background:var(--green);border-radius:50%;vertical-align:middle;margin-left:5px}
+.cycle-track{height:4px;border-radius:9px;background:var(--raised);margin:12px 0;overflow:hidden}.cycle-track span{height:100%;display:block;background:var(--gold);transition:width .3s linear}
+.flow-footer{display:flex;justify-content:space-between;gap:10px;color:var(--muted);font-size:11px}.subtabs{border:0;gap:6px}.subtabs button{border:1px solid var(--line);border-radius:22px;background:var(--surface);padding:10px 14px}.subtabs button.active{background:#E8B14C16;border-color:var(--gold)}
+.asset-sheet{position:fixed;top:calc(env(safe-area-inset-top) + 56px);bottom:0;left:50%;transform:translateX(-50%);width:min(480px,100%);z-index:40;background:var(--surface);border-radius:22px 22px 0 0;padding:16px 14px calc(24px + env(safe-area-inset-bottom));overflow-y:auto;overscroll-behavior:contain;box-shadow:0 0 0 100vmax #0009}
+.sheet-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;color:var(--muted);font-size:13px;margin-bottom:8px}.sheet-heading button{border:0;background:var(--raised);padding:8px;min-width:38px;min-height:38px}
+.exchange{border:0;border-radius:0;background:transparent;margin-bottom:12px}.market-top{padding:8px 0 12px}.pair strong{font-size:18px}.pair small{display:none}
+.market-price strong{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:28px}.market-metrics{padding:0 0 12px;font-size:11px}
+.chart-tools{padding:8px 0}.segments .active{background:var(--gold);color:#17120A}.chart-area{border:0}.candle-chart{background:#080B10;min-height:225px;max-height:280px}
+.candle-readout{margin:0;padding:4px 0;border:0}.candle-readout summary{font-size:11px;color:var(--muted);min-height:30px}.candle-readout>div{display:block}.candle-readout>div>div{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.candle-readout strong{font-size:11px}
+.chart-nav{justify-content:flex-end;padding:0;gap:4px}.chart-nav button{font-size:12px;min-height:32px;padding:6px 10px}.chart-note{padding:8px 0;font-size:11px}
+.trade-layout .order-panel{padding:12px 0}.side-switch{padding:0;background:transparent;gap:8px}.side-switch button{background:var(--raised);border-radius:12px;min-height:46px;font-size:16px}.side-switch button.selected.buy{background:var(--green);color:#092018}.side-switch button.selected.sell{background:var(--red);color:#250B10}
+.quantity-stepper{display:flex;align-items:center;gap:12px;background:var(--raised);padding:10px;border-radius:14px;margin-bottom:12px}.quantity-stepper button{background:var(--surface);border:0;min-width:42px;font-size:23px;padding:5px}
+.quantity-stepper .field{flex:1;text-align:center;font-size:11px;margin:0!important;gap:0}.quantity-stepper input{background:transparent;border:0;text-align:center;padding:6px;min-height:36px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.order-panel .execute{border-radius:12px;min-height:50px;font-size:17px}.order-panel .quote-box{min-height:0;background:transparent;padding:0;margin:10px 0}.order-panel .quote-box>.row:nth-child(n+3),.order-panel .quote-box>small{display:none}
+.order-panel>p.muted{font-size:12px}.order-panel>details{margin-top:8px}.order-panel>details summary{font-size:12px;color:var(--muted)}
+.asset-sheet .card{background:transparent}.asset-sheet .market-records{padding:12px 0;border:0}.tape-panel{margin:8px 0;padding-top:10px}.tape-panel summary{font-size:12px;color:var(--muted);min-height:32px}
+.tape-row{display:flex;align-items:center;justify-content:space-between;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;padding:5px 0}.tape-row>span{color:var(--muted)}
+.news-refresh{width:100%;background:transparent;color:var(--gold);border:0;margin-bottom:10px;font-size:12px}
+.news-card{border-radius:16px;padding:17px}.news-card h2{font-size:18px;line-height:1.4}.news-card p{font-size:14px;line-height:1.7;color:#B5BDCA}
+.modal-backdrop{z-index:70}#toast{z-index:100}.asset-sheet~.drawer-backdrop{z-index:60}.drawer{z-index:61}
+@media(prefers-reduced-motion:reduce){.cycle-track span{transition:none}}
 </style>
 </head>
 <body>
-<header class="topbar"><div class="brand"><span class="brand-mark">S</span><div><b>STATE</b><small>Республика Астер</small></div></div><div class="header-right"><button data-action="settings" aria-label="Сохранение и настройки">⚙</button></div></header>
+<header class="topbar"><div class="brand"><span class="brand-mark">S</span><div><b>Мой капитал</b><small>Песочница рынка</small></div></div><div class="header-right"><button data-action="settings" aria-label="Сохранение и настройки">⚙</button></div></header>
 <div class="world-clock"><div class="clock-meta"><span id="date">Новая игра</span><small id="status" role="status">Создаём жителей и компании…</small></div><div id="time"></div></div>
 <main id="app" class="reading" aria-busy="true"><div class="empty"><h1>Добро пожаловать в Астер</h1><p>Готовим самостоятельный мир: жителей, компании, банки и их счета. Первая загрузка может занять несколько секунд.</p></div></main>
 <nav id="nav" aria-label="Основные разделы"></nav>
