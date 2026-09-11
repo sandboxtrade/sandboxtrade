@@ -72,14 +72,21 @@ details{border-top:1px solid var(--line);padding-top:12px;margin-top:14px}summar
 @media(max-width:350px){.action-grid{grid-template-columns:1fr}.decision-tile{min-height:84px}.choice-row button{align-items:flex-start;flex-direction:column;gap:6px}.choice-row button>span{text-align:left}}
 
 .task-disclosure>summary{font-size:1rem;font-weight:600;color:var(--text);line-height:1.5}.task-disclosure[open]>summary{margin-bottom:18px}.task-disclosure>form{margin-top:14px}
+.header-right{display:flex;gap:6px;align-items:center}.header-right .help-button{font-size:.8125rem;padding:8px 10px;color:var(--accent)}
+.help-dialog{background:var(--surface);color:var(--text);border:1px solid var(--line);border-radius:20px;width:calc(100% - 24px);max-width:500px;max-height:85vh;max-height:85dvh;padding:0;overflow:auto;overscroll-behavior:contain;box-shadow:0 20px 80px #0008}
+.help-dialog::backdrop{background:#050609b8}.help-head{position:sticky;top:0;background:var(--surface);z-index:1;padding:20px 18px 12px;border-bottom:1px solid var(--line)}.help-head h2{margin:0}.help-head label{display:block;font-size:.875rem;color:var(--muted);margin:16px 0 8px}.help-head input{width:100%;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:12px;padding:14px;font-size:1rem}.help-head p{font-size:.875rem;margin:10px 0 0}
+#helpResults{padding:0 18px 20px}.help-entry{border-bottom:1px solid var(--line);padding:16px 0}.help-entry summary{font-size:1rem;font-weight:600;cursor:pointer;line-height:1.5}.help-entry p{line-height:1.7;margin:12px 0 0}.help-empty{padding:20px 0}
+.market-price strong,.asset-row strong,.market-metrics b{font-variant-numeric:tabular-nums}.candle-chart{contain:layout paint}.candle-chart g{transition:fill .3s,stroke .3s}.live-dot{animation:none!important}.cycle-track span{transition:width .9s linear}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 </style>
 </head>
 <body>
-<header class="topbar"><div class="brand"><span class="brand-mark">S</span><div><b>Мой капитал</b><small>Песочница рынка</small></div></div><div class="header-right"><button data-action="settings" aria-label="Сохранение и настройки">⚙</button></div></header>
+<header class="topbar"><div class="brand"><span class="brand-mark">S</span><div><b>Мой капитал</b><small>Песочница рынка</small></div></div><div class="header-right"><button class="help-button" data-action="help" aria-haspopup="dialog">? Помощь</button><button data-action="settings" aria-label="Сохранение и настройки">⚙</button></div></header>
 <div class="world-clock"><div class="clock-meta"><span id="date">Новая игра</span><small id="status" role="status">Создаём жителей и компании…</small></div><div id="time"></div></div>
 <main id="app" class="reading" aria-busy="true"><div class="empty"><h1>Добро пожаловать в Астер</h1><p>Готовим самостоятельный мир: жителей, компании, банки и их счета. Первая загрузка может занять несколько секунд.</p></div></main>
 <nav id="nav" aria-label="Основные разделы"></nav>
 <div id="toast" role="status" aria-live="polite"></div>
+<dialog id="helpDialog" class="help-dialog" aria-labelledby="helpTitle"><div class="help-head"><div class="section-head"><h2 id="helpTitle">Помощь</h2><button data-action="closeHelp" aria-label="Закрыть помощь">✕</button></div><label for="helpSearch">Что непонятно?</label><input id="helpSearch" type="search" placeholder="Эмиссия, вклады, свечи…" autocomplete="off"><p id="helpCount" role="status"></p></div><div id="helpResults"></div></dialog>
 <script src="./app.js"></script>
 </body>
 </html>
