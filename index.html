@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+<meta name="theme-color" content="#0B0E14" />
+<title>market-sandbox</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  html, body, #root { height: 100%; margin: 0; background: #0B0E14; }
+  body { overscroll-behavior: none; -webkit-tap-highlight-color: transparent; font-family: 'Inter', sans-serif; }
+</style>
+
+<!--
+  window.storage is an API that only exists inside Claude.ai's artifact viewer. This shim gives the
+  app the same shape (get/set/delete/list, matching {key,value,shared} results) backed by the
+  browser's own localStorage, so the exact same app code works standalone on a real site.
+-->
+<script>
+  (function () {
+    const PREFIX = "marketsandbox:";
+    function fullKey(key, shared) { return PREFIX + (shared ? "shared:" : "priv:") + key; }
+    window.storage = {
+      async get(key, shared) {
+        const v = localStorage.getItem(fullKey(key, shared));
+        if (v === null) return null;
+        return { key, value: v, shared: !!shared };
+      },
+      async set(key, value, shared) {
+        localStorage.setItem(fullKey(key, shared), value);
+        return { key, value, shared: !!shared };
+      },
+      async delete(key, shared) {
+        localStorage.removeItem(fullKey(key, shared));
+        return { key, deleted: true, shared: !!shared };
+      },
+      async list(prefix, shared) {
+        const marker = fullKey(prefix || "", shared);
+        const keys = Object.keys(localStorage)
+          .filter((k) => k.startsWith(PREFIX + (shared ? "shared:" : "priv:")) && k.startsWith(marker))
+          .map((k) => k.slice((PREFIX + (shared ? "shared:" : "priv:")).length));
+        return { keys, prefix, shared: !!shared };
+      },
+    };
+  })();
+</script>
+
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@18.3.1",
+    "react-dom": "https://esm.sh/react-dom@18.3.1",
+    "react-dom/client": "https://esm.sh/react-dom@18.3.1/client",
+    "react/jsx-runtime": "https://esm.sh/react@18.3.1/jsx-runtime",
+    "react/jsx-dev-runtime": "https://esm.sh/react@18.3.1/jsx-dev-runtime",
+    "lucide-react": "https://esm.sh/lucide-react@0.383.0?external=react"
+  }
+}
+</script>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
