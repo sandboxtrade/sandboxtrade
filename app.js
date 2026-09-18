@@ -1,4 +1,4 @@
-// Market Sandbox × STATE — merge v0.5 PLAYTEST CANDIDATE · base V2.56.0 (Панель своего банка разбита на 5 вкладок вместо одной длинной прокрутки: Обзор (счёт банка/IP-переводы, IPO, портфель), Кредиты (личные+карточные ставки, кредитование компаний), Вклады, Трейдеры, Маркетинг банка — новое состояние bankSubTab, таб-бар сразу под hero-карточкой (имя/капитал/доверие — остаётся видимой всегда). Каждый существующий блок просто получил условие `bankSubTab === "X" &&` перед собой — порядок и содержимое блоков не менялись, только видимость. esbuild чист.)
+// Market Sandbox × STATE — merge v0.6 PLAYTEST 2 · base V2.56.0 (Панель своего банка разбита на 5 вкладок вместо одной длинной прокрутки: Обзор (счёт банка/IP-переводы, IPO, портфель), Кредиты (личные+карточные ставки, кредитование компаний), Вклады, Трейдеры, Маркетинг банка — новое состояние bankSubTab, таб-бар сразу под hero-карточкой (имя/капитал/доверие — остаётся видимой всегда). Каждый существующий блок просто получил условие `bankSubTab === "X" &&` перед собой — порядок и содержимое блоков не менялись, только видимость. esbuild чист.)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -10,6 +10,7 @@ import { createWorldCore, migrateWorldCore, tickWorldCore } from "./core/world-c
 import { MONEY_ACCOUNTS, adoptLegacyBalances, balanceForLegacyAccount, ledgerIdForLegacyAccount, snapshotLegacyBalances, transferLegacyMoney, payWorldCounterparty, receiveFromWorldCounterparty, reconcileLegacyDrift } from "./core/player-money.js";
 import { ECONOMY_ACCOUNTS, adoptBusinessOpeningBalance, businessLedgerId, ensureRealEconomy, settleB2BSale, settleBusinessExpense, settleMarketplacePulse, settleRetailSale, transferBusinessCash, worldDemandFactor } from "./core/real-economy.js";
 import { adoptOwnedBankCash, settleExchangeTrade, settleOwnedBankDepositInflow, settleOwnedBankDepositPayout, settleOwnedBankExpense, settleOwnedBankIncome, settleOwnedBankLoanIssue, settleOwnedBankRepayment } from "./core/finance-engine.js";
+import { isEquitySecurity, quoteSecurityTrade, recordSecurityTrade, securityMarketStats } from "./core/securities-market.js";
 import { Fragment, jsx, jsxs } from "react/jsx-runtime";
 var C = {
   bg: "#0B0E14",
@@ -1715,7 +1716,7 @@ var PITCH_ANGLES = [
   { id: "cap", label: "\u041A\u0430\u043F\u0438\u0442\u0430\u043B\u0438\u0437\u0430\u0446\u0438\u044E", icon: "\u{1F4CA}" }
 ];
 var STORAGE_KEY = "market-sandbox-v6";
-var SAVE_VERSION = 16;
+var SAVE_VERSION = 17;
 var LocalStorageSaveAdapter = {
   async save(key, payload) {
     await window.storage.set(key, JSON.stringify(payload));
@@ -1886,6 +1887,13 @@ var SAVE_MIGRATIONS = {
   // v15 -> v16: Stage 4 closes the first playable vertical slice: player-bank cash,
   // deposits/loans, exchange settlement and marketplace GMV/commission accounting.
   16: (data) => ({
+    ...data,
+    worldCore: migrateWorldCore(data.worldCore)
+  }),
+  // v16 -> v17: STATE-visible layer. Securities books conserve finite share supply,
+  // the State dashboard exposes aggregate resident/economy statistics, and the public
+  // feed is presented as a business-news wire instead of the old social-first screen.
+  17: (data) => ({
     ...data,
     worldCore: migrateWorldCore(data.worldCore)
   })
@@ -5986,6 +5994,15 @@ function MarketSandbox() {
     }, CORP_LOAN_OFFER_REFRESH_MS);
     return () => clearInterval(id);
   }, [loaded, !!bank]);
+  const totalPlayerSecurityQty = (companyId) => {
+    let total = holdings[companyId]?.qty || 0;
+    total += ipHoldings[companyId]?.qty || 0;
+    total += greyHoldings[companyId]?.qty || 0;
+    for (const h of Object.values(muleHoldings || {})) total += h?.[companyId]?.qty || 0;
+    for (const ip of Object.values(fakeIps || {})) total += ip?.holdings?.[companyId]?.qty || 0;
+    total += bankRef.current?.holdings?.[companyId]?.qty || 0;
+    return Math.max(0, Math.floor(Number(total) || 0));
+  };
   const executeTrade = (companyId, side, qty, account = "personal") => {
     const company = companies.find((c) => c.id === companyId);
     if (!company || qty <= 0) return;
@@ -6012,10 +6029,26 @@ function MarketSandbox() {
     const acctTag = useGrey ? " \xB7 Meridian" : useIp ? " \xB7 \u0418\u041F" : useBankCard ? ` \xB7 ${BANK_ACCOUNTS.find((b) => b.id === account)?.name}` : useMule ? " \xB7 \u0447\u0443\u0436\u0430\u044F \u043A\u0430\u0440\u0442\u0430" : useFakeIp ? " \xB7 \u0447\u0443\u0436\u043E\u0435 \u0418\u041F" : useBank ? " \xB7 \u0431\u0430\u043D\u043A" : "";
     const sizeRatio = qty / company.supply;
     const isOwnCryptoPool = company.kind === "crypto" && company.isPlayer && typeof company.poolCoin === "number";
+    const stateEquity = isEquitySecurity(company);
+    const ownedBefore = stateEquity ? totalPlayerSecurityQty(companyId) : 0;
+    let equityQuote = null;
+    if (stateEquity) {
+      try {
+        equityQuote = quoteSecurityTrade(worldCoreRef.current, company, { side, qty, ownedQty: ownedBefore, sellableQty: curHoldings[companyId]?.qty || 0, sentiment: sentimentRef.current, demandIndex: demandIndexRef.current });
+      } catch (error) {
+        notify(error?.message || "Не удалось получить котировку", false);
+        return;
+      }
+      if (equityQuote.available < qty) {
+        const label = side === "buy" ? "предложении" : "встречном спросе";
+        notify(`На рынке сейчас в ${label} только ${equityQuote.available.toLocaleString()} ${company.ticker}`, false);
+        return;
+      }
+    }
     const liqFactor = isOwnCryptoPool ? poolLiquidityFactor(company.poolUsd, company.price * company.supply) : 1;
-    const impactPct = Math.min(92, sizeRatio * 150 * liqFactor);
+    const impactPct = stateEquity ? equityQuote.impactPct : Math.min(92, sizeRatio * 150 * liqFactor);
     if (side === "buy") {
-      const avgExecPrice = company.price * (1 + impactPct / 200);
+      const avgExecPrice = stateEquity ? equityQuote.price : company.price * (1 + impactPct / 200);
       const cost = avgExecPrice * qty * 1.002 * (useGrey ? 1 + GREY_BANK.tradeBuyFee : 1);
       if (cost > curCash) {
         notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u2014 \u0441 \u0443\u0447\u0451\u0442\u043E\u043C \u043F\u0440\u043E\u0441\u0430\u0434\u043A\u0438 \u0446\u0435\u043D\u044B \u0438 \u043A\u043E\u043C\u0438\u0441\u0441\u0438\u0438 \u043D\u0443\u0436\u043D\u043E ${fmt(cost)}, \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E ${fmt(curCash)}`, false);
@@ -6028,7 +6061,8 @@ function MarketSandbox() {
       const settlementAccount = useIp ? "ip" : useGrey ? "grey" : useBank ? "bank" : account;
       const cashSettlement = settleExchangeTrade(worldCoreRef.current, { legacyAccountId: settlementAccount, side: "buy", cashDollars: cost, reason: `Exchange buy ${company.ticker}`, meta: { companyId, qty } });
       if (cashSettlement.paidDollars + 0.01 < cost) { notify("Недостаточно денег на реальном торговом счёте", false); return; }
-      commitWorldCore(cashSettlement.core);
+      const coreAfterBuy = stateEquity ? recordSecurityTrade(cashSettlement.core, company, equityQuote, { side: "buy", qty, ownedBefore }) : cashSettlement.core;
+      commitWorldCore(coreAfterBuy);
       setCurCash((c) => c - cost);
       if (useBankCard) {
         setBankAccounts((prev) => prev[account] ? { ...prev, [account]: { ...prev[account], turnoverUsed: prev[account].turnoverUsed + cost, lifetimeTurnover: (prev[account].lifetimeTurnover || 0) + cost } } : prev);
@@ -6041,8 +6075,12 @@ function MarketSandbox() {
         const newAvg = (prevH.avgCost * prevH.qty + avgExecPrice * qty) / newQty;
         return { ...h, [companyId]: { qty: newQty, avgCost: newAvg } };
       });
-      applyImpact(companyId, impactPct);
-      setCompanies((prev) => prev.map((c) => c.id === companyId ? { ...c, marketFlow: Math.max(-0.008, Math.min(0.008, (c.marketFlow || 0) + Math.min(0.008, impactPct * 0.00008))) } : c));
+      if (stateEquity) {
+        setCompanies((prev) => prev.map((c) => c.id === companyId ? { ...c, price: equityQuote.lastPrice, marketFlow: Math.max(-0.008, Math.min(0.008, (c.marketFlow || 0) + Math.min(0.008, impactPct * 0.00008))) } : c));
+      } else {
+        applyImpact(companyId, impactPct);
+        setCompanies((prev) => prev.map((c) => c.id === companyId ? { ...c, marketFlow: Math.max(-0.008, Math.min(0.008, (c.marketFlow || 0) + Math.min(0.008, impactPct * 0.00008))) } : c));
+      }
       triggerMarketShock(company, impactPct, marketShockActorLabel({ useBank, useGrey, useIp, useBankCard }));
       if (isOwnCryptoPool) {
         // poolUsd растёт только на реально вложенные деньги (как в органическом давлении
@@ -6062,7 +6100,7 @@ function MarketSandbox() {
         return;
       }
       const avgCost = curHoldings[companyId].avgCost;
-      const avgExecPrice = company.price * (1 - impactPct / 200);
+      const avgExecPrice = stateEquity ? equityQuote.price : company.price * (1 - impactPct / 200);
       const grossProceeds = avgExecPrice * qty * 0.998 * (useGrey ? 1 - GREY_BANK.tradeSellFee : 1);
       const profit = (avgExecPrice - avgCost) * qty;
       const ownPoolMaxProceeds = isOwnCryptoPool ? sellCapUsd(company.poolUsd, company.price * company.supply) : 0;
@@ -6074,7 +6112,8 @@ function MarketSandbox() {
       const settlementAccount = useIp ? "ip" : useGrey ? "grey" : useBank ? "bank" : account;
       const cashSettlement = settleExchangeTrade(worldCoreRef.current, { legacyAccountId: settlementAccount, side: "sell", cashDollars: grossProceeds, reason: `Exchange sell ${company.ticker}`, meta: { companyId, qty } });
       if (cashSettlement.paidDollars + 0.01 < grossProceeds) { notify("На рынке недостаточно встречной ликвидности", false); return; }
-      commitWorldCore(cashSettlement.core);
+      const coreAfterSell = stateEquity ? recordSecurityTrade(cashSettlement.core, company, equityQuote, { side: "sell", qty, ownedBefore }) : cashSettlement.core;
+      commitWorldCore(coreAfterSell);
       setCurCash((c) => c + grossProceeds);
       setCurHoldings((h) => {
         const prevH = h[companyId];
@@ -6086,8 +6125,12 @@ function MarketSandbox() {
         }
         return { ...h, [companyId]: { ...prevH, qty: newQty } };
       });
-      applyImpact(companyId, -impactPct);
-      setCompanies((prev) => prev.map((c) => c.id === companyId ? { ...c, marketFlow: Math.max(-0.008, Math.min(0.008, (c.marketFlow || 0) - Math.min(0.008, impactPct * 0.00008))) } : c));
+      if (stateEquity) {
+        setCompanies((prev) => prev.map((c) => c.id === companyId ? { ...c, price: equityQuote.lastPrice, marketFlow: Math.max(-0.008, Math.min(0.008, (c.marketFlow || 0) - Math.min(0.008, impactPct * 0.00008))) } : c));
+      } else {
+        applyImpact(companyId, -impactPct);
+        setCompanies((prev) => prev.map((c) => c.id === companyId ? { ...c, marketFlow: Math.max(-0.008, Math.min(0.008, (c.marketFlow || 0) - Math.min(0.008, impactPct * 0.00008))) } : c));
+      }
       triggerMarketShock(company, -impactPct, marketShockActorLabel({ useBank, useGrey, useIp, useBankCard }));
       if (isOwnCryptoPool) {
         // Симметрично покупке: poolUsd уменьшается на реально выплаченные деньги, а не
@@ -9556,12 +9599,31 @@ function MarketSandbox() {
   const tradeAvailableCash = tradeIsGrey ? greyAccount.balance : tradeIsIp ? ipCash : tradeIsBankCard ? bankAccounts[tradeAccountResolved].balance : tradeIsMule ? muleCards[tradeAccountResolved].balance : tradeIsBank ? bank.capital : 0;
   const assetsFrozen = !tradeIsIp && !tradeIsGrey && loans.some((l) => l.frozen);
   const tradeIsOwnPool = !!(selectedCompany && selectedCompany.kind === "crypto" && selectedCompany.isPlayer && typeof selectedCompany.poolCoin === "number");
+  const selectedIsEquity = !!(selectedCompany && isEquitySecurity(selectedCompany));
+  const selectedTotalHeld = selectedCompany && selectedIsEquity ? totalPlayerSecurityQty(selectedCompany.id) : 0;
   const tradeSizeRatio = selectedCompany ? tradeQty / selectedCompany.supply : 0;
   const tradeLiqFactor = tradeIsOwnPool ? poolLiquidityFactor(selectedCompany.poolUsd, selectedCompany.price * selectedCompany.supply) : 1;
-  const tradeImpactPct = selectedCompany ? Math.min(92, tradeSizeRatio * 150 * tradeLiqFactor) : 0;
-  const tradeRealCost = selectedCompany ? selectedCompany.price * (1 + tradeImpactPct / 200) * tradeQty * 1.002 * (tradeIsGrey ? 1 + GREY_BANK.tradeBuyFee : 1) : 0;
-  const tradeRealProceeds = selectedCompany ? selectedCompany.price * (1 - tradeImpactPct / 200) * tradeQty * 0.998 * (tradeIsGrey ? 1 - GREY_BANK.tradeSellFee : 1) : 0;
-  const tabTitle = { market: "\u0420\u044B\u043D\u043E\u043A", news: "\u0421\u043E\u0446\u0441\u0435\u0442\u044C", job: "\u0420\u0430\u0431\u043E\u0442\u0430", tenders: "\u0422\u0435\u043D\u0434\u0435\u0440\u044B", inspection: "\u0418\u041F", company: "\u041C\u043E\u0439 \u0431\u0438\u0437\u043D\u0435\u0441", darkshop: "\u0414\u0430\u0440\u043A\u043D\u0435\u0442", cabinet: "\u041A\u0430\u0431\u0438\u043D\u0435\u0442", transfers: "\u041F\u0435\u0440\u0435\u0432\u043E\u0434\u044B" }[activeTab];
+  let tradeEquityQuote = null;
+  if (selectedCompany && selectedIsEquity && tradeQty > 0) {
+    try {
+      tradeEquityQuote = quoteSecurityTrade(worldCore, selectedCompany, { side: tradeSide, qty: tradeQty, ownedQty: selectedTotalHeld, sellableQty: selectedHeld, sentiment, demandIndex });
+    } catch (error) {
+      tradeEquityQuote = null;
+    }
+  }
+  const tradeImpactPct = selectedCompany ? selectedIsEquity && tradeEquityQuote ? tradeEquityQuote.impactPct : Math.min(92, tradeSizeRatio * 150 * tradeLiqFactor) : 0;
+  const tradeRealCost = selectedCompany ? (selectedIsEquity && tradeEquityQuote ? tradeEquityQuote.price : selectedCompany.price * (1 + tradeImpactPct / 200)) * tradeQty * 1.002 * (tradeIsGrey ? 1 + GREY_BANK.tradeBuyFee : 1) : 0;
+  const tradeRealProceeds = selectedCompany ? (selectedIsEquity && tradeEquityQuote ? tradeEquityQuote.price : selectedCompany.price * (1 - tradeImpactPct / 200)) * tradeQty * 0.998 * (tradeIsGrey ? 1 - GREY_BANK.tradeSellFee : 1) : 0;
+  const tradeHasDepth = !selectedIsEquity || !tradeEquityQuote || tradeEquityQuote.available >= tradeQty;
+  const tabTitle = { market: "\u0420\u044B\u043D\u043E\u043A", news: "\u041D\u043E\u0432\u043E\u0441\u0442\u0438", state: "\u0413\u043E\u0441\u0443\u0434\u0430\u0440\u0441\u0442\u0432\u043E", job: "\u0420\u0430\u0431\u043E\u0442\u0430", tenders: "\u0422\u0435\u043D\u0434\u0435\u0440\u044B", inspection: "\u0418\u041F", company: "\u041C\u043E\u0439 \u0431\u0438\u0437\u043D\u0435\u0441", darkshop: "\u0414\u0430\u0440\u043A\u043D\u0435\u0442", cabinet: "\u041A\u0430\u0431\u0438\u043D\u0435\u0442", transfers: "\u041F\u0435\u0440\u0435\u0432\u043E\u0434\u044B" }[activeTab];
+  const statePopulation = worldCore.population?.metrics || {};
+  const stateLedgerCash = (id) => Math.max(0, Number(worldCore.ledger?.accounts?.[id]?.cash || 0) / 100);
+  const stateOwnedByCompany = Object.fromEntries(companies.filter((c) => isEquitySecurity(c)).map((c) => [c.id, totalPlayerSecurityQty(c.id)]));
+  const stateSecurities = securityMarketStats(worldCore, companies, stateOwnedByCompany);
+  const stateHouseholdCash = stateLedgerCash("world:households");
+  const stateDeposits = Math.max(0, Number(worldCore.economy?.householdDepositClaims) || 0);
+  const stateHouseholdEquities = Math.max(0, Number(stateSecurities.householdShareValue) || 0);
+  const stateHouseholdAssets = stateHouseholdCash + stateDeposits + stateHouseholdEquities;
   return /* @__PURE__ */ jsxs("div", { className: "msb-shell", style: { background: C.bg, display: "flex", justifyContent: "center", overflow: "hidden" }, children: [
     globalToast && /* @__PURE__ */ jsx("div", { style: { position: "fixed", left: "50%", bottom: 90, transform: "translateX(-50%)", zIndex: 9999, background: globalToast.ok ? C.green : C.red, color: "#0B0E14", fontWeight: 700, fontSize: 12.5, padding: "10px 16px", borderRadius: 10, maxWidth: "88%", textAlign: "center", boxShadow: "0 6px 20px rgba(0,0,0,.4)" }, children: globalToast.msg }),
     /* @__PURE__ */ jsx("style", { children: `
@@ -9582,7 +9644,7 @@ function MarketSandbox() {
         /* @__PURE__ */ jsx("div", { style: { fontSize: 22, fontWeight: 700, marginTop: 6 }, children: "\u041E\u0442\u043A\u0440\u043E\u0439 \u0441\u0432\u043E\u0439 \u043F\u0435\u0440\u0432\u044B\u0439 \u0431\u0430\u043D\u043A" }),
         /* @__PURE__ */ jsxs("div", { style: { fontSize: 13, color: C.inkDim, marginTop: 8, lineHeight: 1.5 }, children: [
           "\u0421\u0442\u0430\u0440\u0442\u043E\u0432\u044B\u0435 ",
-          fmt(1e3),
+          fmt(PLAYTEST_STARTING_CASH),
           " \u043B\u044F\u0433\u0443\u0442 \u043D\u0430 \u043A\u0430\u0440\u0442\u0443 \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u043E\u0433\u043E \u0431\u0430\u043D\u043A\u0430 \u2014 \u0431\u0435\u0441\u043F\u043B\u0430\u0442\u043D\u043E, \u0431\u0435\u0437 \u0430\u043D\u043E\u043D\u0438\u043C\u043D\u043E\u0433\u043E \u043A\u043E\u0448\u0435\u043B\u044C\u043A\u0430. \u041E\u0441\u0442\u0430\u043B\u044C\u043D\u044B\u0435 \u0431\u0430\u043D\u043A\u0438 \u043C\u043E\u0436\u043D\u043E \u043E\u0442\u043A\u0440\u044B\u0442\u044C \u043F\u043E\u0437\u0436\u0435."
         ] })
       ] }),
@@ -9616,13 +9678,33 @@ function MarketSandbox() {
           /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkDim, letterSpacing: 1, textTransform: "uppercase", marginTop: 2 }, children: "\u041F\u0435\u0441\u043E\u0447\u043D\u0438\u0446\u0430 \u0440\u044B\u043D\u043A\u0430" })
         ] }),
         /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8 }, children: [
-          /* @__PURE__ */ jsx("button", { onClick: () => setShowBackupModal(true), style: { background: "none", border: `1px solid ${C.border}`, borderRadius: 8, padding: 8, color: C.inkDim }, children: /* @__PURE__ */ jsx(Save, { size: 16 }) }),
-          /* @__PURE__ */ jsx("button", { onClick: () => setConfirmReset(true), style: { background: "none", border: `1px solid ${C.border}`, borderRadius: 8, padding: 8, color: C.inkDim }, children: /* @__PURE__ */ jsx(RotateCcw, { size: 16 }) })
+          /* @__PURE__ */ jsx("button", { onClick: () => setActiveTab("state"), title: "Государство", "aria-label": "Государство", style: { background: activeTab === "state" ? `${C.gold}16` : "none", border: `1px solid ${activeTab === "state" ? C.gold + "66" : C.border}`, borderRadius: 8, padding: 8, color: activeTab === "state" ? C.gold : C.inkDim }, children: /* @__PURE__ */ jsx(Landmark, { size: 16 }) }),
+          /* @__PURE__ */ jsx("button", { onClick: () => setShowBackupModal(true), title: "Сохранение", "aria-label": "Сохранение", style: { background: "none", border: `1px solid ${C.border}`, borderRadius: 8, padding: 8, color: C.inkDim }, children: /* @__PURE__ */ jsx(Save, { size: 16 }) }),
+          /* @__PURE__ */ jsx("button", { onClick: () => setConfirmReset(true), title: "Сброс", "aria-label": "Сброс", style: { background: "none", border: `1px solid ${C.border}`, borderRadius: 8, padding: 8, color: C.inkDim }, children: /* @__PURE__ */ jsx(RotateCcw, { size: 16 }) })
         ] })
+      ] }),
+      (activeTab === "market" || activeTab === "state") && /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 6, padding: "0 16px 10px" }, children: [
+        /* @__PURE__ */ jsx("button", { onClick: () => setActiveTab("market"), style: { flex: 1, border: `1px solid ${activeTab === "market" ? C.gold + "66" : C.border}`, background: activeTab === "market" ? `${C.gold}12` : C.surface2, color: activeTab === "market" ? C.gold : C.inkDim, borderRadius: 9, padding: "8px 10px", fontSize: 11.5, fontWeight: 700 }, children: "Биржа" }),
+        /* @__PURE__ */ jsxs("button", { onClick: () => setActiveTab("state"), style: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, border: `1px solid ${activeTab === "state" ? C.gold + "66" : C.border}`, background: activeTab === "state" ? `${C.gold}12` : C.surface2, color: activeTab === "state" ? C.gold : C.inkDim, borderRadius: 9, padding: "8px 10px", fontSize: 11.5, fontWeight: 700 }, children: [/* @__PURE__ */ jsx(Landmark, { size: 13 }), "Государство"] })
       ] }),
       (() => {
         const isMarketTab = activeTab === "market";
-        const leftLabel = isMarketTab ? "\u041F\u043E\u0440\u0442\u0444\u0435\u043B\u044C" : "\u0412\u0441\u0435 \u0430\u043A\u0442\u0438\u0432\u044B";
+        const isStateTab = activeTab === "state";
+        if (isStateTab) {
+          return /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 10, padding: "0 16px 10px" }, children: [
+            /* @__PURE__ */ jsxs("div", { style: { flex: 1, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 14, minWidth: 0 }, children: [
+              /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkDim }, children: "Население" }),
+              /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 19, fontWeight: 700, marginTop: 5 }, children: Math.round(statePopulation.total || 0).toLocaleString("ru-RU") }),
+              /* @__PURE__ */ jsxs("div", { style: { fontSize: 10.5, color: C.inkFaint, marginTop: 7 }, children: ["Занято ", Math.round(statePopulation.employed || 0).toLocaleString("ru-RU")] })
+            ] }),
+            /* @__PURE__ */ jsxs("div", { style: { flex: 1, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 14, minWidth: 0 }, children: [
+              /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkDim }, children: "Активы жителей" }),
+              /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 19, fontWeight: 700, marginTop: 5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }, children: fmt(stateHouseholdAssets) }),
+              /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginTop: 7 }, children: "Деньги · вклады · акции" })
+            ] })
+          ] });
+        }
+        const leftLabel = isMarketTab ? "\u041f\u043e\u0440\u0442\u0444\u0435\u043b\u044c" : "\u0412\u0441\u0435 \u0430\u043a\u0442\u0438\u0432\u044b";
         const leftValue = isMarketTab ? ipHoldingsValue + Object.entries(holdings).reduce((s, [cid, h]) => {
           const c = companies.find((x) => x.id === cid);
           return s + (c ? c.price * h.qty : 0);
@@ -9637,30 +9719,20 @@ function MarketSandbox() {
           /* @__PURE__ */ jsxs("div", { style: { flex: 1, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 14, minWidth: 0 }, children: [
             /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkDim }, children: leftLabel }),
             /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 20, fontWeight: 700, margin: "3px 0 4px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }, children: fmt(leftValue) }),
-            /* @__PURE__ */ jsxs("div", { style: { fontSize: 11.5, color: changeColor, fontWeight: 600, marginBottom: 6 }, children: [
-              changeAbs >= 0 ? "+" : "",
-              fmt(Math.round(changeAbs)),
-              " ",
-              changeAbs >= 0 ? "+" : "",
-              changePct.toFixed(2),
-              "%"
-            ] }),
+            /* @__PURE__ */ jsxs("div", { style: { fontSize: 11.5, color: changeColor, fontWeight: 600, marginBottom: 6 }, children: [changeAbs >= 0 ? "+" : "", fmt(Math.round(changeAbs)), " ", changeAbs >= 0 ? "+" : "", changePct.toFixed(2), "%"] }),
             /* @__PURE__ */ jsx(PriceChart, { data: hist, color: changeColor, height: 28 })
           ] }),
           /* @__PURE__ */ jsxs("div", { style: { flex: 1, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 14, minWidth: 0 }, children: [
             /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }, children: [
-              /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkDim }, children: "\u0421\u0447\u0451\u0442 \u0418\u041F" }),
+              /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkDim }, children: "\u0421\u0447\u0451\u0442 \u0418\u041f" }),
               /* @__PURE__ */ jsx("div", { style: { width: 26, height: 26, borderRadius: 8, background: C.violetSoft, color: C.violet, display: "flex", alignItems: "center", justifyContent: "center" }, children: /* @__PURE__ */ jsx(Briefcase, { size: 14 }) })
             ] }),
             /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 20, fontWeight: 700, marginBottom: 10, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }, children: fmt(ipCash) }),
-            /* @__PURE__ */ jsx("button", { onClick: () => {
-              setActiveTab("inspection");
-              setIpTab("account");
-            }, style: { width: "100%", padding: "8px 10px", borderRadius: 9, border: "none", background: C.violetSoft, color: C.violet, fontWeight: 700, fontSize: 11.5 }, children: "\u0423\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0438\u0435 \u2192" })
+            /* @__PURE__ */ jsx("button", { onClick: () => { setActiveTab("inspection"); setIpTab("account"); }, style: { width: "100%", padding: "8px 10px", borderRadius: 9, border: "none", background: C.violetSoft, color: C.violet, fontWeight: 700, fontSize: 11.5 }, children: "\u0423\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u0438\u0435 \u2192" })
           ] })
         ] });
       })(),
-      /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", padding: "0 16px 4px", fontSize: 12.5 }, children: [
+      activeTab !== "state" && /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", padding: "0 16px 4px", fontSize: 12.5 }, children: [
         /* @__PURE__ */ jsxs("div", { style: { fontFamily: "'JetBrains Mono', monospace", color: C.inkDim }, children: [
           "\u0424\u0438\u0437: ",
           /* @__PURE__ */ jsx("b", { style: { color: C.ink }, children: fmt(bankAccountsValue + greyBalance) }),
@@ -9677,7 +9749,7 @@ function MarketSandbox() {
           suspicion > 40 ? /* @__PURE__ */ jsx("span", { style: { color: C.red }, children: " \xB7 \u0432\u043D\u0438\u043C\u0430\u043D\u0438\u0435 \u0438\u043D\u0441\u043F\u0435\u043A\u0446\u0438\u0438: \u0432\u044B\u0441\u043E\u043A\u043E\u0435" }) : suspicion > 15 ? /* @__PURE__ */ jsx("span", { style: { color: C.gold }, children: " \xB7 \u0432\u043D\u0438\u043C\u0430\u043D\u0438\u0435 \u0438\u043D\u0441\u043F\u0435\u043A\u0446\u0438\u0438: \u043F\u043E\u0432\u044B\u0448\u0435\u043D\u043E" }) : null
         ] })
       ] }),
-      /* @__PURE__ */ jsxs("div", { style: { padding: "0 16px 10px", fontSize: 11.5, color: C.inkFaint }, children: [
+      activeTab !== "state" && /* @__PURE__ */ jsxs("div", { style: { padding: "0 16px 10px", fontSize: 11.5, color: C.inkFaint }, children: [
         "\u0420\u0435\u043F\u0443\u0442\u0430\u0446\u0438\u044F: ",
         /* @__PURE__ */ jsx("b", { style: { color: reputation >= 70 ? C.green : reputation >= 40 ? C.gold : C.red }, children: Math.round(reputation) })
       ] }),
@@ -9747,6 +9819,53 @@ function MarketSandbox() {
             } }, c.id))
           ] });
         })(),
+        activeTab === "state" && (() => {
+          const avgWage = Math.max(0, Number(worldCore.economy?.avgMonthlyWage) || 0);
+          const unemployment = Math.max(0, Number(statePopulation.unemploymentRate) || 0);
+          const companyCash = stateLedgerCash("world:companies");
+          const bankCash = stateLedgerCash("world:banks");
+          const treasuryCash = stateLedgerCash("world:treasury");
+          const cards = [
+            { label: "Жителей", value: Math.round(statePopulation.total || 0).toLocaleString("ru-RU"), sub: `трудоспособных ${Math.round(statePopulation.workingAge || 0).toLocaleString("ru-RU")}` },
+            { label: "Средняя зарплата", value: fmt(avgWage), sub: "в месяц" },
+            { label: "Безработица", value: `${(unemployment * 100).toFixed(1)}%`, sub: `${Math.round(statePopulation.unemployed || 0).toLocaleString("ru-RU")} без работы`, color: unemployment > .12 ? C.red : unemployment > .075 ? C.gold : C.green },
+            { label: "Ключевая ставка", value: `${((macro.interestRate || 0) * 100).toFixed(1)}%`, sub: `инфляция ${((macro.inflation || 0) * 100).toFixed(1)}%` }
+          ];
+          const moneyRows = [
+            ["Деньги жителей на счетах", stateHouseholdCash, "Ликвидные деньги домохозяйств"],
+            ["Вклады жителей", stateDeposits, "Обязательства банков перед населением"],
+            ["Акции у населения", stateHouseholdEquities, "Реальная агрегированная доля домохозяйств в выпусках"],
+            ["Все финансовые активы жителей", stateHouseholdAssets, "Деньги + вклады + оценка акций"],
+            ["Деньги компаний", companyCash, "Агрегированный корпоративный сектор"],
+            ["Ликвидность банков", bankCash, "Деньги банковского сектора"],
+            ["Казначейство", treasuryCash, "Налоги и государственные расходы"],
+            ["Капитализация рынка акций", stateSecurities.marketCap, `${stateSecurities.listed} публичных компаний`]
+          ];
+          return /* @__PURE__ */ jsxs("div", { children: [
+            /* @__PURE__ */ jsx("div", { style: { fontSize: 11.5, color: C.inkDim, lineHeight: 1.55, marginBottom: 12 }, children: "Это состояние всей экономики, а не только твоих компаний. Большинство жителей считается агрегированно, поэтому население может расти далеко за миллион без нагрузки на телефон." }),
+            /* @__PURE__ */ jsx("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 14 }, children: cards.map((item) => /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 12, minWidth: 0 }, children: [
+              /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkDim, marginBottom: 5 }, children: item.label }),
+              /* @__PURE__ */ jsx("div", { style: { fontSize: 17, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", color: item.color || C.ink, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }, children: item.value }),
+              /* @__PURE__ */ jsx("div", { style: { fontSize: 9.5, color: C.inkFaint, marginTop: 5, lineHeight: 1.35 }, children: item.sub })
+            ] }, item.label)) }),
+            /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 14, marginBottom: 14 }, children: [
+              /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }, children: [
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 13, fontWeight: 700 }, children: "Куда распределены деньги" }),
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 9.5, color: C.inkFaint }, children: `день ${worldCore.time?.day || 0}` })
+              ] }),
+              moneyRows.map(([label, value, sub]) => /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", gap: 12, padding: "9px 0", borderTop: `1px solid ${C.border}` }, children: [
+                /* @__PURE__ */ jsxs("div", { style: { minWidth: 0 }, children: [/* @__PURE__ */ jsx("div", { style: { fontSize: 11.5, color: C.ink }, children: label }), /* @__PURE__ */ jsx("div", { style: { fontSize: 9.5, color: C.inkFaint, marginTop: 2 }, children: sub })] }),
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 11.5, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", flexShrink: 0 }, children: fmt(value) })
+              ] }, label))
+            ] }),
+            /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 14 }, children: [
+              /* @__PURE__ */ jsx("div", { style: { fontSize: 13, fontWeight: 700, marginBottom: 10 }, children: "Экономическая активность" }),
+              /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 11.5, padding: "7px 0" }, children: [/* @__PURE__ */ jsx("span", { style: { color: C.inkDim }, children: "Потребительский спрос" }), /* @__PURE__ */ jsx("b", { children: `${Math.round(demandIndex * 100)}%` })] }),
+              /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 11.5, padding: "7px 0", borderTop: `1px solid ${C.border}` }, children: [/* @__PURE__ */ jsx("span", { style: { color: C.inkDim }, children: "Настроение рынка" }), /* @__PURE__ */ jsx("b", { children: sentiment > 5 ? "Позитивное" : sentiment < -5 ? "Негативное" : "Нейтральное" })] }),
+              /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 11.5, padding: "7px 0", borderTop: `1px solid ${C.border}` }, children: [/* @__PURE__ */ jsx("span", { style: { color: C.inkDim }, children: "Баланс денежного реестра" }), /* @__PURE__ */ jsx("b", { style: { color: Math.abs(worldCore.diagnostics?.ledgerError || 0) < .01 ? C.green : C.red }, children: Math.abs(worldCore.diagnostics?.ledgerError || 0) < .01 ? "Сходится" : "Ошибка" })] })
+            ] })
+          ] });
+        })(),
         activeTab === "transfers" && (() => {
           const options = [
             { id: "ip", label: "\u0421\u0447\u0451\u0442 \u0418\u041F" },
@@ -9795,357 +9914,60 @@ function MarketSandbox() {
             ] })
           ] });
         })(),
-        activeTab === "news" && /* @__PURE__ */ jsxs("div", { children: [
-          /* @__PURE__ */ jsxs("div", { style: { height: refreshing ? 40 : pullY, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", transition: pullY === 0 ? "height 0.2s" : "none", color: C.inkDim, fontSize: 11.5 }, children: [
-            /* @__PURE__ */ jsx(RefreshCw, { size: 14, style: { marginRight: 6, animation: refreshing ? "spin 0.7s linear infinite" : "none", transform: !refreshing && pullY > 46 ? "rotate(180deg)" : "none", transition: "transform 0.15s" } }),
-            refreshing ? "\u041E\u0431\u043D\u043E\u0432\u043B\u044F\u0435\u043C \u043B\u0435\u043D\u0442\u0443\u2026" : pullY > 46 ? "\u041E\u0442\u043F\u0443\u0441\u0442\u0438, \u0447\u0442\u043E\u0431\u044B \u043E\u0431\u043D\u043E\u0432\u0438\u0442\u044C" : "\u041F\u043E\u0442\u044F\u043D\u0438 \u0432\u043D\u0438\u0437, \u0447\u0442\u043E\u0431\u044B \u043E\u0431\u043D\u043E\u0432\u0438\u0442\u044C"
-          ] }),
-          /* @__PURE__ */ jsxs("button", { onClick: refreshFeed, disabled: refreshing, style: { width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, background: pendingCount > 0 ? `${C.gold}18` : C.surface, border: `1px solid ${pendingCount > 0 ? C.gold + "55" : C.border}`, color: pendingCount > 0 ? C.gold : C.inkDim, borderRadius: 10, padding: 9, fontSize: 12, fontWeight: 600, marginBottom: 12 }, children: [
-            /* @__PURE__ */ jsx(RefreshCw, { size: 13, style: { animation: refreshing ? "spin 0.7s linear infinite" : "none" } }),
-            " ",
-            pendingCount > 0 ? `${pendingCount} \u043D\u043E\u0432\u044B\u0445 \u043F\u043E\u0441\u0442\u043E\u0432 \u2014 \u043F\u043E\u043A\u0430\u0437\u0430\u0442\u044C` : "\u041F\u0440\u043E\u0432\u0435\u0440\u0438\u0442\u044C \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F"
-          ] }),
-          !viewingStoryId && !viewingCompanyId && !viewingAuthorHandle && (() => {
-            const v = playerVenture && !playerVenture.rugged ? playerVenture : null;
-            const adBoostCost = Math.round(SOCIAL_AD_BOOST_COST_BASE * Math.pow(1.4, v?.hypeLevel || 0));
-            const charsLeft = SOCIAL_POST_MAX_CHARS - composerText.length;
-            const tooShort = composerText.trim().length > 0 && composerText.trim().length < SOCIAL_POST_MIN_CHARS;
-            const canPublish = composerText.trim().length >= SOCIAL_POST_MIN_CHARS && charsLeft >= 0;
-            const feedback = lastPostFeedback && lastPostFeedback.ticker === (v ? v.ticker : null) ? lastPostFeedback : null;
-            const bandColor = feedback ? (feedback.band.color === "green" ? C.green : feedback.band.color === "red" ? C.red : C.gold) : C.gold;
-            return /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }, children: [
-              /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }, children: [
-                /* @__PURE__ */ jsx("div", { style: { width: 30, height: 30, borderRadius: "50%", background: `${PLAYER_ACCOUNT.color}22`, color: PLAYER_ACCOUNT.color, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 12, flexShrink: 0 }, children: "\u0412" }),
-                /* @__PURE__ */ jsxs("div", { children: [
-                  /* @__PURE__ */ jsx("div", { style: { fontSize: 13, fontWeight: 700 }, children: v ? `\u041F\u043E\u0441\u0442 \u043E\u0442 \u043B\u0438\u0446\u0430 \xAB${v.name}\xBB` : "\u041C\u043E\u0439 \u043F\u0440\u043E\u0444\u0438\u043B\u044C" }),
-                  /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint }, children: v ? `@${v.ticker} \xB7 \u0432\u043B\u0438\u044F\u0435\u0442 \u043D\u0430 \u0446\u0435\u043D\u0443 \u0430\u043A\u0446\u0438\u0438` : "\u0412\u044B \xB7 \u043B\u0438\u0447\u043D\u044B\u0439 \u0430\u043A\u043A\u0430\u0443\u043D\u0442" })
-                ] })
-              ] }),
-              !v && /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkFaint, marginBottom: 10, lineHeight: 1.4 }, children: "\u0411\u0435\u0437 \u0431\u0438\u0437\u043D\u0435\u0441\u0430 \u043F\u043E\u0441\u0442 \u043D\u0435 \u0432\u043B\u0438\u044F\u0435\u0442 \u043D\u0430 \u0440\u044B\u043D\u043E\u043A \u2014 \u043F\u0440\u043E\u0441\u0442\u043E \u043F\u043E\u044F\u0432\u0438\u0442\u0441\u044F \u0432 \u043B\u0435\u043D\u0442\u0435." }),
-              /* @__PURE__ */ jsx("textarea", { value: composerText, onChange: (e) => {
-                setComposerText(e.target.value.slice(0, SOCIAL_POST_MAX_CHARS));
-                setComposerError(null);
-              }, placeholder: "\u0420\u0430\u0441\u0441\u043A\u0430\u0436\u0438 \u0430\u0443\u0434\u0438\u0442\u043E\u0440\u0438\u0438 \u043D\u043E\u0432\u043E\u0441\u0442\u044C \u0441\u0432\u043E\u0438\u043C\u0438 \u0441\u043B\u043E\u0432\u0430\u043C\u0438 \u2014 \u0442\u043E\u0447\u043D\u043E\u0441\u0442\u044C \u0438 \u043A\u043E\u043D\u043A\u0440\u0435\u0442\u0438\u043A\u0430 \u0443\u0431\u0435\u0436\u0434\u0430\u044E\u0442 \u043B\u0443\u0447\u0448\u0435, \u0447\u0435\u043C \u043E\u0431\u0435\u0449\u0430\u043D\u0438\u044F.", rows: 3, style: { width: "100%", background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 10, padding: 10, color: C.ink, fontSize: 16, resize: "none", fontFamily: "inherit" } }),
-              /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4, marginBottom: 10 }, children: [
-                /* @__PURE__ */ jsx("span", { style: { fontSize: 10.5, color: tooShort ? C.red : C.inkFaint }, children: tooShort ? "\u0421\u043B\u0438\u0448\u043A\u043E\u043C \u043A\u043E\u0440\u043E\u0442\u043A\u043E" : "\u041C\u0438\u043D\u0438\u043C\u0443\u043C 12 \u0441\u0438\u043C\u0432\u043E\u043B\u043E\u0432" }),
-                /* @__PURE__ */ jsx("span", { style: { fontSize: 10.5, color: charsLeft < 20 ? C.gold : C.inkFaint }, children: `${charsLeft}` })
-              ] }),
-              v && /* @__PURE__ */ jsxs("button", { onClick: () => setComposerAdBoost((b) => !b), style: { width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 12px", borderRadius: 10, border: `1px solid ${composerAdBoost ? C.gold : C.border}`, background: composerAdBoost ? `${C.gold}18` : "transparent", color: composerAdBoost ? C.gold : C.inkDim, fontSize: 12, fontWeight: 600, marginBottom: 10 }, children: [
-                /* @__PURE__ */ jsxs("span", { children: [
-                  "\u0420\u0435\u043A\u043B\u0430\u043C\u0430 \u2014 \u0440\u0430\u0441\u0448\u0438\u0440\u0438\u0442\u044C \u043E\u0445\u0432\u0430\u0442 \xB7 ",
-                  fmt(adBoostCost)
-                ] }),
-                /* @__PURE__ */ jsx("span", { children: composerAdBoost ? "\u2713" : "" })
-              ] }),
-              composerError && /* @__PURE__ */ jsx("div", { style: { fontSize: 11.5, color: C.red, marginBottom: 8 }, children: composerError }),
-              /* @__PURE__ */ jsx("button", { onClick: publishSocialPost, disabled: !canPublish, style: actionBtnStyle(canPublish), children: "\u041E\u043F\u0443\u0431\u043B\u0438\u043A\u043E\u0432\u0430\u0442\u044C" }),
-              feedback && /* @__PURE__ */ jsxs("div", { style: { marginTop: 12, background: C.surface2, borderRadius: 10, padding: 12 }, children: [
-                /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 6 }, children: [
-                  /* @__PURE__ */ jsx("span", { style: { color: C.inkDim }, children: "\u041E\u0445\u0432\u0430\u0442" }),
-                  /* @__PURE__ */ jsx("span", { style: { fontWeight: 700 }, children: feedback.reach.toLocaleString() })
-                ] }),
-                /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 6 }, children: [
-                  /* @__PURE__ */ jsx("span", { style: { color: C.inkDim }, children: "\u0420\u0435\u0430\u043A\u0446\u0438\u044F \u0430\u0443\u0434\u0438\u0442\u043E\u0440\u0438\u0438" }),
-                  /* @__PURE__ */ jsx("span", { style: { fontWeight: 700, color: bandColor }, children: feedback.band.label })
-                ] }),
-                /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: v ? 6 : 0 }, children: [
-                  /* @__PURE__ */ jsx("span", { style: { color: C.inkDim }, children: "\u0421\u043A\u0435\u043F\u0441\u0438\u0441" }),
-                  /* @__PURE__ */ jsxs("span", { style: { fontWeight: 700, color: feedback.scamRisk >= 55 ? C.red : C.inkDim }, children: [
-                    feedback.scamRisk,
-                    "%"
-                  ] })
-                ] }),
-                v && /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12 }, children: [
-                  /* @__PURE__ */ jsx("span", { style: { color: C.inkDim }, children: "\u041F\u043E\u043A\u0443\u043F\u0430\u0442\u0435\u043B\u044C\u0441\u043A\u0430\u044F \u0430\u043A\u0442\u0438\u0432\u043D\u043E\u0441\u0442\u044C" }),
-                  /* @__PURE__ */ jsxs("span", { style: { fontWeight: 700, color: feedback.demandPct >= 0 ? C.green : C.red }, children: [
-                    feedback.demandPct >= 0 ? "+" : "",
-                    feedback.demandPct,
-                    "%"
-                  ] })
-                ] })
-              ] })
-            ] });
-          })(),
-          viewingStoryId ? (() => {
-            const story = storiesById[viewingStoryId];
-            const storyPosts = feedPosts.filter((p) => p.storyId === viewingStoryId).slice().sort((a, b) => (a.ts || 0) - (b.ts || 0));
-            const STATUS_LABELS = { developing: "\u0440\u0430\u0437\u0432\u0438\u0432\u0430\u0435\u0442\u0441\u044F", confirmed: "\u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043D\u043E", denied: "\u043E\u043F\u0440\u043E\u0432\u0435\u0440\u0433\u043D\u0443\u0442\u043E", resolved: "\u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043D\u043E", expired: "\u0443\u0441\u0442\u0430\u0440\u0435\u043B\u043E" };
-            return /* @__PURE__ */ jsxs("div", { children: [
-              /* @__PURE__ */ jsx("button", { onClick: () => setViewingStoryId(null), style: { background: "none", border: "none", color: C.inkDim, fontSize: 12.5, marginBottom: 12, padding: 0 }, children: "\u2190 \u041D\u0430\u0437\u0430\u0434 \u043A \u043B\u0435\u043D\u0442\u0435" }),
-              story && /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 14, marginBottom: 14 }, children: [
-                /* @__PURE__ */ jsx("div", { style: { fontSize: 15, fontWeight: 700, lineHeight: 1.35, marginBottom: 8 }, children: story.headline }),
-                /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 10, flexWrap: "wrap", fontSize: 11.5, color: C.inkDim, alignItems: "center" }, children: [
-                  typeof story.marketImpactPct === "number" && story.marketImpactPct !== 0 && /* @__PURE__ */ jsxs("span", { style: { color: story.marketImpactPct >= 0 ? C.green : C.red, fontWeight: 700 }, children: [
-                    story.marketImpactPct >= 0 ? "\u{1F4C8} " : "\u{1F4C9} ",
-                    pct1(story.marketImpactPct)
+        activeTab === "news" && (() => {
+          const filters = [
+            { id: "all", label: "Все" },
+            { id: "personal", label: "Мой бизнес" },
+            { id: "state", label: "Государство" }
+          ];
+          const rows = Object.values(storiesById || {}).map((story) => {
+            const posts = feedPosts.filter((p) => p.storyId === story.id).sort((a, b) => (a.ts || 0) - (b.ts || 0));
+            const mainPost = posts.find((p) => p.role === "government") || posts.find((p) => p.role === "official" && p.kind === "fact") || posts[0];
+            if (!mainPost) return null;
+            const stateStory = story.category === "macro" || posts.some((p) => p.role === "government");
+            const bodyParts = posts.map((p) => p.text).filter((text, i, arr) => text && text !== story.headline && arr.indexOf(text) === i).slice(0, 2);
+            const body = bodyParts.join(" ") || mainPost.text || story.headline;
+            return { story, posts, mainPost, stateStory, body, publisher: authorFor(mainPost) };
+          }).filter(Boolean).filter((row) => {
+            if (feedFilter === "personal") return !!row.story.personal;
+            if (feedFilter === "state") return row.stateStory;
+            return true;
+          }).sort((a, b) => (b.story.createdAt || b.mainPost.ts || 0) - (a.story.createdAt || a.mainPost.ts || 0));
+          const timeLabel = (ts) => {
+            const mins = Math.max(0, Math.floor((Date.now() - (ts || Date.now())) / 6e4));
+            if (mins < 1) return "сейчас";
+            if (mins < 60) return `${mins} мин назад`;
+            const hours = Math.floor(mins / 60);
+            if (hours < 24) return `${hours} ч назад`;
+            return `${Math.floor(hours / 24)} дн назад`;
+          };
+          return /* @__PURE__ */ jsxs("div", { children: [
+            /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 12 }, children: [
+              /* @__PURE__ */ jsx("div", { style: { display: "flex", gap: 6, overflowX: "auto", minWidth: 0 }, children: filters.map((f) => /* @__PURE__ */ jsx("button", { onClick: () => setFeedFilter(f.id), style: { flexShrink: 0, border: `1px solid ${feedFilter === f.id ? C.gold + "66" : C.border}`, background: feedFilter === f.id ? `${C.gold}14` : C.surface2, color: feedFilter === f.id ? C.gold : C.inkDim, borderRadius: 18, padding: "7px 11px", fontSize: 11.5, fontWeight: 600 }, children: f.label }, f.id)) }),
+              /* @__PURE__ */ jsx("button", { onClick: refreshFeed, disabled: refreshing, style: { width: 34, height: 34, flexShrink: 0, borderRadius: 9, border: `1px solid ${pendingCount > 0 ? C.gold + "66" : C.border}`, background: pendingCount > 0 ? `${C.gold}14` : C.surface2, color: pendingCount > 0 ? C.gold : C.inkDim, display: "flex", alignItems: "center", justifyContent: "center", position: "relative" }, children: [/* @__PURE__ */ jsx(RefreshCw, { size: 14, style: { animation: refreshing ? "spin 0.7s linear infinite" : "none" } }), pendingCount > 0 && /* @__PURE__ */ jsx("span", { style: { position: "absolute", right: -3, top: -4, minWidth: 15, height: 15, padding: "0 3px", borderRadius: 8, background: C.gold, color: "#161207", fontSize: 8.5, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }, children: Math.min(99, pendingCount) })] })
+            ] }),
+            /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "11px 12px", marginBottom: 12 }, children: [
+              /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkFaint, textTransform: "uppercase", letterSpacing: .8, marginBottom: 3 }, children: "Деловая лента" }),
+              /* @__PURE__ */ jsx("div", { style: { fontSize: 11.5, color: C.inkDim, lineHeight: 1.45 }, children: "События компаний, банков и государства. Реакции рынка остаются внутри событий, а не забивают основной экран как соцсеть." })
+            ] }),
+            rows.length === 0 && /* @__PURE__ */ jsx("div", { style: { color: C.inkFaint, fontSize: 12.5, padding: "36px 10px", textAlign: "center" }, children: "В этой категории пока нет новостей" }),
+            rows.map(({ story, mainPost, stateStory, body, publisher }) => {
+              const kindLabel = mainPost.kind === "fact" ? "Факт" : mainPost.kind === "development" ? "Продолжение" : story.reliability === "low" ? "Неподтверждено" : "Событие";
+              return /* @__PURE__ */ jsxs("article", { style: { background: C.surface, border: `1px solid ${story.importance >= 4 ? C.gold + "55" : C.border}`, borderRadius: 14, padding: 14, marginBottom: 10 }, children: [
+                /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 10 }, children: [
+                  /* @__PURE__ */ jsxs("div", { style: { minWidth: 0 }, children: [
+                    /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: C.inkDim }, children: [/* @__PURE__ */ jsx("span", { style: { width: 7, height: 7, borderRadius: "50%", background: publisher.color, flexShrink: 0 } }), /* @__PURE__ */ jsx("span", { style: { whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }, children: publisher.name })] }),
+                    /* @__PURE__ */ jsxs("div", { style: { fontSize: 9.5, color: C.inkFaint, marginTop: 3 }, children: [kindLabel, stateStory ? " · государство/макро" : "", " · ", timeLabel(story.createdAt || mainPost.ts)] })
                   ] }),
-                  /* @__PURE__ */ jsxs("span", { children: [
-                    storyPosts.length,
-                    " \u043F\u0443\u0431\u043B\u0438\u043A\u0430\u0446\u0438\u0439"
-                  ] }),
-                  /* @__PURE__ */ jsx("span", { children: STATUS_LABELS[story.status] || story.status }),
-                  story.reliability === "low" && /* @__PURE__ */ jsx("span", { style: { color: C.gold }, children: "\u0441\u043B\u0443\u0445" }),
-                  story.ticker && /* @__PURE__ */ jsxs("button", { onClick: () => {
-                    const comp = companies.find((c) => c.ticker === story.ticker);
-                    if (comp) setViewingCompanyId(comp.id);
-                  }, style: { background: "none", border: "none", color: C.gold, fontSize: 11.5, fontWeight: 600, padding: 0 }, children: [
-                    "@",
-                    story.ticker,
-                    " \u2192"
-                  ] })
-                ] })
-              ] }),
-              storyPosts.length === 0 && /* @__PURE__ */ jsx("div", { style: { color: C.inkFaint, fontSize: 13, padding: "30px 0", textAlign: "center" }, children: "\u041F\u043E\u0441\u0442\u044B \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u044B" }),
-              storyPosts.map((post) => {
-                const author = authorFor(post);
-                const eng = engagementFor(post);
-                return /* @__PURE__ */ jsx("div", { style: { borderBottom: `1px solid ${C.border}`, padding: "12px 2px" }, children: /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 10 }, children: [
-                  /* @__PURE__ */ jsx("div", { style: { width: 36, height: 36, borderRadius: "50%", background: `${author.color}22`, color: author.color, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 12, flexShrink: 0 }, children: author.name.slice(0, 1) }),
-                  /* @__PURE__ */ jsxs("div", { style: { minWidth: 0, flex: 1 }, children: [
-                    /* @__PURE__ */ jsxs("button", { onClick: () => {
-                      setViewingStoryId(null);
-                      setViewingCompanyId(null);
-                      setViewingAuthorHandle(author.handle);
-                    }, style: { display: "flex", alignItems: "center", gap: 5, fontSize: 13, background: "none", border: "none", padding: 0, cursor: "pointer" }, children: [
-                      /* @__PURE__ */ jsx("span", { style: { fontWeight: 700 }, children: author.name }),
-                      author.verified && /* @__PURE__ */ jsx("span", { style: { color: C.gold, fontSize: 11 }, children: "\u2713" }),
-                      /* @__PURE__ */ jsx("span", { style: { color: C.inkFaint, fontSize: 12 }, children: author.handle })
-                    ] }),
-                    /* @__PURE__ */ jsxs("div", { style: { fontSize: 13.5, color: C.ink, marginTop: 3, lineHeight: 1.4 }, children: [
-                      post.isMacro ? "\u{1F6A8} " : !post.positive ? "\u{1F4C9} " : "\u{1F4C8} ",
-                      post.text
-                    ] }),
-                    /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 18, marginTop: 8, fontSize: 11.5, color: C.inkFaint }, children: [
-                      /* @__PURE__ */ jsxs("span", { style: { display: "flex", alignItems: "center", gap: 4 }, children: [
-                        /* @__PURE__ */ jsx(Heart, { size: 12 }),
-                        " ",
-                        eng.likes.toLocaleString()
-                      ] }),
-                      /* @__PURE__ */ jsxs("span", { style: { display: "flex", alignItems: "center", gap: 4 }, children: [
-                        /* @__PURE__ */ jsx(MessageSquare, { size: 12 }),
-                        " ",
-                        eng.reposts.toLocaleString()
-                      ] })
-                    ] })
-                  ] })
-                ] }) }, post.id);
-              })
-            ] });
-          })() : viewingCompanyId ? (() => {
-            const vc = companies.find((c) => c.id === viewingCompanyId);
-            if (!vc) return null;
-            const vcOpen = vc.candles && vc.candles[0] ? vc.candles[0].o : vc.price;
-            const vcChange = (vc.price - vcOpen) / vcOpen * 100;
-            const vcPosts = feedPosts.filter((p) => p.ticker === vc.ticker);
-            return /* @__PURE__ */ jsxs("div", { children: [
-              /* @__PURE__ */ jsx("button", { onClick: () => setViewingCompanyId(null), style: { background: "none", border: "none", color: C.inkDim, fontSize: 12.5, marginBottom: 12, padding: 0 }, children: "\u2190 \u041D\u0430\u0437\u0430\u0434 \u043A \u043B\u0435\u043D\u0442\u0435" }),
-              /* @__PURE__ */ jsx("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 16, padding: 16, marginBottom: 16 }, children: /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "center", gap: 12 }, children: [
-                /* @__PURE__ */ jsx("div", { style: { width: 44, height: 44, borderRadius: "50%", background: `${vc.rugged ? C.red : C.gold}22`, color: vc.rugged ? C.red : C.gold, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 14, flexShrink: 0 }, children: vc.ticker.slice(0, 2) }),
-                /* @__PURE__ */ jsxs("div", { style: { minWidth: 0, flex: 1 }, children: [
-                  /* @__PURE__ */ jsx("div", { style: { fontWeight: 700, fontSize: 15 }, children: vc.name }),
-                  /* @__PURE__ */ jsxs("div", { style: { fontSize: 12, color: C.inkDim }, children: [
-                    "@",
-                    vc.ticker,
-                    " \xB7 ",
-                    vc.sector,
-                    vc.isPlayer ? " \xB7 \u0442\u0432\u043E\u044F" : ""
-                  ] })
+                  story.ticker && /* @__PURE__ */ jsx("button", { onClick: () => { const c = companies.find((x) => x.ticker === story.ticker); if (c) { setSelectedId(c.id); setTradeSide("buy"); setTradeQty(1); setTradeLeverage(1); } }, style: { border: `1px solid ${C.border}`, background: C.surface2, color: C.gold, borderRadius: 8, padding: "5px 7px", fontSize: 10.5, fontWeight: 700, flexShrink: 0 }, children: story.ticker })
                 ] }),
-                /* @__PURE__ */ jsxs("div", { style: { textAlign: "right" }, children: [
-                  /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 14, fontWeight: 700 }, children: fmt(vc.price) }),
-                  /* @__PURE__ */ jsxs("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: vcChange >= 0 ? C.green : C.red }, children: [
-                    vcChange >= 0 ? "+" : "",
-                    vcChange.toFixed(1),
-                    "%"
-                  ] })
-                ] })
-              ] }) }),
-              /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }, children: "\u041F\u043E\u0441\u0442\u044B" }),
-              vcPosts.length === 0 && /* @__PURE__ */ jsxs("div", { style: { color: C.inkFaint, fontSize: 13, padding: "30px 0", textAlign: "center" }, children: [
-                "\u041F\u043E\u043A\u0430 \u043D\u0438\u0447\u0435\u0433\u043E \u043D\u0435 \u043F\u0438\u0441\u0430\u043B\u0438 \u043F\u0440\u043E ",
-                vc.ticker
-              ] }),
-              vcPosts.map((post) => {
-                const author = authorFor(post);
-                const eng = engagementFor(post);
-                return /* @__PURE__ */ jsx("div", { style: { borderBottom: `1px solid ${C.border}`, padding: "12px 2px" }, children: /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 10 }, children: [
-                  /* @__PURE__ */ jsx("div", { style: { width: 36, height: 36, borderRadius: "50%", background: `${author.color}22`, color: author.color, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 12, flexShrink: 0 }, children: author.name.slice(0, 1) }),
-                  /* @__PURE__ */ jsxs("div", { style: { minWidth: 0, flex: 1 }, children: [
-                    /* @__PURE__ */ jsxs("button", { onClick: () => {
-                      setViewingStoryId(null);
-                      setViewingCompanyId(null);
-                      setViewingAuthorHandle(author.handle);
-                    }, style: { display: "flex", alignItems: "center", gap: 5, fontSize: 13, background: "none", border: "none", padding: 0, cursor: "pointer" }, children: [
-                      /* @__PURE__ */ jsx("span", { style: { fontWeight: 700 }, children: author.name }),
-                      author.verified && /* @__PURE__ */ jsx("span", { style: { color: C.gold, fontSize: 11 }, children: "\u2713" }),
-                      /* @__PURE__ */ jsx("span", { style: { color: C.inkFaint, fontSize: 12 }, children: author.handle })
-                    ] }),
-                    /* @__PURE__ */ jsxs("div", { style: { fontSize: 13.5, color: C.ink, marginTop: 3, lineHeight: 1.4 }, children: [
-                      post.isMacro ? "\u{1F6A8} " : !post.positive ? "\u{1F4C9} " : "\u{1F4C8} ",
-                      post.text
-                    ] }),
-                    /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 18, marginTop: 8, fontSize: 11.5, color: C.inkFaint }, children: [
-                      /* @__PURE__ */ jsxs("span", { style: { display: "flex", alignItems: "center", gap: 4 }, children: [
-                        /* @__PURE__ */ jsx(Heart, { size: 12 }),
-                        " ",
-                        eng.likes.toLocaleString()
-                      ] }),
-                      /* @__PURE__ */ jsxs("span", { style: { display: "flex", alignItems: "center", gap: 4 }, children: [
-                        /* @__PURE__ */ jsx(MessageSquare, { size: 12 }),
-                        " ",
-                        eng.reposts.toLocaleString()
-                      ] })
-                    ] })
-                  ] })
-                ] }) }, post.id);
-              })
-            ] });
-          })() : viewingAuthorHandle ? (() => {
-            const acc = NEWS_ACCOUNTS.find((a) => a.handle === viewingAuthorHandle) || Object.values(ROLE_AUTHORS).flat().find((a) => a.handle === viewingAuthorHandle);
-            if (!acc) return null;
-            const accPosts = feedPosts.filter((p) => authorFor(p).handle === viewingAuthorHandle);
-            return /* @__PURE__ */ jsxs("div", { children: [
-              /* @__PURE__ */ jsx("button", { onClick: () => setViewingAuthorHandle(null), style: { background: "none", border: "none", color: C.inkDim, fontSize: 12.5, marginBottom: 12, padding: 0 }, children: "\u2190 \u041D\u0430\u0437\u0430\u0434 \u043A \u043B\u0435\u043D\u0442\u0435" }),
-              /* @__PURE__ */ jsx("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 16, padding: 16, marginBottom: 16 }, children: /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "center", gap: 12 }, children: [
-                /* @__PURE__ */ jsx("div", { style: { width: 44, height: 44, borderRadius: "50%", background: `${acc.color}22`, color: acc.color, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 16, flexShrink: 0 }, children: acc.name.slice(0, 1) }),
-                /* @__PURE__ */ jsxs("div", { style: { minWidth: 0, flex: 1 }, children: [
-                  /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "center", gap: 5, fontWeight: 700, fontSize: 15 }, children: [
-                    acc.name,
-                    acc.verified && /* @__PURE__ */ jsx("span", { style: { color: C.gold, fontSize: 12 }, children: "\u2713" })
-                  ] }),
-                  /* @__PURE__ */ jsxs("div", { style: { fontSize: 12, color: C.inkDim }, children: [
-                    acc.handle,
-                    " \xB7 ",
-                    accPosts.length,
-                    " \u043F\u043E\u0441\u0442\u043E\u0432"
-                  ] })
-                ] })
-              ] }) }),
-              /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }, children: "\u041F\u043E\u0441\u0442\u044B" }),
-              accPosts.length === 0 && /* @__PURE__ */ jsx("div", { style: { color: C.inkFaint, fontSize: 13, padding: "30px 0", textAlign: "center" }, children: "\u041F\u043E\u043A\u0430 \u043D\u0438\u0447\u0435\u0433\u043E \u043D\u0435 \u043F\u0438\u0441\u0430\u043B\u0438" }),
-              accPosts.map((post) => {
-                const eng = engagementFor(post);
-                return /* @__PURE__ */ jsx("div", { style: { borderBottom: `1px solid ${C.border}`, padding: "12px 2px" }, children: /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 10 }, children: [
-                  /* @__PURE__ */ jsx("div", { style: { width: 36, height: 36, borderRadius: "50%", background: `${acc.color}22`, color: acc.color, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 12, flexShrink: 0 }, children: acc.name.slice(0, 1) }),
-                  /* @__PURE__ */ jsxs("div", { style: { minWidth: 0, flex: 1 }, children: [
-                    /* @__PURE__ */ jsxs("div", { style: { fontSize: 13.5, color: C.ink, lineHeight: 1.4 }, children: [
-                      post.isMacro ? "\u{1F6A8} " : !post.positive ? "\u{1F4C9} " : "\u{1F4C8} ",
-                      post.text
-                    ] }),
-                    post.ticker && /* @__PURE__ */ jsxs("button", { onClick: () => {
-                      const comp = companies.find((c) => c.ticker === post.ticker);
-                      if (comp) {
-                        setViewingAuthorHandle(null);
-                        setViewingCompanyId(comp.id);
-                      }
-                    }, style: { background: "none", border: "none", color: C.gold, fontSize: 11, fontWeight: 600, padding: 0, marginTop: 4 }, children: [
-                      "@",
-                      post.ticker,
-                      " \u2192"
-                    ] }),
-                    /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 18, marginTop: 8, fontSize: 11.5, color: C.inkFaint }, children: [
-                      /* @__PURE__ */ jsxs("span", { style: { display: "flex", alignItems: "center", gap: 4 }, children: [
-                        /* @__PURE__ */ jsx(Heart, { size: 12 }),
-                        " ",
-                        eng.likes.toLocaleString()
-                      ] }),
-                      /* @__PURE__ */ jsxs("span", { style: { display: "flex", alignItems: "center", gap: 4 }, children: [
-                        /* @__PURE__ */ jsx(MessageSquare, { size: 12 }),
-                        " ",
-                        eng.reposts.toLocaleString()
-                      ] })
-                    ] })
-                  ] })
-                ] }) }, post.id);
-              })
-            ] });
-          })() : /* @__PURE__ */ jsxs(Fragment, { children: [
-            /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }, children: "\u041A\u043E\u043C\u043F\u0430\u043D\u0438\u0438 \u043D\u0430 \u0431\u0438\u0440\u0436\u0435" }),
-            /* @__PURE__ */ jsx("div", { style: { display: "flex", gap: 10, overflowX: "auto", paddingBottom: 4, marginBottom: 16 }, children: companies.map((c) => /* @__PURE__ */ jsxs("button", { onClick: () => setViewingCompanyId(c.id), style: { display: "flex", flexDirection: "column", alignItems: "center", gap: 5, background: "none", border: "none", flexShrink: 0, width: 56 }, children: [
-              /* @__PURE__ */ jsx("div", { style: { width: 46, height: 46, borderRadius: "50%", background: `${c.rugged ? C.red : c.isPlayer ? C.gold : C.surface2}${c.isPlayer || c.rugged ? "22" : ""}`, border: c.isPlayer ? `1px solid ${c.rugged ? C.red : C.gold}` : `1px solid ${C.border}`, color: c.rugged ? C.red : c.isPlayer ? C.gold : C.inkDim, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 12 }, children: c.ticker.slice(0, 2) }),
-              /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, textAlign: "center", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", width: "100%" }, children: c.ticker })
-            ] }, c.id)) }),
-            /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }, children: "\u041D\u043E\u0432\u043E\u0441\u0442\u043D\u044B\u0435 \u0430\u043A\u043A\u0430\u0443\u043D\u0442\u044B" }),
-            /* @__PURE__ */ jsx("div", { style: { display: "flex", gap: 10, overflowX: "auto", paddingBottom: 4, marginBottom: 16 }, children: NEWS_ACCOUNTS.map((acc) => /* @__PURE__ */ jsxs("button", { onClick: () => setViewingAuthorHandle(acc.handle), style: { display: "flex", flexDirection: "column", alignItems: "center", gap: 5, background: "none", border: "none", flexShrink: 0, width: 56 }, children: [
-              /* @__PURE__ */ jsx("div", { style: { width: 46, height: 46, borderRadius: "50%", background: `${acc.color}22`, border: `1px solid ${acc.color}`, color: acc.color, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 15 }, children: acc.name.slice(0, 1) }),
-              /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: C.inkDim, textAlign: "center", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", width: "100%" }, children: acc.handle })
-            ] }, acc.handle)) }),
-            playerVenture ? /* @__PURE__ */ jsxs("div", { style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 16, padding: 16, marginBottom: 16 }, children: [
-              /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "center", gap: 12 }, children: [
-                /* @__PURE__ */ jsx("div", { style: { width: 44, height: 44, borderRadius: "50%", background: `${C.gold}22`, color: playerVenture.rugged ? C.red : C.gold, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 14, flexShrink: 0 }, children: playerVenture.ticker.slice(0, 2) }),
-                /* @__PURE__ */ jsxs("div", { style: { minWidth: 0 }, children: [
-                  /* @__PURE__ */ jsx("div", { style: { fontWeight: 700, fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }, children: playerVenture.name }),
-                  /* @__PURE__ */ jsxs("div", { style: { fontSize: 12, color: C.inkDim }, children: [
-                    "@",
-                    playerVenture.ticker
-                  ] })
-                ] })
-              ] }),
-              /* @__PURE__ */ jsx("div", { style: { fontSize: 12.5, color: C.inkDim, margin: "10px 0", lineHeight: 1.5 }, children: playerVenture.kind === "crypto" ? playerVenture.strategy === "scam" ? "\u041A\u0440\u0438\u043F\u0442\u043E-\u043F\u0440\u043E\u0435\u043A\u0442 \xB7 \u0440\u0430\u0437\u0433\u043E\u043D \u043D\u0430 \u0445\u0430\u0439\u043F\u0435 \u{1F680}" : "\u041A\u0440\u0438\u043F\u0442\u043E-\u043F\u0440\u043E\u0435\u043A\u0442 \xB7 \u0447\u0435\u0441\u0442\u043D\u0430\u044F \u0440\u0430\u0437\u0440\u0430\u0431\u043E\u0442\u043A\u0430" : `\u041A\u043E\u043C\u043F\u0430\u043D\u0438\u044F \xB7 ${playerVenture.sector}` }),
-              /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 16, fontSize: 12, color: C.inkDim, marginBottom: 12 }, children: [
-                /* @__PURE__ */ jsxs("span", { children: [
-                  /* @__PURE__ */ jsx("b", { style: { color: C.ink }, children: ventureFollowers.toLocaleString() }),
-                  " \u043F\u043E\u0434\u043F\u0438\u0441\u0447\u0438\u043A\u043E\u0432"
-                ] }),
-                /* @__PURE__ */ jsxs("span", { children: [
-                  /* @__PURE__ */ jsx("b", { style: { color: C.ink }, children: venturePosts }),
-                  " \u043F\u043E\u0441\u0442\u043E\u0432"
-                ] }),
-                /* @__PURE__ */ jsxs("span", { children: [
-                  /* @__PURE__ */ jsx("b", { style: { color: C.ink }, children: playerVenture.investorRounds || 0 }),
-                  " \u0440\u0430\u0443\u043D\u0434\u043E\u0432"
-                ] })
-              ] }),
-              !playerVenture.rugged && /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8 }, children: [
-                /* @__PURE__ */ jsx("button", { onClick: () => setActiveTab("company"), style: { flex: 1, padding: 10, borderRadius: 10, border: "none", fontWeight: 700, fontSize: 12.5, background: C.gold, color: "#161207" }, children: "Опубликовать пост" }),
-                /* @__PURE__ */ jsx("button", { onClick: () => setActiveTab("company"), disabled: (playerVenture.investorCooldown || 0) > 0, style: { flex: 1, padding: 10, borderRadius: 10, border: "none", fontWeight: 700, fontSize: 12.5, background: (playerVenture.investorCooldown || 0) > 0 ? C.surface2 : C.green, color: (playerVenture.investorCooldown || 0) > 0 ? C.inkFaint : "#06210f" }, children: (playerVenture.investorCooldown || 0) > 0 ? `\u0416\u0434\u0451\u043C\u2026 ${playerVenture.investorCooldown}\u0441` : "\u041F\u0438\u0442\u0447 \u0432\u043E \u0432\u043A\u043B\u0430\u0434\u043A\u0435 \xAB\u0411\u0438\u0437\u043D\u0435\u0441\xBB" })
-              ] })
-            ] }) : null,
-            (() => {
-              const FILTERS = [
-                { id: "all", label: "\u0412\u0441\u0435" },
-                { id: "market", label: "\u0420\u044B\u043D\u043E\u043A" },
-                { id: "companies", label: "\u041A\u043E\u043C\u043F\u0430\u043D\u0438\u0438" },
-                { id: "crypto", label: "\u041A\u0440\u0438\u043F\u0442\u043E" },
-                { id: "banks", label: "\u0411\u0430\u043D\u043A\u0438" },
-                { id: "macro", label: "\u041C\u0430\u043A\u0440\u043E" },
-                { id: "rumors", label: "\u0421\u043B\u0443\u0445\u0438" },
-                { id: "personal", label: "\u041C\u043E\u0438 \u0441\u043E\u0431\u044B\u0442\u0438\u044F" }
-              ];
-              const seenIds = /* @__PURE__ */ new Set();
-              const storyList = [];
-              feedPosts.forEach((p) => {
-                if (!p.storyId || seenIds.has(p.storyId)) return;
-                seenIds.add(p.storyId);
-                const story = storiesById[p.storyId];
-                storyList.push(story ? story : { id: p.storyId, headline: p.text, category: p.ticker ? "companies" : "market", personal: false, importance: p.importance || 1, status: "confirmed", reliability: "official", ticker: p.ticker || null, marketImpactPct: null, createdAt: p.ts || Date.now() });
-              });
-              const filtered = storyList.filter((s) => {
-                if (feedFilter === "all") return true;
-                if (feedFilter === "personal") return !!s.personal;
-                if (feedFilter === "rumors") return s.reliability === "low" || s.status === "developing" || s.status === "denied";
-                return s.category === feedFilter;
-              });
-              const STATUS_LABELS = { developing: "\u0440\u0430\u0437\u0432\u0438\u0432\u0430\u0435\u0442\u0441\u044F", confirmed: "\u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043D\u043E", denied: "\u043E\u043F\u0440\u043E\u0432\u0435\u0440\u0433\u043D\u0443\u0442\u043E", resolved: "\u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043D\u043E", expired: "\u0443\u0441\u0442\u0430\u0440\u0435\u043B\u043E" };
-              return /* @__PURE__ */ jsxs(Fragment, { children: [
-                /* @__PURE__ */ jsx("div", { style: { display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4, marginBottom: 14 }, children: FILTERS.map((f) => /* @__PURE__ */ jsx("button", { onClick: () => setFeedFilter(f.id), style: { flexShrink: 0, padding: "6px 12px", borderRadius: 20, border: `1px solid ${feedFilter === f.id ? C.gold : C.border}`, background: feedFilter === f.id ? `${C.gold}18` : "transparent", color: feedFilter === f.id ? C.gold : C.inkDim, fontSize: 12, fontWeight: 600 }, children: f.label }, f.id)) }),
-                filtered.length === 0 && /* @__PURE__ */ jsx("div", { style: { color: C.inkFaint, fontSize: 13, padding: "30px 0", textAlign: "center" }, children: "\u0417\u0430 \u043F\u043E\u0441\u043B\u0435\u0434\u043D\u0435\u0435 \u0432\u0440\u0435\u043C\u044F \u043D\u043E\u0432\u044B\u0445 \u0432\u0430\u0436\u043D\u044B\u0445 \u0441\u043E\u0431\u044B\u0442\u0438\u0439 \u043D\u0435\u0442" }),
-                filtered.map((story) => /* @__PURE__ */ jsxs("button", { onClick: () => setViewingStoryId(story.id), style: { display: "block", width: "100%", textAlign: "left", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 14px", marginBottom: 8 }, children: [
-                  /* @__PURE__ */ jsx("div", { style: { fontSize: 13.5, color: C.ink, lineHeight: 1.4, fontWeight: 600 }, children: story.headline }),
-                  /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 10, flexWrap: "wrap", fontSize: 11.5, color: C.inkFaint, marginTop: 6, alignItems: "center" }, children: [
-                    typeof story.marketImpactPct === "number" && story.marketImpactPct !== 0 && /* @__PURE__ */ jsx("span", { style: { color: story.marketImpactPct >= 0 ? C.green : C.red, fontWeight: 700 }, children: pct1(story.marketImpactPct) }),
-                    /* @__PURE__ */ jsxs("span", { children: [
-                      "\u{1F4AC} ",
-                      feedPosts.filter((p) => p.storyId === story.id).length
-                    ] }),
-                    /* @__PURE__ */ jsx("span", { children: STATUS_LABELS[story.status] || story.status }),
-                    story.reliability === "low" && /* @__PURE__ */ jsx("span", { style: { color: C.gold }, children: "\u0441\u043B\u0443\u0445" })
-                  ] })
-                ] }, story.id))
-              ] });
-            })()
-          ] })
-        ] }),
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 15, fontWeight: 700, lineHeight: 1.28, marginBottom: 8 }, children: story.headline }),
+                body && body !== story.headline && /* @__PURE__ */ jsx("div", { style: { fontSize: 12, color: C.inkDim, lineHeight: 1.5 }, children: body.length > 360 ? body.slice(0, 357) + "…" : body }),
+                story.status && story.status !== "confirmed" && /* @__PURE__ */ jsx("div", { style: { marginTop: 9, fontSize: 10, color: story.status === "denied" ? C.red : C.gold }, children: story.status === "developing" ? "Событие развивается" : story.status === "denied" ? "Информация опровергнута" : "Событие завершено" })
+              ] }, story.id);
+            })
+          ] });
+        })(),
         activeTab === "job" && (() => {
           const jobCompanyObj = job ? companies.find((c) => c.id === job.companyId) : null;
           const jobEmployerObj = jobCompanyObj ? EMPLOYERS.find((e) => e.ticker === jobCompanyObj.ticker && e.trackId === job.trackId) : null;
@@ -14381,7 +14203,7 @@ function MarketSandbox() {
       /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "flex-end", borderTop: `1px solid ${C.border}`, background: C.surface, position: "relative", flexShrink: 0, paddingBottom: "env(safe-area-inset-bottom)" }, children: [
         [
           { key: "market", label: "\u0420\u044B\u043D\u043E\u043A", icon: TrendingUp },
-          { key: "news", label: "\u0421\u043E\u0446\u0441\u0435\u0442\u044C", icon: MessageCircle },
+          { key: "news", label: "Новости", icon: MessageCircle },
           { key: "job", label: "\u0420\u0430\u0431\u043E\u0442\u0430", icon: Briefcase }
         ].map((t) => {
           const Icon = t.icon;
@@ -14415,6 +14237,15 @@ function MarketSandbox() {
         ] }),
         /* @__PURE__ */ jsx("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 26, fontWeight: 700 }, children: fmt(selectedCompany.price) }),
         /* @__PURE__ */ jsxs("div", { style: { fontSize: 11, color: C.inkFaint, marginBottom: 2 }, children: ["\u041A\u0430\u043F\u0438\u0442\u0430\u043B\u0438\u0437\u0430\u0446\u0438\u044F \u2248 ", fmt(selectedCompany.price * selectedCompany.supply)] }),
+        selectedIsEquity && tradeEquityQuote && /* @__PURE__ */ jsxs("div", { style: { background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 12, padding: 12, margin: "10px 0 12px" }, children: [
+          /* @__PURE__ */ jsxs("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "9px 12px" }, children: [
+            /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("div", { style: { fontSize: 9.5, color: C.inkFaint, textTransform: "uppercase", letterSpacing: .5 }, children: "Выпущено" }), /* @__PURE__ */ jsx("div", { style: { fontSize: 12.5, fontFamily: "'JetBrains Mono', monospace" }, children: selectedCompany.supply.toLocaleString() })] }),
+            /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("div", { style: { fontSize: 9.5, color: C.inkFaint, textTransform: "uppercase", letterSpacing: .5 }, children: "У тебя" }), /* @__PURE__ */ jsxs("div", { style: { fontSize: 12.5, fontFamily: "'JetBrains Mono', monospace" }, children: [selectedTotalHeld.toLocaleString(), " · ", (selectedTotalHeld / Math.max(1, selectedCompany.supply) * 100).toFixed(3), "%"] })] }),
+            /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("div", { style: { fontSize: 9.5, color: C.inkFaint, textTransform: "uppercase", letterSpacing: .5 }, children: "У остальных" }), /* @__PURE__ */ jsx("div", { style: { fontSize: 12.5, fontFamily: "'JetBrains Mono', monospace" }, children: tradeEquityQuote.npcShares.toLocaleString() })] }),
+            /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("div", { style: { fontSize: 9.5, color: C.inkFaint, textTransform: "uppercase", letterSpacing: .5 }, children: tradeSide === "buy" ? "Доступно к покупке" : "Встречный спрос" }), /* @__PURE__ */ jsx("div", { style: { fontSize: 12.5, color: tradeHasDepth ? C.ink : C.red, fontFamily: "'JetBrains Mono', monospace" }, children: tradeEquityQuote.available.toLocaleString() })] })
+          ] }),
+          selectedTotalHeld / Math.max(1, selectedCompany.supply) >= .5 && /* @__PURE__ */ jsx("div", { style: { marginTop: 9, paddingTop: 8, borderTop: `1px solid ${C.border}`, color: C.gold, fontSize: 11.5, fontWeight: 600 }, children: "Контрольный пакет: у тебя не менее 50% выпущенных акций" })
+        ] }),
         /* @__PURE__ */ jsx(CandleChart, { companyId: selectedCompany.id, engineRef, candles: selectedCompany.candles, height: 210 }),
         /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8, margin: "16px 0" }, children: [
           /* @__PURE__ */ jsx("button", { onClick: () => setTradeSide("buy"), style: { flex: 1, padding: 10, borderRadius: 10, border: "none", background: tradeSide === "buy" ? C.green : C.surface2, color: tradeSide === "buy" ? "#06210f" : C.inkDim, fontWeight: 700 }, children: "\u041A\u0443\u043F\u0438\u0442\u044C" }),
@@ -14439,7 +14270,7 @@ function MarketSandbox() {
             /* @__PURE__ */ jsx("div", { style: { fontSize: 10.5, color: C.inkFaint, marginTop: 6, textAlign: "center" }, children: tradeIsGrey ? `\u041E\u0444\u0448\u043E\u0440\u043D\u044B\u0439 \u0441\u0447\u0451\u0442: \u043A\u043E\u043C\u0438\u0441\u0441\u0438\u044F \u043F\u043E\u043A\u0443\u043F\u043A\u0430 ${Math.round(GREY_BANK.tradeBuyFee * 100)}% / \u043F\u0440\u043E\u0434\u0430\u0436\u0430 ${Math.round(GREY_BANK.tradeSellFee * 100)}%, \u0431\u0435\u0437 \u043D\u0430\u043B\u043E\u0433\u043E\u0432\u043E\u0439 \u043E\u0442\u0447\u0451\u0442\u043D\u043E\u0441\u0442\u0438.` : tradeAccountResolved === "ip" ? "\u0414\u0435\u043D\u044C\u0433\u0438 \u0438 \u0430\u043A\u0442\u0438\u0432\u044B \u2014 \u043D\u0430 \u0441\u0447\u0451\u0442\u0435 \u0418\u041F. \u041F\u0440\u0438\u0431\u044B\u043B\u044C \u0431\u0435\u0437 \u043E\u0442\u0434\u0435\u043B\u044C\u043D\u043E\u0433\u043E \u043D\u0430\u043B\u043E\u0433\u0430, \u043D\u043E \u0438\u0434\u0451\u0442 \u0432 \u043E\u0431\u043E\u0440\u043E\u0442 \u0438 \u043E\u0431\u043B\u0430\u0433\u0430\u0435\u0442\u0441\u044F \u043A\u0432\u0430\u0440\u0442\u0430\u043B\u044C\u043D\u043E\u0439 \u0434\u0435\u043A\u043B\u0430\u0440\u0430\u0446\u0438\u0435\u0439." : tradeIsBankCard ? "\u041E\u043F\u043B\u0430\u0442\u0430 \u043A\u0430\u0440\u0442\u043E\u0439 \u044D\u0442\u043E\u0433\u043E \u0431\u0430\u043D\u043A\u0430 \u2014 \u0430\u043A\u0442\u0438\u0432\u044B \u043F\u043E\u043F\u0430\u0434\u0443\u0442 \u0432 \u0442\u0432\u043E\u0439 \u043E\u0431\u044B\u0447\u043D\u044B\u0439 \u043B\u0438\u0447\u043D\u044B\u0439 \u043F\u043E\u0440\u0442\u0444\u0435\u043B\u044C." : tradeIsMule ? "\u041E\u043F\u043B\u0430\u0442\u0430 \u0447\u0443\u0436\u043E\u0439 \u043A\u0430\u0440\u0442\u043E\u0439 \u2014 \u043F\u043E\u043A\u0443\u043F\u043A\u0430 \u043D\u0435 \u043F\u0440\u0438\u0432\u044F\u0437\u0430\u043D\u0430 \u043A \u0442\u0432\u043E\u0435\u0439 \u043B\u0438\u0447\u043D\u043E\u0441\u0442\u0438, \u0440\u0438\u0441\u043A\u0430 \u0434\u043B\u044F \u0440\u0435\u043F\u0443\u0442\u0430\u0446\u0438\u0438 \u043D\u0435\u0442." : tradeIsBank ? "\u041E\u043F\u043B\u0430\u0442\u0430 \u0441 \u043A\u0430\u043F\u0438\u0442\u0430\u043B\u0430 \u0431\u0430\u043D\u043A\u0430 \u2014 \u0430\u043A\u0442\u0438\u0432\u044B \u043F\u043E\u043F\u0430\u0434\u0443\u0442 \u0432 \u043F\u043E\u0440\u0442\u0444\u0435\u043B\u044C \u0431\u0430\u043D\u043A\u0430, \u043E\u0442\u0434\u0435\u043B\u044C\u043D\u043E \u043E\u0442 \u043B\u0438\u0447\u043D\u044B\u0445." : "\u0414\u0435\u043D\u044C\u0433\u0438 \u0438 \u0430\u043A\u0442\u0438\u0432\u044B \u2014 \u043B\u0438\u0447\u043D\u044B\u0435. \u041F\u0440\u0438\u0431\u044B\u043B\u044C \u043E\u0431\u043B\u0430\u0433\u0430\u0435\u0442\u0441\u044F \u043D\u0430\u043B\u043E\u0433\u043E\u043C 13% \u043F\u0440\u0438 \u043F\u0440\u043E\u0434\u0430\u0436\u0435." })
           ] });
         })(),
-        tradeSide === "buy" && !tradeIsIp && !tradeIsGrey && !tradeIsBank && /* @__PURE__ */ jsx("div", { style: { display: "flex", gap: 6, marginBottom: 10 }, children: [1, 5, 10, 20].map((lev) => /* @__PURE__ */ jsx("button", { onClick: () => setTradeLeverage(lev), style: { flex: 1, padding: "8px 0", borderRadius: 9, border: `1px solid ${tradeLeverage === lev ? C.gold : C.border}`, background: tradeLeverage === lev ? `${C.gold}22` : C.surface2, color: tradeLeverage === lev ? C.gold : C.inkDim, fontWeight: 700, fontSize: 12.5 }, children: lev === 1 ? "\u0411\u0435\u0437 \u043F\u043B\u0435\u0447\u0430" : `\xD7${lev}` }, lev)) }),
+        tradeSide === "buy" && !selectedIsEquity && !tradeIsIp && !tradeIsGrey && !tradeIsBank && /* @__PURE__ */ jsx("div", { style: { display: "flex", gap: 6, marginBottom: 10 }, children: [1, 5, 10, 20].map((lev) => /* @__PURE__ */ jsx("button", { onClick: () => setTradeLeverage(lev), style: { flex: 1, padding: "8px 0", borderRadius: 9, border: `1px solid ${tradeLeverage === lev ? C.gold : C.border}`, background: tradeLeverage === lev ? `${C.gold}22` : C.surface2, color: tradeLeverage === lev ? C.gold : C.inkDim, fontWeight: 700, fontSize: 12.5 }, children: lev === 1 ? "\u0411\u0435\u0437 \u043F\u043B\u0435\u0447\u0430" : `\xD7${lev}` }, lev)) }),
         /* @__PURE__ */ jsx("div", { style: { display: "flex", justifyContent: "flex-end", marginBottom: 6 }, children: /* @__PURE__ */ jsx("button", { onClick: () => {
           setTradeQtyMode((m) => m === "qty" ? "amount" : "qty");
           setTradeAmountInput("");
@@ -14491,7 +14322,7 @@ function MarketSandbox() {
           pct,
           "%"
         ] }, pct)) }),
-        tradeSide === "buy" && tradeLeverage > 1 && !tradeIsIp && !tradeIsGrey && !tradeIsBank ? /* @__PURE__ */ jsxs(Fragment, { children: [
+        tradeSide === "buy" && !selectedIsEquity && tradeLeverage > 1 && !tradeIsIp && !tradeIsGrey && !tradeIsBank ? /* @__PURE__ */ jsxs(Fragment, { children: [
           /* @__PURE__ */ jsxs("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 6, display: "flex", justifyContent: "space-between" }, children: [
             /* @__PURE__ */ jsxs("span", { children: [
               "\u041C\u0430\u0440\u0436\u0430 (\xD7",
@@ -14526,18 +14357,19 @@ function MarketSandbox() {
         tradeSide === "sell" && tradeIsIp && /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkFaint, marginBottom: 10 }, children: "\u0412\u044B\u0440\u0443\u0447\u043A\u0430 \u043F\u043E\u0439\u0434\u0451\u0442 \u0432 \u043E\u0431\u043E\u0440\u043E\u0442 \u0418\u041F \u2014 \u0443\u0447\u0442\u0451\u0442\u0441\u044F \u0432 \u0441\u043B\u0435\u0434\u0443\u044E\u0449\u0435\u0439 \u043A\u0432\u0430\u0440\u0442\u0430\u043B\u044C\u043D\u043E\u0439 \u0434\u0435\u043A\u043B\u0430\u0440\u0430\u0446\u0438\u0438." }),
         tradeSide === "sell" && tradeIsGrey && /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: C.inkFaint, marginBottom: 10 }, children: "\u041E\u0444\u0448\u043E\u0440\u043D\u044B\u0439 \u0441\u0447\u0451\u0442 \u2014 \u0431\u0435\u0437 \u043D\u0430\u043B\u043E\u0433\u043E\u0432\u043E\u0439 \u043E\u0442\u0447\u0451\u0442\u043D\u043E\u0441\u0442\u0438, \u043D\u043E \u043A\u043E\u043C\u0438\u0441\u0441\u0438\u044F \u043F\u043B\u043E\u0449\u0430\u0434\u043A\u0438 \u0443\u0436\u0435 \u0432\u044B\u0447\u0442\u0435\u043D\u0430 \u0438\u0437 \u0441\u0443\u043C\u043C\u044B \u0432\u044B\u0448\u0435." }),
         tradeSide === "sell" && assetsFrozen && /* @__PURE__ */ jsx("div", { style: { background: `${C.red}18`, border: `1px solid ${C.red}55`, borderRadius: 10, padding: 10, marginBottom: 10, fontSize: 12, color: C.red, textAlign: "center" }, children: "\u0410\u043A\u0442\u0438\u0432\u044B \u043F\u043E\u0434 \u0430\u0440\u0435\u0441\u0442\u043E\u043C \u0431\u0430\u043D\u043A\u0430 \u0438\u0437-\u0437\u0430 \u0434\u043E\u043B\u0433\u0430 \u043F\u043E \u043A\u0440\u0435\u0434\u0438\u0442\u0443 \u2014 \u043F\u0440\u043E\u0434\u0430\u0436\u0430 \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u043D\u0430" }),
+        selectedIsEquity && tradeEquityQuote && !tradeHasDepth && /* @__PURE__ */ jsx("div", { style: { background: `${C.red}12`, border: `1px solid ${C.red}44`, borderRadius: 10, padding: 9, marginBottom: 10, color: C.red, fontSize: 11.5, textAlign: "center" }, children: tradeSide === "buy" ? `В заявке ${tradeQty.toLocaleString()} акций, но сейчас продают только ${tradeEquityQuote.available.toLocaleString()}` : `На ${tradeQty.toLocaleString()} акций сейчас есть спрос только на ${tradeEquityQuote.available.toLocaleString()}` }),
         /* @__PURE__ */ jsxs(
           "button",
           {
             onClick: () => {
-              if (tradeSide === "buy" && tradeLeverage > 1 && !tradeIsIp && !tradeIsGrey && !tradeIsBank) openLeveragedPosition(selectedCompany.id, tradeQty, tradeLeverage, tradeAccountResolved);
+              if (tradeSide === "buy" && !selectedIsEquity && tradeLeverage > 1 && !tradeIsIp && !tradeIsGrey && !tradeIsBank) openLeveragedPosition(selectedCompany.id, tradeQty, tradeLeverage, tradeAccountResolved);
               else executeTrade(selectedCompany.id, tradeSide, tradeQty, tradeAccountResolved);
               setTradeQty(1);
             },
-            disabled: tradeQty < 1 || tradeSide === "sell" && assetsFrozen || (tradeSide === "buy" ? false : selectedHeld < tradeQty),
+            disabled: tradeQty < 1 || !tradeHasDepth || tradeSide === "sell" && assetsFrozen || (tradeSide === "buy" ? false : selectedHeld < tradeQty),
             style: { width: "100%", padding: 14, borderRadius: 12, border: "none", fontWeight: 700, background: tradeSide === "buy" ? C.green : C.red, color: "#0B0E14" },
             children: [
-              tradeSide === "buy" ? tradeLeverage > 1 && !tradeIsIp && !tradeIsGrey && !tradeIsBank ? `\u041E\u0442\u043A\u0440\u044B\u0442\u044C \u043F\u043E\u0437\u0438\u0446\u0438\u044E \xD7${tradeLeverage}` : "\u041A\u0443\u043F\u0438\u0442\u044C" : "\u041F\u0440\u043E\u0434\u0430\u0442\u044C",
+              tradeSide === "buy" ? !selectedIsEquity && tradeLeverage > 1 && !tradeIsIp && !tradeIsGrey && !tradeIsBank ? `\u041E\u0442\u043A\u0440\u044B\u0442\u044C \u043F\u043E\u0437\u0438\u0446\u0438\u044E \xD7${tradeLeverage}` : "\u041A\u0443\u043F\u0438\u0442\u044C" : "\u041F\u0440\u043E\u0434\u0430\u0442\u044C",
               " ",
               selectedCompany.ticker
             ]
