@@ -5435,8 +5435,8 @@ function MarketSandbox() {
       const cardPrincipalRequested = Math.round(currentCardOutstanding * BANK_CARD_REPAY_FRACTION * dtFrac);
       const cardNplFrac = bankCardCreditNplFraction(b, macroNow);
       const cardDefaulted = Math.round(currentCardOutstanding * cardNplFrac * dtFrac);
-      const cardIncomeRequested = Math.round(currentCardOutstanding * cardCreditRateVal * dtFrac);
-      const cardRepaymentSettlement = settleOwnedBankRepayment(nextCore, cardPrincipalRequested + cardIncomeRequested, { product: "card-credit" });
+      const cardCreditIncomeRequested = Math.round(currentCardOutstanding * cardCreditRateVal * dtFrac);
+      const cardRepaymentSettlement = settleOwnedBankRepayment(nextCore, cardPrincipalRequested + cardCreditIncomeRequested, { product: "card-credit" });
       nextCore = cardRepaymentSettlement.core;
       const cardRepaymentPaid = Math.round(cardRepaymentSettlement.paidDollars);
       const cardPrincipalRepaid = Math.min(cardPrincipalRequested, cardRepaymentPaid);
