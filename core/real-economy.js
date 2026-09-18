@@ -79,6 +79,7 @@ export function ensureRealEconomy(worldCoreInput) {
       version: REAL_ECONOMY_VERSION,
       openingSeeded: true,
       avgMonthlyWage: worldCoreInput.economy?.avgMonthlyWage || AVG_MONTHLY_WAGE,
+      householdDepositClaims: Math.max(0, Number(worldCoreInput.economy?.householdDepositClaims) || 0),
       lastDailyFlow: worldCoreInput.economy?.lastDailyFlow || null,
       cumulative: {
         householdConsumption: worldCoreInput.economy?.cumulative?.householdConsumption || 0,
@@ -220,6 +221,14 @@ export function tickAggregateEconomyDay(worldCoreInput, { demandIndex = 1 } = {}
   const metrics = core.population?.metrics || {};
   const employed = Math.max(0, Number(metrics.employed) || 0);
   const consumptionWeight = clamp(Number(metrics.consumptionWeight) || 0.7, 0.2, 0.95);
+  // A small part of existing household deposits is requested back every day.
+  // This turns aggregate deposits into a stock (a bank liability), not a one-way
+  // cumulative counter, and makes liquidity visible on the State dashboard.
+  const openingDepositClaims = Math.max(0, Number(core.economy.householdDepositClaims) || 0);
+  const withdrawalRequested = toCents(openingDepositClaims * 0.0015);
+  const withdrawals = transferUpTo(ledger, ECONOMY_ACCOUNTS.banks, ECONOMY_ACCOUNTS.households, withdrawalRequested, 'Aggregate deposit withdrawals');
+  ledger = withdrawals.ledger;
+
   const dailyWagesRequested = toCents(employed * (core.economy.avgMonthlyWage || AVG_MONTHLY_WAGE) / DAYS_PER_MONTH);
   const wages = transferUpTo(ledger, ECONOMY_ACCOUNTS.companies, ECONOMY_ACCOUNTS.households, dailyWagesRequested, 'Aggregate payroll');
   ledger = wages.ledger;
@@ -245,12 +254,14 @@ export function tickAggregateEconomyDay(worldCoreInput, { demandIndex = 1 } = {}
   if (!audit.ok) throw new Error(`Aggregate economy ledger mismatch: ${audit.error}`);
   const wageDollars = fromCents(wages.paid);
   const consumptionDollars = fromCents(consumption.paid);
+  const depositClaims = Math.max(0, openingDepositClaims - fromCents(withdrawals.paid) + fromCents(deposits.paid));
   return {
     ...core,
     ledger,
     economy: {
       ...core.economy,
-      lastDailyFlow: { day: core.time?.day || 0, wages: wageDollars, consumption: consumptionDollars, deposits: fromCents(deposits.paid), bankFunding: fromCents(funding.paid) },
+      householdDepositClaims: depositClaims,
+      lastDailyFlow: { day: core.time?.day || 0, wages: wageDollars, consumption: consumptionDollars, deposits: fromCents(deposits.paid), withdrawals: fromCents(withdrawals.paid), bankFunding: fromCents(funding.paid) },
       cumulative: {
         ...core.economy.cumulative,
         wages: core.economy.cumulative.wages + wageDollars,

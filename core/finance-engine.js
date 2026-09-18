@@ -84,7 +84,11 @@ export function settleOwnedBankDepositInflow(worldCoreInput, requestedDollars, m
   const result = bankFlow(worldCoreInput, ECONOMY_ACCOUNTS.households, MONEY_ACCOUNTS.ownedBank, requestedDollars, 'Household deposit into player bank', meta);
   return {
     ...result,
-    core: { ...result.core, finance: { ...result.core.finance, cumulative: { ...result.core.finance.cumulative, depositsIn: result.core.finance.cumulative.depositsIn + result.paidDollars } } }
+    core: {
+      ...result.core,
+      economy: { ...result.core.economy, householdDepositClaims: (result.core.economy?.householdDepositClaims || 0) + result.paidDollars },
+      finance: { ...result.core.finance, cumulative: { ...result.core.finance.cumulative, depositsIn: result.core.finance.cumulative.depositsIn + result.paidDollars } }
+    }
   };
 }
 
@@ -92,7 +96,11 @@ export function settleOwnedBankDepositPayout(worldCoreInput, requestedDollars, m
   const result = bankFlow(worldCoreInput, MONEY_ACCOUNTS.ownedBank, ECONOMY_ACCOUNTS.households, requestedDollars, 'Player bank deposit payout', meta);
   return {
     ...result,
-    core: { ...result.core, finance: { ...result.core.finance, cumulative: { ...result.core.finance.cumulative, depositsOut: result.core.finance.cumulative.depositsOut + result.paidDollars } } }
+    core: {
+      ...result.core,
+      economy: { ...result.core.economy, householdDepositClaims: Math.max(0, (result.core.economy?.householdDepositClaims || 0) - result.paidDollars) },
+      finance: { ...result.core.finance, cumulative: { ...result.core.finance.cumulative, depositsOut: result.core.finance.cumulative.depositsOut + result.paidDollars } }
+    }
   };
 }
 
@@ -146,7 +154,9 @@ export function settleExchangeTrade(worldCoreInput, { legacyAccountId, side, cas
       ? { ledger: transfer(ledger, accountId, FINANCE_ACCOUNTS.exchange, cents, reason, meta), paid: cents }
       : { ledger, paid: 0 };
   } else if (side === 'sell') {
-    ledger = ensureExchangeLiquidity(ledger, cents);
+    // STATE-style settlement: a sell can only be paid from cash that is already
+    // present on the market side. We deliberately do not top the exchange up
+    // from companies on demand; if buyers disappear, a large sell simply cannot fill.
     result = transferUpTo(ledger, FINANCE_ACCOUNTS.exchange, accountId, cents, reason, meta);
   } else {
     throw new Error('Unknown exchange side');
