@@ -1,4 +1,4 @@
-// Market Sandbox — V2.56.0 (Панель своего банка разбита на 5 вкладок вместо одной длинной прокрутки: Обзор (счёт банка/IP-переводы, IPO, портфель), Кредиты (личные+карточные ставки, кредитование компаний), Вклады, Трейдеры, Маркетинг банка — новое состояние bankSubTab, таб-бар сразу под hero-карточкой (имя/капитал/доверие — остаётся видимой всегда). Каждый существующий блок просто получил условие `bankSubTab === "X" &&` перед собой — порядок и содержимое блоков не менялись, только видимость. esbuild чист.)
+// Market Sandbox × STATE — merge v0.5 PLAYTEST CANDIDATE · base V2.56.0 (Панель своего банка разбита на 5 вкладок вместо одной длинной прокрутки: Обзор (счёт банка/IP-переводы, IPO, портфель), Кредиты (личные+карточные ставки, кредитование компаний), Вклады, Трейдеры, Маркетинг банка — новое состояние bankSubTab, таб-бар сразу под hero-карточкой (имя/капитал/доверие — остаётся видимой всегда). Каждый существующий блок просто получил условие `bankSubTab === "X" &&` перед собой — порядок и содержимое блоков не менялись, только видимость. esbuild чист.)
 // entry.jsx
 import React2 from "react";
 import { createRoot } from "react-dom/client";
@@ -6,6 +6,10 @@ import { createRoot } from "react-dom/client";
 // MarketSandbox.tsx
 import { useState, useEffect, useRef } from "react";
 import { TrendingUp, Building2, X, Sparkles, RotateCcw, Briefcase, FlaskConical, CreditCard, MessageCircle, Heart, MessageSquare, RefreshCw, Landmark, ShoppingBag, Receipt, Send, Save, Plus, Check, EyeOff, ArrowLeftRight, Star } from "lucide-react";
+import { createWorldCore, migrateWorldCore, tickWorldCore } from "./core/world-core.js";
+import { MONEY_ACCOUNTS, adoptLegacyBalances, balanceForLegacyAccount, ledgerIdForLegacyAccount, snapshotLegacyBalances, transferLegacyMoney, payWorldCounterparty, receiveFromWorldCounterparty, reconcileLegacyDrift } from "./core/player-money.js";
+import { ECONOMY_ACCOUNTS, adoptBusinessOpeningBalance, businessLedgerId, ensureRealEconomy, settleB2BSale, settleBusinessExpense, settleMarketplacePulse, settleRetailSale, transferBusinessCash, worldDemandFactor } from "./core/real-economy.js";
+import { adoptOwnedBankCash, settleExchangeTrade, settleOwnedBankDepositInflow, settleOwnedBankDepositPayout, settleOwnedBankExpense, settleOwnedBankIncome, settleOwnedBankLoanIssue, settleOwnedBankRepayment } from "./core/finance-engine.js";
 import { Fragment, jsx, jsxs } from "react/jsx-runtime";
 var C = {
   bg: "#0B0E14",
@@ -707,6 +711,7 @@ var INVESTOR_ROUND_CHUNKS = 3;
 var INVESTOR_ROUND_CHUNK_GAP_MS = 14e3;
 var AD_CAMPAIGN_CHUNKS = 4;
 var DAY_MS = 15e3;
+var PLAYTEST_STARTING_CASH = 2e3;
 var RESELL_STARTUP = { registration: 500, rent: 800, equipment: 300 };
 var FACTORY_LINES = {
   small20: { id: "small20", name: "\u041C\u0435\u043B\u043A\u043E\u0435 \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u043E (20 \u0441\u043E\u0442\u0440\u0443\u0434\u043D\u0438\u043A\u043E\u0432)", employees: 20, openingCost: 25e3, upkeepPerCycle: 2200, unitsPerCycle: 50, capacity: 320, available: true },
@@ -1710,7 +1715,7 @@ var PITCH_ANGLES = [
   { id: "cap", label: "\u041A\u0430\u043F\u0438\u0442\u0430\u043B\u0438\u0437\u0430\u0446\u0438\u044E", icon: "\u{1F4CA}" }
 ];
 var STORAGE_KEY = "market-sandbox-v6";
-var SAVE_VERSION = 12;
+var SAVE_VERSION = 16;
 var LocalStorageSaveAdapter = {
   async save(key, payload) {
     await window.storage.set(key, JSON.stringify(payload));
@@ -1851,6 +1856,38 @@ var SAVE_MIGRATIONS = {
     sentiment: typeof data.sentiment === "number" ? data.sentiment : SENTIMENT_DEFAULT,
     demandIndex: typeof data.demandIndex === "number" ? data.demandIndex : DEMAND_DEFAULT,
     govBudget: data.govBudget && typeof data.govBudget === "object" ? { ...GOV_BUDGET_DEFAULT, ...data.govBudget } : GOV_BUDGET_DEFAULT
+  }),
+  // v12 -> v13: foundation for the merged STATE economy. The playable Market Sandbox
+  // remains authoritative for existing balances while World Core starts tracking a
+  // scalable ~1M population and a conservation-audited shadow ledger.
+  13: (data) => {
+    const core = migrateWorldCore(data.worldCore);
+    // Saves that predate World Core must still perform the one-time Stage 2 balance
+    // adoption on load instead of treating newly-created zero accounts as authoritative.
+    return {
+      ...data,
+      worldCore: data.worldCore ? core : { ...core, bridge: { ...(core.bridge || {}), adoptedAt: null } }
+    };
+  },
+  // v13 -> v14: Stage 2 player-money bridge. Visible payment accounts, the IP/OOO
+  // account, taxes, fines and player purchases are adopted by the World Core ledger.
+  // Existing save balances are preserved exactly and become the ledger opening snapshot.
+  14: (data) => ({
+    ...data,
+    worldCore: migrateWorldCore(data.worldCore)
+  }),
+  // v14 -> v15: Stage 3 real economy. Million-resident cohorts become the source
+  // of retail demand; core player businesses start settling against real household
+  // and NPC-company accounts instead of creating revenue through legacy clearing.
+  15: (data) => ({
+    ...data,
+    worldCore: migrateWorldCore(data.worldCore)
+  }),
+  // v15 -> v16: Stage 4 closes the first playable vertical slice: player-bank cash,
+  // deposits/loans, exchange settlement and marketplace GMV/commission accounting.
+  16: (data) => ({
+    ...data,
+    worldCore: migrateWorldCore(data.worldCore)
   })
 };
 function migrateSaveData(data) {
@@ -2303,6 +2340,7 @@ var segStyle = (active) => ({ flex: "1 1 auto", minWidth: 70, padding: "9px 6px"
 var pctBtnStyle = { flex: "1 1 auto", minWidth: 44, padding: "7px 0", borderRadius: 8, border: `1px solid ${C.border}`, background: C.surface2, color: C.inkDim, fontSize: 11.5, fontWeight: 600 };
 function MarketSandbox() {
   const [loaded, setLoaded] = useState(false);
+  const [worldCore, setWorldCore] = useState(() => createWorldCore({ population: 1e6 }));
   const [onboarded, setOnboarded] = useState(true);
   const [companies, setCompanies] = useState([]);
   const [holdings, setHoldings] = useState({});
@@ -2492,6 +2530,7 @@ function MarketSandbox() {
   const [viewingCompanyId, setViewingCompanyId] = useState(null);
   const [viewingAuthorHandle, setViewingAuthorHandle] = useState(null);
   const engineRef = useRef({});
+  const worldCoreRef = useRef(worldCore);
   const lastPumpAtRef = useRef(0);
   const pendingBufferRef = useRef([]);
   const touchStartYRef = useRef(null);
@@ -2574,6 +2613,120 @@ function MarketSandbox() {
   const demandIndexRef = useRef(demandIndex);
   const govBudgetRef = useRef(govBudget);
   const sentimentPendingRef = useRef(0);
+
+  // Stage 2 money bridge. World Core is authoritative for migrated player-facing money.
+  // Legacy React state is kept as a UI projection so the Market Sandbox interface stays unchanged.
+  const commitWorldCore = (nextCore) => {
+    worldCoreRef.current = nextCore;
+    setWorldCore(nextCore);
+    return nextCore;
+  };
+  const syncLegacyAccountFromLedger = (legacyId, core = worldCoreRef.current) => {
+    const value = balanceForLegacyAccount(core, legacyId);
+    if (legacyId === "ip") {
+      ipCashRef.current = value;
+      setIpCash(value);
+      return value;
+    }
+    if (legacyId === "bank") {
+      bankRef.current = bankRef.current ? { ...bankRef.current, capital: value } : bankRef.current;
+      setBank((prev) => prev ? { ...prev, capital: value } : prev);
+      return value;
+    }
+    if (legacyId === "grey") {
+      if (greyAccountRef.current) greyAccountRef.current = { ...greyAccountRef.current, balance: value };
+      setGreyAccount((prev) => prev ? { ...prev, balance: value } : prev);
+      return value;
+    }
+    if (bankAccountsRef.current[legacyId]) {
+      bankAccountsRef.current = { ...bankAccountsRef.current, [legacyId]: { ...bankAccountsRef.current[legacyId], balance: value } };
+      setBankAccounts((prev) => prev[legacyId] ? { ...prev, [legacyId]: { ...prev[legacyId], balance: value } } : prev);
+      return value;
+    }
+    if (muleCardsRef.current[legacyId]) {
+      muleCardsRef.current = { ...muleCardsRef.current, [legacyId]: { ...muleCardsRef.current[legacyId], balance: value } };
+      setMuleCards((prev) => prev[legacyId] ? { ...prev, [legacyId]: { ...prev[legacyId], balance: value } } : prev);
+      return value;
+    }
+    if (fakeIpsRef.current[legacyId]) {
+      fakeIpsRef.current = { ...fakeIpsRef.current, [legacyId]: { ...fakeIpsRef.current[legacyId], cash: value } };
+      setFakeIps((prev) => prev[legacyId] ? { ...prev, [legacyId]: { ...prev[legacyId], cash: value } } : prev);
+    }
+    return value;
+  };
+  const ledgerMove = (fromId, toId, amount, reason, options = {}) => {
+    try {
+      const next = transferLegacyMoney(worldCoreRef.current, fromId, toId, amount, reason, options);
+      commitWorldCore(next);
+      syncLegacyAccountFromLedger(fromId, next);
+      syncLegacyAccountFromLedger(toId, next);
+      return true;
+    } catch (err) {
+      console.error("Stage 2 ledger transfer failed", err);
+      return false;
+    }
+  };
+  const ledgerPay = (fromId, amount, counterpartyId, reason, meta = null) => {
+    try {
+      const next = payWorldCounterparty(worldCoreRef.current, fromId, amount, counterpartyId, reason, meta);
+      commitWorldCore(next);
+      syncLegacyAccountFromLedger(fromId, next);
+      return true;
+    } catch (err) {
+      console.error("Stage 2 ledger debit failed", err);
+      return false;
+    }
+  };
+  const ledgerReceive = (toId, amount, counterpartyId, reason, meta = null) => {
+    try {
+      const next = receiveFromWorldCounterparty(worldCoreRef.current, toId, amount, counterpartyId, reason, meta);
+      commitWorldCore(next);
+      syncLegacyAccountFromLedger(toId, next);
+      return true;
+    } catch (err) {
+      console.error("Stage 2 ledger credit failed", err);
+      return false;
+    }
+  };
+  // Stage 3 real-economy helpers. These settle against finite household/company
+  // balances and immediately refresh the unchanged Market Sandbox UI projection.
+  const settleRetailToIp = (grossDollars, feeRate, reason, meta = null) => {
+    try {
+      const result = settleRetailSale(worldCoreRef.current, { grossDollars, feeRate, destinationAccount: MONEY_ACCOUNTS.business, reason, meta });
+      commitWorldCore(result.core);
+      syncLegacyAccountFromLedger("ip", result.core);
+      return result;
+    } catch (err) {
+      console.error("Stage 3 retail settlement failed", err);
+      return null;
+    }
+  };
+  const settleB2BToIp = (requestedDollars, reason, meta = null) => {
+    try {
+      const result = settleB2BSale(worldCoreRef.current, { destinationAccount: MONEY_ACCOUNTS.business, requestedDollars, reason, meta });
+      commitWorldCore(result.core);
+      syncLegacyAccountFromLedger("ip", result.core);
+      return result;
+    } catch (err) {
+      console.error("Stage 3 B2B settlement failed", err);
+      return null;
+    }
+  };
+  const settleIpExpense = (requestedDollars, recipient, reason, meta = null) => {
+    try {
+      const result = settleBusinessExpense(worldCoreRef.current, { fromAccount: MONEY_ACCOUNTS.business, requestedDollars, recipient, reason, meta });
+      commitWorldCore(result.core);
+      syncLegacyAccountFromLedger("ip", result.core);
+      return result;
+    } catch (err) {
+      console.error("Stage 3 business expense failed", err);
+      return null;
+    }
+  };
+
+  useEffect(() => {
+    worldCoreRef.current = worldCore;
+  }, [worldCore]);
   useEffect(() => {
     onboardedRef.current = onboarded;
   }, [onboarded]);
@@ -2803,6 +2956,12 @@ function MarketSandbox() {
     bigSellersRef.current = bigSellers;
   }, [bigSellers]);
   useEffect(() => {
+    if (!loaded || !worldCoreRef.current) return;
+    const snapshot = snapshotLegacyBalances({ ipCash, bankAccounts, greyAccount, muleCards, fakeIps, ownedBank: bank });
+    const next = reconcileLegacyDrift(worldCoreRef.current, snapshot);
+    if (next !== worldCoreRef.current) commitWorldCore(next);
+  }, [loaded, ipCash, bankAccounts, greyAccount, muleCards, fakeIps, bank]);
+  useEffect(() => {
     if (!loaded) return;
     const id = setInterval(() => {
       setReputation((r) => r < 100 ? Math.min(100, Number((r + 0.4).toFixed(1))) : r);
@@ -2860,7 +3019,10 @@ function MarketSandbox() {
       notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u043D\u0430 \u0418\u041F \u2014 \u043D\u0443\u0436\u043D\u043E ${fmt(OOO_CONVERSION_FEE)}`);
       return;
     }
-    setIpCash((c) => c - OOO_CONVERSION_FEE);
+    if (!ledgerPay("ip", OOO_CONVERSION_FEE, MONEY_ACCOUNTS.treasury, "Регистрация ООО")) {
+      notify("Не удалось провести регистрационный платёж");
+      return;
+    }
     setEntityType("ooo");
     logTx("\u041F\u0435\u0440\u0435\u0445\u043E\u0434 \u041D\u0430 \u041E\u041E\u041E \xB7 \u0432\u0437\u043D\u043E\u0441", OOO_CONVERSION_FEE, "out");
     pushPost({ text: "\u0418\u041F \u043F\u0435\u0440\u0435\u0440\u0435\u0433\u0438\u0441\u0442\u0440\u0438\u0440\u043E\u0432\u0430\u043D \u0432 \u041E\u041E\u041E", positive: true, isMacro: false });
@@ -3009,6 +3171,7 @@ function MarketSandbox() {
   const applyLoadedData = (rawData) => {
     const pausedMs = Math.max(0, Date.now() - (typeof rawData.lastSavedAt === "number" ? rawData.lastSavedAt : Date.now()));
     const data = pausedMs > 0 ? shiftTimestampsDeep(rawData, pausedMs) : rawData;
+    let restoredWorldCore = migrateWorldCore(data.worldCore);
     const rawBankAccounts = (() => {
       const raw = data.bankAccounts && typeof data.bankAccounts === "object" ? data.bankAccounts : {};
       const patched = {};
@@ -3102,6 +3265,28 @@ function MarketSandbox() {
       rawBankAccounts[firstCardId] = { ...rawBankAccounts[firstCardId], balance: rawBankAccounts[firstCardId].balance + loadedCash };
       loadedCash = 0;
     }
+    const restoredMoneySnapshot = snapshotLegacyBalances({
+      ipCash: typeof data.ipCash === "number" ? data.ipCash : 0,
+      bankAccounts: rawBankAccounts,
+      greyAccount: restoredGreyAccount,
+      muleCards: data.muleCards && typeof data.muleCards === "object" ? data.muleCards : {},
+      fakeIps: data.fakeIps && typeof data.fakeIps === "object" ? data.fakeIps : {},
+      ownedBank: data.bank || null
+    });
+    restoredWorldCore = restoredWorldCore.bridge?.adoptedAt
+      ? reconcileLegacyDrift(restoredWorldCore, restoredMoneySnapshot, "Load balance reconciliation")
+      : adoptLegacyBalances(restoredWorldCore, restoredMoneySnapshot);
+    // Stage 3 adoption: cash already sitting inside legacy business sub-accounts must
+    // become opening ledger cash once, otherwise withdrawing it would mint money.
+    for (const w of Array.isArray(data.warehouses) ? data.warehouses : []) {
+      if ((w?.payoutBalance || 0) > 0) restoredWorldCore = adoptBusinessOpeningBalance(restoredWorldCore, { kind: "warehouse", id: w.id, dollars: w.payoutBalance, name: w.name });
+    }
+    if (data.bank) restoredWorldCore = adoptOwnedBankCash(restoredWorldCore, data.bank);
+    if (data.marketplace?.id && (data.marketplace.cash || 0) > 0) {
+      restoredWorldCore = adoptBusinessOpeningBalance(restoredWorldCore, { kind: "marketplace", id: data.marketplace.id, dollars: data.marketplace.cash, name: data.marketplace.name });
+    }
+    worldCoreRef.current = restoredWorldCore;
+    setWorldCore(restoredWorldCore);
     setOnboarded(typeof data.onboarded === "boolean" ? data.onboarded : true);
     setHoldings(holdingsMigration.next);
     setIpHoldings(data.ipHoldings || {});
@@ -3292,6 +3477,7 @@ function MarketSandbox() {
   const buildSavePayload = () => ({
     version: SAVE_VERSION,
     lastSavedAt: Date.now(),
+    worldCore: worldCoreRef.current,
     onboarded: onboardedRef.current,
     holdings: holdingsRef.current,
     ipHoldings: ipHoldingsRef.current,
@@ -3443,6 +3629,15 @@ function MarketSandbox() {
   };
   useEffect(() => {
     if (!loaded) return;
+    const id = setInterval(() => {
+      const laborDemandIndex = Math.max(0.65, Math.min(1.2, demandIndexRef.current || 1));
+      const migrationPressure = Math.max(-2, Math.min(3, 1 + (sentimentRef.current || 0) / 100));
+      setWorldCore((current) => tickWorldCore(current, { days: 1, laborDemandIndex, migrationPressure, demandIndex: demandIndexRef.current || 1 }));
+    }, DAY_MS);
+    return () => clearInterval(id);
+  }, [loaded]);
+  useEffect(() => {
+    if (!loaded) return;
     const id = setInterval(saveGame, 12e3);
     return () => clearInterval(id);
   }, [loaded]);
@@ -3476,7 +3671,9 @@ function MarketSandbox() {
             step = oilFrameStep(macroRef.current, gauss, Math.sqrt(dt / 16.67), e.price);
           } else {
             const dtFactor = Math.sqrt(dt / 16.67);
-            step = gauss() * (c.vol || 1) * 0.035 * dtFactor;
+            // v0.4: visual micro-noise stays, but persistent direction comes from real
+            // order flow/events instead of a dominant random walk.
+            step = gauss() * (c.vol || 1) * 0.006 * dtFactor + (c.marketFlow || 0) * dtFactor;
             if (c.ticker === "TEHER") {
               const pegDeviationPct = (1 - e.price) / e.price * 100;
               step += pegDeviationPct * 0.05;
@@ -3488,7 +3685,7 @@ function MarketSandbox() {
         e.cLow = Math.min(e.cLow, e.price);
         if (ts - e.candleStart >= CANDLE_MS) {
           const finished = { o: e.cOpen, h: e.cHigh, l: e.cLow, c: e.price, t: Date.now() };
-          setCompanies((prev) => prev.map((x) => x.id === c.id ? { ...x, candles: [...(x.candles || []).slice(-149), finished] } : x));
+          setCompanies((prev) => prev.map((x) => x.id === c.id ? { ...x, candles: [...(x.candles || []).slice(-149), finished], marketFlow: (x.marketFlow || 0) * 0.55 } : x));
           e.cOpen = e.price;
           e.cHigh = e.price;
           e.cLow = e.price;
@@ -4472,27 +4669,28 @@ function MarketSandbox() {
           const activeAds = (shop.ads || []).filter((a) => Date.now() < a.adUntil);
           const adMult = activeAds.length ? computeAdBoost(activeAds) : 1;
           const adMultForChance = Math.min(adMult, 6);
-          const demandMult = macroClamp(demandIndexRef.current || 1, 0.6, 1.3);
-          const saleChance = Math.min(0.85, Math.max(0.02, 0.16 * attractiveness * ratingMult * adMultForChance * repMult * zzoneMult * demandMult));
+          const demandMult = worldDemandFactor(worldCoreRef.current, demandIndexRef.current || 1);
+          const saleChance = Math.min(0.85, Math.max(0.015, 0.16 * attractiveness * ratingMult * adMultForChance * repMult * zzoneMult * demandMult));
           const adQtyBoost = 1 + Math.max(0, adMult - 6) * 0.15;
           if (Math.random() < saleChance) {
             const qtySold = Math.min(c.stock, Math.max(1, Math.round((1 + Math.floor(Math.random() * 3)) * adQtyBoost)));
             const grossRevenue = c.listedPrice * qtySold;
-            const fee = Math.round(grossRevenue * MARKETPLACE_FEE);
-            const netRevenue = grossRevenue - fee;
+            const settlement = settleRetailToIp(grossRevenue, MARKETPLACE_FEE, `Retail sale · ${shop.name}`, { shopId: shop.id, category: cat.id, qty: qtySold });
+            if (!settlement || settlement.grossDollars < c.listedPrice) return;
+            const actualQty = Math.max(1, Math.min(qtySold, Math.floor(settlement.grossDollars / c.listedPrice)));
+            const netRevenue = settlement.netDollars;
             const positive = Math.random() < shop.qualityScore;
             const newRating = Math.max(1, Math.min(5, shop.rating * 0.9 + (positive ? 5 : 1.8) * 0.1));
-            setIpCash((cur) => cur + netRevenue);
             setQuarterRevenue((r) => r + netRevenue);
             setResellShops((prev) => prev.map((s) => s.id === shop.id ? {
               ...s,
-              categories: { ...s.categories, [cat.id]: { ...s.categories[cat.id], stock: s.categories[cat.id].stock - qtySold } },
+              categories: { ...s.categories, [cat.id]: { ...s.categories[cat.id], stock: Math.max(0, s.categories[cat.id].stock - actualQty) } },
               totalRevenue: s.totalRevenue + netRevenue,
-              totalUnitsSold: s.totalUnitsSold + qtySold,
+              totalUnitsSold: s.totalUnitsSold + actualQty,
               rating: newRating,
               reviews: [{ id: makeId("rev"), positive }, ...s.reviews].slice(0, 8)
             } : s));
-            logTx(`\u041F\u0440\u043E\u0434\u0430\u0436\u0430 \u0432 \u043C\u0430\u0433\u0430\u0437\u0438\u043D\u0435 \xAB${shop.name}\xBB \xB7 ${cat.name} \xD7${qtySold}`, netRevenue, "in");
+            logTx(`\u041F\u0440\u043E\u0434\u0430\u0436\u0430 \u0432 \u043C\u0430\u0433\u0430\u0437\u0438\u043D\u0435 \xAB${shop.name}\xBB \xB7 ${cat.name} \xD7${actualQty}`, netRevenue, "in");
             setTimeout(saveGame, 50);
           }
         });
@@ -4886,9 +5084,8 @@ function MarketSandbox() {
       const expired = rounds.filter((r) => r.stage === "received" && r.deadlineAt && now >= r.deadlineAt);
       if (!expired.length) return;
       expired.forEach((r) => {
-        if (r.accountId === "grey") setGreyAccount((a) => a ? { ...a, balance: Math.max(0, a.balance - r.amount) } : a);
-        else if (r.accountId === "ip") setIpCash((c) => Math.max(0, c - r.amount));
-        else setBankAccounts((prev) => prev[r.accountId] ? { ...prev, [r.accountId]: { ...prev[r.accountId], balance: Math.max(0, prev[r.accountId].balance - r.amount) } } : prev);
+        const recoverable = Math.min(r.amount, Math.max(0, getAccountBalance(r.accountId)));
+        if (recoverable > 0) ledgerPay(r.accountId, recoverable, MONEY_ACCOUNTS.clearing, "Чёрный рынок · просроченный перевод возвращён");
         setBlackMarketHeat((h) => Math.min(200, h + 25));
         adjustReputation(-8);
       });
@@ -4933,15 +5130,16 @@ function MarketSandbox() {
       const list = warehousesRef.current;
       const due = list.filter((w) => Date.now() >= w.nextCycleAt);
       if (!due.length) return;
-      let ipCashDelta = 0;
       const zzonePerf = companyPerfPct(companiesRef.current, "ZZONE");
       const zzoneRecentPerf = companyRecentPerfPct(companiesRef.current, "ZZONE");
       const rep = reputationRef.current;
       const rate = warehouseRate(zzoneRecentPerf);
-      const demandMult = zzoneDemandMult(zzoneRecentPerf);
+      const populationDemand = worldDemandFactor(worldCoreRef.current, demandIndexRef.current || 1);
+      const demandMult = zzoneDemandMult(zzoneRecentPerf) * populationDemand;
       const marketVolume = WAREHOUSE_BASE_ZZONE_VOLUME * demandMult;
       const updates = {};
       const rankById = {};
+      let nextCore = worldCoreRef.current;
       [...list].sort((a, b) => a.openedAt - b.openedAt).forEach((w, idx) => {
         rankById[w.id] = idx;
       });
@@ -4953,21 +5151,38 @@ function MarketSandbox() {
         const baseTurnover = Math.min(availableToWarehouse, effectiveCapacity);
         const efficiency = warehouseEfficiency(tier, w.staffLevel, w.equipmentLevel, w.condition, w.transportLevel);
         const processedTurnover = baseTurnover * efficiency;
-        const marketRevenue = Math.round(processedTurnover * rate * WAREHOUSE_CYCLE_HOUR_FRACTION);
-        const floor = warehouseGuaranteedFloor(tier, zzonePerf);
-        const subsidy = Math.max(0, floor - marketRevenue);
-        const grossRevenue = marketRevenue + subsidy;
+        const quotedMarketRevenue = Math.round(processedTurnover * rate * WAREHOUSE_CYCLE_HOUR_FRACTION);
+        const quotedFloor = warehouseGuaranteedFloor(tier, zzonePerf);
+        const quotedSubsidy = Math.max(0, quotedFloor - quotedMarketRevenue);
+        const quotedGrossRevenue = quotedMarketRevenue + quotedSubsidy;
+        const warehouseAccount = businessLedgerId("warehouse", w.id);
+        const revenueSettlement = settleB2BSale(nextCore, {
+          destinationAccount: warehouseAccount,
+          requestedDollars: quotedGrossRevenue,
+          reason: `ZZONE warehouse settlement · ${w.name}`,
+          meta: { warehouseId: w.id, processedTurnover: Math.round(processedTurnover) }
+        });
+        nextCore = revenueSettlement.core;
+        const grossRevenue = revenueSettlement.paidDollars;
+        const revenueRatio = quotedGrossRevenue > 0 ? grossRevenue / quotedGrossRevenue : 0;
+        const marketRevenue = Math.round(quotedMarketRevenue * revenueRatio * 100) / 100;
+        const subsidy = Math.max(0, Math.round((grossRevenue - marketRevenue) * 100) / 100);
+        const floor = Math.round(quotedFloor * revenueRatio * 100) / 100;
         const wagesThisCycle = Math.round(w.staffLevel * tier.wagePerStaff * WAREHOUSE_CYCLE_HOUR_FRACTION * 100) / 100;
         const opex = (tier.electricity + w.transportLevel * tier.transportUpkeep + w.equipmentLevel * tier.equipmentUpkeep + tier.misc) * WAREHOUSE_CYCLE_HOUR_FRACTION;
-        const available = ipCashRef.current + ipCashDelta;
-        const paidOpex = Math.min(opex, Math.max(0, available));
-        ipCashDelta -= paidOpex;
-        if (grossRevenue > 0) {
-          setQuarterRevenue((r) => r + grossRevenue);
-        }
-        logTx(`\u0421\u043A\u043B\u0430\u0434 ZZONE \xB7 \xAB${w.name}\xBB: \u0432\u044B\u0440\u0443\u0447\u043A\u0430 \u043D\u0430 \u0441\u0447\u0451\u0442 \u0441\u043A\u043B\u0430\u0434\u0430`, marketRevenue, "in");
-        if (subsidy > 0) logTx(`\u0421\u043A\u043B\u0430\u0434 ZZONE \xB7 \xAB${w.name}\xBB: \u0434\u043E\u043F\u043B\u0430\u0442\u0430 \u0434\u043E \u0433\u0430\u0440\u0430\u043D\u0442\u0438\u0440\u043E\u0432\u0430\u043D\u043D\u043E\u0433\u043E \u043C\u0438\u043D\u0438\u043C\u0443\u043C\u0430`, subsidy, "in");
-        if (paidOpex > 0) logTx(`\u0421\u043A\u043B\u0430\u0434 ZZONE \xB7 \xAB${w.name}\xBB: \u044D\u043A\u0441\u043F\u043B\u0443\u0430\u0442\u0430\u0446\u0438\u044F/\u0442\u0440\u0430\u043D\u0441\u043F\u043E\u0440\u0442/\u043E\u0431\u043E\u0440\u0443\u0434\u043E\u0432\u0430\u043D\u0438\u0435`, paidOpex, "out");
+        const expenseSettlement = settleBusinessExpense(nextCore, {
+          fromAccount: MONEY_ACCOUNTS.business,
+          requestedDollars: Math.min(opex, Math.max(0, ipCashRef.current)),
+          recipient: ECONOMY_ACCOUNTS.services,
+          reason: `Warehouse operating expenses · ${w.name}`,
+          meta: { warehouseId: w.id }
+        });
+        nextCore = expenseSettlement.core;
+        const paidOpex = expenseSettlement.paidDollars;
+        if (grossRevenue > 0) setQuarterRevenue((r) => r + grossRevenue);
+        if (marketRevenue > 0) logTx(`Склад ZZONE · «${w.name}»: выручка на счёт склада`, marketRevenue, "in");
+        if (subsidy > 0) logTx(`Склад ZZONE · «${w.name}»: доплата до гарантированного минимума`, subsidy, "in");
+        if (paidOpex > 0) logTx(`Склад ZZONE · «${w.name}»: эксплуатация/транспорт/оборудование`, paidOpex, "out");
         let newWageDue = Math.round((w.wageDue + wagesThisCycle) * 100) / 100;
         let condition = w.condition;
         let staffLevel = w.staffLevel;
@@ -4979,7 +5194,7 @@ function MarketSandbox() {
           staffLevel = Math.max(0, staffLevel - attrition);
           condition = Math.max(0, condition - 20 * WAREHOUSE_CYCLE_HOUR_FRACTION);
           newWageDue = Math.round(newWageDue * (staffBefore > 0 ? staffLevel / staffBefore : 0) * 100) / 100;
-          pushPost({ text: `\u0421\u043A\u043B\u0430\u0434 ZZONE \xAB${w.name}\xBB: \u0437\u0430\u0440\u043F\u043B\u0430\u0442\u0430 \u043D\u0435 \u0432\u044B\u043F\u043B\u0430\u0447\u0435\u043D\u0430 \u2014 ${attrition} \u0447\u0435\u043B\u043E\u0432\u0435\u043A \u0443\u0432\u043E\u043B\u0438\u043B\u0438\u0441\u044C`, positive: false, isMacro: false });
+          pushPost({ text: `Склад ZZONE «${w.name}»: зарплата не выплачена — ${attrition} человек уволились`, positive: false, isMacro: false });
         } else {
           condition = Math.max(0, condition - 10 * WAREHOUSE_CYCLE_HOUR_FRACTION);
         }
@@ -4993,10 +5208,11 @@ function MarketSandbox() {
           payoutBalance: Math.round(((w.payoutBalance || 0) + grossRevenue) * 100) / 100,
           cyclesRun: w.cyclesRun + 1,
           nextCycleAt: Date.now() + WAREHOUSE_CYCLE_MS,
-          lastCycleStats: { grossRevenue, marketRevenue, subsidy, floor, wagesThisCycle, opex: paidOpex, efficiency, rate, processedTurnover: Math.round(processedTurnover), availableToWarehouse: Math.round(availableToWarehouse), capacity: Math.round(effectiveCapacity) }
+          lastCycleStats: { grossRevenue, marketRevenue, subsidy, floor, wagesThisCycle, opex: paidOpex, efficiency, rate, processedTurnover: Math.round(processedTurnover), availableToWarehouse: Math.round(availableToWarehouse), capacity: Math.round(effectiveCapacity), populationDemand }
         };
       });
-      if (ipCashDelta !== 0) setIpCash((c) => Math.max(0, c + ipCashDelta));
+      commitWorldCore(nextCore);
+      syncLegacyAccountFromLedger("ip", nextCore);
       setWarehouses((prev) => prev.map((w) => updates[w.id] ? { ...w, ...updates[w.id] } : w));
       setTimeout(saveGame, 50);
     }, 3e4);
@@ -5014,14 +5230,24 @@ function MarketSandbox() {
       const linkedCap = warehousesRef.current.filter((w) => (mp.warehouseIds || []).includes(w.id)).reduce((s, w) => s + (WAREHOUSE_TIERS[w.tierId]?.throughputCapacity || 0), 0);
       const capacityCap = linkedCap + marketplaceOwnCapacity(mp.ownWarehouses);
       const est = marketplaceCycleEstimate(mp, marketIndexRef.current, bigSellersRef.current, demandIndexRef.current, capacityCap);
-      const gmvDelta = est.gmv * dtFrac;
-      const revenueDelta = est.revenue * dtFrac;
-      const opexDelta = est.opex * dtFrac;
-      const netDelta = revenueDelta - opexDelta;
+      const requestedGmv = est.gmv * dtFrac;
+      const requestedRevenue = est.revenue * dtFrac;
+      const requestedOpex = est.opex * dtFrac;
+      const settlement = settleMarketplacePulse(worldCoreRef.current, {
+        marketplaceAccount: businessLedgerId("marketplace", mp.id),
+        gmvDollars: requestedGmv,
+        revenueDollars: requestedRevenue,
+        opexDollars: requestedOpex,
+        meta: { marketplaceId: mp.id }
+      });
+      commitWorldCore(settlement.core);
+      const gmvDelta = settlement.gmvDollars;
+      const revenueDelta = settlement.revenueDollars;
+      const opexDelta = settlement.opexDollars;
       if (revenueDelta > 0) setQuarterRevenue((r) => r + revenueDelta);
       setMarketplace((prev) => prev ? {
         ...prev,
-        cash: Math.round((prev.cash + netDelta) * 100) / 100,
+        cash: Math.round(settlement.cashDollars * 100) / 100,
         lastTickAt: now0,
         accumGmv: (prev.accumGmv || 0) + gmvDelta,
         accumRevenue: (prev.accumRevenue || 0) + revenueDelta,
@@ -5108,9 +5334,21 @@ function MarketSandbox() {
         if (zzoneCompany) applyImpact(zzoneCompany.id, -1.5 - Math.random() * 1.5);
         pushPost({ text: reactionPost, positive: false, isMacro: false, ticker: "ZZONE", importance: 3 });
       }
+      let actualInvestorCashPenalty = 0;
+      if (investorCashPenalty > 0) {
+        const penaltySettlement = settleBusinessExpense(worldCoreRef.current, {
+          fromAccount: businessLedgerId("marketplace", mp.id),
+          requestedDollars: investorCashPenalty,
+          recipient: ECONOMY_ACCOUNTS.companies,
+          reason: "Marketplace investor condition penalty",
+          meta: { marketplaceId: mp.id }
+        });
+        actualInvestorCashPenalty = penaltySettlement.paidDollars;
+        commitWorldCore(penaltySettlement.core);
+      }
       setMarketplace((prev) => prev ? {
         ...prev,
-        cash: Math.round((prev.cash - investorCashPenalty) * 100) / 100,
+        cash: Math.max(0, Math.round((prev.cash - actualInvestorCashPenalty) * 100) / 100),
         sellerCount,
         buyerCount,
         trustScore: trustScoreAfterInvestors,
@@ -5148,6 +5386,7 @@ function MarketSandbox() {
       const dtMs = Math.max(0, Math.min(now - (b.lastTickAt || now), BANK_CYCLE_MS));
       if (dtMs <= 0) { return; }
       const dtFrac = dtMs / BANK_CYCLE_MS;
+      let nextCore = worldCoreRef.current;
       const macroNow = macroRef.current;
       const activeCampaigns = b.marketingCampaigns || [];
       const campaignBoost = (product) => activeCampaigns.filter((c) => c.product === product).reduce((s, c) => s + bankMarketingBoost(c, now).boost, 0);
@@ -5162,11 +5401,19 @@ function MarketSandbox() {
       const totalCommitted = idlePool + currentOutstanding;
       const targetOutstanding = Math.max(0, Math.min(totalCommitted, creditDemand));
       const desiredNewLoans = Math.max(0, targetOutstanding - currentOutstanding) * dtFrac;
-      const newLoansIssued = Math.round(Math.min(desiredNewLoans, idlePool));
-      const principalRepaid = Math.round(currentOutstanding * BANK_LOAN_REPAY_FRACTION * dtFrac);
+      const requestedNewLoans = Math.round(Math.min(desiredNewLoans, idlePool));
+      const loanIssueSettlement = settleOwnedBankLoanIssue(nextCore, requestedNewLoans, { product: "business-credit" });
+      nextCore = loanIssueSettlement.core;
+      const newLoansIssued = Math.round(loanIssueSettlement.paidDollars);
+      const principalRepaidRequested = Math.round(currentOutstanding * BANK_LOAN_REPAY_FRACTION * dtFrac);
       const nplFraction = bankNplFraction(b, macroNow);
       const defaulted = Math.round(currentOutstanding * nplFraction * dtFrac);
-      const creditIncome = Math.round(currentOutstanding * b.creditRate * dtFrac);
+      const creditIncomeRequested = Math.round(currentOutstanding * b.creditRate * dtFrac);
+      const loanRepaymentSettlement = settleOwnedBankRepayment(nextCore, principalRepaidRequested + creditIncomeRequested, { product: "business-credit" });
+      nextCore = loanRepaymentSettlement.core;
+      const loanRepaymentPaid = Math.round(loanRepaymentSettlement.paidDollars);
+      const principalRepaid = Math.min(principalRepaidRequested, loanRepaymentPaid);
+      const creditIncome = Math.max(0, loanRepaymentPaid - principalRepaid);
       const newOutstanding = Math.max(0, currentOutstanding + newLoansIssued - principalRepaid - defaulted);
       const newIdlePool = Math.max(0, idlePool - newLoansIssued);
       // ---- кредитные карты: тот же принцип пула, что и у обычных кредитов, но отдельная
@@ -5181,19 +5428,40 @@ function MarketSandbox() {
       const totalCardCommitted = idleCardPool + currentCardOutstanding;
       const targetCardOutstanding = Math.max(0, Math.min(totalCardCommitted, cardCreditDemand));
       const desiredNewCardLoans = Math.max(0, targetCardOutstanding - currentCardOutstanding) * dtFrac;
-      const newCardLoansIssued = Math.round(Math.min(desiredNewCardLoans, idleCardPool));
-      const cardPrincipalRepaid = Math.round(currentCardOutstanding * BANK_CARD_REPAY_FRACTION * dtFrac);
+      const requestedNewCardLoans = Math.round(Math.min(desiredNewCardLoans, idleCardPool));
+      const cardIssueSettlement = settleOwnedBankLoanIssue(nextCore, requestedNewCardLoans, { product: "card-credit" });
+      nextCore = cardIssueSettlement.core;
+      const newCardLoansIssued = Math.round(cardIssueSettlement.paidDollars);
+      const cardPrincipalRequested = Math.round(currentCardOutstanding * BANK_CARD_REPAY_FRACTION * dtFrac);
       const cardNplFrac = bankCardCreditNplFraction(b, macroNow);
       const cardDefaulted = Math.round(currentCardOutstanding * cardNplFrac * dtFrac);
-      const cardCreditIncome = Math.round(currentCardOutstanding * cardCreditRateVal * dtFrac);
+      const cardIncomeRequested = Math.round(currentCardOutstanding * cardCreditRateVal * dtFrac);
+      const cardRepaymentSettlement = settleOwnedBankRepayment(nextCore, cardPrincipalRequested + cardIncomeRequested, { product: "card-credit" });
+      nextCore = cardRepaymentSettlement.core;
+      const cardRepaymentPaid = Math.round(cardRepaymentSettlement.paidDollars);
+      const cardPrincipalRepaid = Math.min(cardPrincipalRequested, cardRepaymentPaid);
+      const cardCreditIncome = Math.max(0, cardRepaymentPaid - cardPrincipalRepaid);
       const newCardOutstanding = Math.max(0, currentCardOutstanding + newCardLoansIssued - cardPrincipalRepaid - cardDefaulted);
       const newIdleCardPool = Math.max(0, idleCardPool - newCardLoansIssued);
-      const tradingPnl = Math.round((b.traders || []).reduce((sum, t) => {
+      const tradingPnlRequested = Math.round((b.traders || []).reduce((sum, t) => {
         const winMid = t.risk * 1.5;
         const lossMid = t.risk * 0.45;
         return sum + t.allocation * (t.winRate * winMid - (1 - t.winRate) * lossMid);
       }, 0) * dtFrac);
-      const cardIncome = Math.round(Math.sqrt(Math.max(0, b.clients)) * BANK_CARD_BASE_TRANSFER_VOL * b.cardFeeRate * dtFrac);
+      let tradingPnl = 0;
+      if (tradingPnlRequested >= 0) {
+        const pnlSettlement = settleOwnedBankIncome(nextCore, tradingPnlRequested, ECONOMY_ACCOUNTS.companies, "Bank trading result");
+        nextCore = pnlSettlement.core;
+        tradingPnl = Math.round(pnlSettlement.paidDollars);
+      } else {
+        const pnlSettlement = settleOwnedBankExpense(nextCore, Math.abs(tradingPnlRequested), ECONOMY_ACCOUNTS.companies, "Bank trading loss");
+        nextCore = pnlSettlement.core;
+        tradingPnl = -Math.round(pnlSettlement.paidDollars);
+      }
+      const cardIncomeRequested = Math.round(Math.sqrt(Math.max(0, b.clients)) * BANK_CARD_BASE_TRANSFER_VOL * b.cardFeeRate * dtFrac);
+      const cardFeeSettlement = settleOwnedBankIncome(nextCore, cardIncomeRequested, ECONOMY_ACCOUNTS.households, "Bank card fees");
+      nextCore = cardFeeSettlement.core;
+      const cardIncome = Math.round(cardFeeSettlement.paidDollars);
       let depositReserveDelta = 0;
       let depositInflow = 0;
       const survivingDeposits = (b.deposits || []).slice();
@@ -5218,28 +5486,38 @@ function MarketSandbox() {
       const depRate = b.depositRate ?? BANK_NPC_AVG_DEPOSIT_RATE;
       const inflowMult = bankDepositAttractFactor(b, macroNow, depRate) * (1 + depositCampaignBoost);
       if (Math.random() < BANK_DEPOSIT_LAMBDA_BASE * inflowMult * dtFrac) {
-        const principal = bankRollDepositSize();
-        const total = Math.round(principal * (1 + depRate));
-        survivingDeposits.push({ id: makeId("dep"), npcName: DEPOSIT_NPC_NAMES[Math.floor(Math.random() * DEPOSIT_NPC_NAMES.length)], principal, rate: depRate, total, paidAmount: 0, openedAt: now });
-        depositReserveDelta += principal;
-        depositInflow += principal;
-        depositsOpenedThisTick += 1;
-        depositsAmountThisTick += principal;
-        logTx(`Вклад НПС \xB7 зачислен на депозитный счёт`, principal, "in");
-      }
-      const activeDepositCampaign = activeCampaigns.find((c) => c.product === "deposits");
-      if (activeDepositCampaign) {
-        const targetCount = bankDepositCampaignTargetCount(activeDepositCampaign, b, macroNow);
-        const lambdaPerSec = targetCount / (BANK_MARKETING_DURATION_MS / 1e3);
-        if (Math.random() < lambdaPerSec * dtMs / 1e3) {
-          const principal = bankRollDepositSize();
+        const requestedPrincipal = bankRollDepositSize();
+        const depositSettlement = settleOwnedBankDepositInflow(nextCore, requestedPrincipal, { source: "organic" });
+        nextCore = depositSettlement.core;
+        const principal = Math.round(depositSettlement.paidDollars);
+        if (principal > 0) {
           const total = Math.round(principal * (1 + depRate));
           survivingDeposits.push({ id: makeId("dep"), npcName: DEPOSIT_NPC_NAMES[Math.floor(Math.random() * DEPOSIT_NPC_NAMES.length)], principal, rate: depRate, total, paidAmount: 0, openedAt: now });
           depositReserveDelta += principal;
           depositInflow += principal;
           depositsOpenedThisTick += 1;
           depositsAmountThisTick += principal;
-          logTx(`Вклад по рекламе \xB7 зачислен на депозитный счёт`, principal, "in");
+          logTx(`Вклад НПС \xB7 зачислен на депозитный счёт`, principal, "in");
+        }
+      }
+      const activeDepositCampaign = activeCampaigns.find((c) => c.product === "deposits");
+      if (activeDepositCampaign) {
+        const targetCount = bankDepositCampaignTargetCount(activeDepositCampaign, b, macroNow);
+        const lambdaPerSec = targetCount / (BANK_MARKETING_DURATION_MS / 1e3);
+        if (Math.random() < lambdaPerSec * dtMs / 1e3) {
+          const requestedPrincipal = bankRollDepositSize();
+          const depositSettlement = settleOwnedBankDepositInflow(nextCore, requestedPrincipal, { source: "campaign" });
+          nextCore = depositSettlement.core;
+          const principal = Math.round(depositSettlement.paidDollars);
+          if (principal > 0) {
+            const total = Math.round(principal * (1 + depRate));
+            survivingDeposits.push({ id: makeId("dep"), npcName: DEPOSIT_NPC_NAMES[Math.floor(Math.random() * DEPOSIT_NPC_NAMES.length)], principal, rate: depRate, total, paidAmount: 0, openedAt: now });
+            depositReserveDelta += principal;
+            depositInflow += principal;
+            depositsOpenedThisTick += 1;
+            depositsAmountThisTick += principal;
+            logTx(`Вклад по рекламе \xB7 зачислен на депозитный счёт`, principal, "in");
+          }
         }
       }
       let cardsClientsGained = 0;
@@ -5253,6 +5531,7 @@ function MarketSandbox() {
       const escalatedCount = missedDeposits.length;
       const finishedNow = activeCampaigns.filter((c) => bankMarketingProgress(c, now) >= 1);
       const stillActive = activeCampaigns.filter((c) => bankMarketingProgress(c, now) < 1);
+      commitWorldCore(nextCore);
       setBank((prev) => {
         if (!prev) return prev;
         const newClients = prev.clients + cardsClientsGained;
@@ -5370,10 +5649,27 @@ function MarketSandbox() {
         eventClientsDelta = ev.clientsDelta || 0;
         eventPost = ev;
       }
+      let cycleCore = worldCoreRef.current;
+      const salarySettlement = settleOwnedBankExpense(cycleCore, BANK_SALARY_PER_CYCLE, ECONOMY_ACCOUNTS.households, "Bank payroll");
+      cycleCore = salarySettlement.core;
+      const salaryPaid = Math.round(salarySettlement.paidDollars);
+      let settledEventCapitalDelta = 0;
+      if (eventCapitalDelta > 0) {
+        const eventSettlement = settleOwnedBankIncome(cycleCore, eventCapitalDelta, ECONOMY_ACCOUNTS.companies, "Bank positive event");
+        cycleCore = eventSettlement.core;
+        settledEventCapitalDelta = Math.round(eventSettlement.paidDollars);
+      } else if (eventCapitalDelta < 0) {
+        const eventSettlement = settleOwnedBankExpense(cycleCore, Math.abs(eventCapitalDelta), ECONOMY_ACCOUNTS.services, "Bank negative event");
+        cycleCore = eventSettlement.core;
+        settledEventCapitalDelta = -Math.round(eventSettlement.paidDollars);
+      }
+      commitWorldCore(cycleCore);
+      eventCapitalDelta = settledEventCapitalDelta;
       const accum = b.accum || { creditIncome: 0, newLoansIssued: 0, principalRepaid: 0, tradingPnl: 0, cardIncome: 0, cardCreditIncome: 0, depositInflow: 0, depositInterestPaid: 0, depositPrincipalReturned: 0 };
-      const accumNet = accum.creditIncome + accum.principalRepaid + accum.tradingPnl + accum.cardIncome + (accum.cardCreditIncome || 0) + accum.depositInflow - accum.depositInterestPaid - accum.depositPrincipalReturned;
-      const newCapital = b.capital - BANK_SALARY_PER_CYCLE + eventCapitalDelta;
-      const cycleProfitable = accumNet - BANK_SALARY_PER_CYCLE + eventCapitalDelta >= 0;
+      // Deposit inflow is a liability and principal repayment is return of an asset, not profit.
+      const accumNet = accum.creditIncome + accum.tradingPnl + accum.cardIncome + (accum.cardCreditIncome || 0) - accum.depositInterestPaid;
+      const newCapital = b.capital - salaryPaid + eventCapitalDelta;
+      const cycleProfitable = accumNet - salaryPaid + eventCapitalDelta >= 0;
       const nplRatio = (b.creditOutstanding || 0) > 0 ? (b.defaultedSinceCycle || 0) / b.creditOutstanding : 0;
       const nplHit = nplRatio > 0.02;
       const newTrust = Math.max(0, Math.min(100, (b.trust || 50) + (cycleProfitable ? 0.3 : -0.5) + eventTrustDelta - (nplHit ? 2 : 0)));
@@ -5421,7 +5717,7 @@ function MarketSandbox() {
         equityCriticalStreak: newEquityCriticalStreak,
         defaultedSinceCycle: 0,
         maxCapitalReached: Math.max(prev.maxCapitalReached || 0, newCapital),
-        totalSalaryPaid: prev.totalSalaryPaid + BANK_SALARY_PER_CYCLE,
+        totalSalaryPaid: prev.totalSalaryPaid + salaryPaid,
         cyclesRun: prev.cyclesRun + 1,
         lastCycleBreakdown: {
           at: Date.now(),
@@ -5433,9 +5729,9 @@ function MarketSandbox() {
           depositInflow: accum.depositInflow,
           depositInterestPaid: accum.depositInterestPaid,
           depositPrincipalReturned: accum.depositPrincipalReturned,
-          salaryPaid: BANK_SALARY_PER_CYCLE,
+          salaryPaid,
           eventCapitalDelta,
-          netChange: Math.round(accumNet - BANK_SALARY_PER_CYCLE + eventCapitalDelta)
+          netChange: Math.round(accumNet - salaryPaid + eventCapitalDelta)
         },
         accum: { creditIncome: 0, newLoansIssued: 0, principalRepaid: 0, tradingPnl: 0, cardIncome: 0, cardCreditIncome: 0, depositInflow: 0, depositInterestPaid: 0, depositPrincipalReturned: 0 },
         isPublic,
@@ -5447,7 +5743,7 @@ function MarketSandbox() {
       if (panicPost) { pushPost({ text: panicPost, positive: false, isMacro: false, importance: 3 }); nudgeSentiment(-3); }
       if (equityCriticalPost) { pushPost({ text: equityCriticalPost, positive: false, isMacro: false, importance: 3 }); nudgeSentiment(-3); }
       if (nplPost) { pushPost({ text: nplPost, positive: false, isMacro: false, importance: 2 }); nudgeSentiment(-1.5); }
-      const cycleNet = Math.round(accumNet - BANK_SALARY_PER_CYCLE + eventCapitalDelta);
+      const cycleNet = Math.round(accumNet - salaryPaid + eventCapitalDelta);
       if (newCapital > (b.maxCapitalReached || 0) * 1.02) {
         pushPost({ text: `«${b.name}» показал рекордный капитал \xB7 ${fmt(Math.round(newCapital))}`, positive: true, isMacro: false, importance: 3 });
         nudgeSentiment(1.5);
@@ -5466,13 +5762,12 @@ function MarketSandbox() {
       const list = factoriesRef.current;
       const due = list.filter((f) => Date.now() >= f.nextTickAt);
       if (!due.length) return;
-      let ipCashDelta = 0;
       const updates = {};
       const closeIds = [];
       const posts = [];
       due.forEach((f) => {
         const line = FACTORY_LINES[f.line];
-        const available = ipCashRef.current + ipCashDelta;
+        const available = ipCashRef.current;
         let missedTicks = f.missedTicks;
         let paidCost;
         if (available >= line.upkeepPerCycle) {
@@ -5482,8 +5777,11 @@ function MarketSandbox() {
           paidCost = Math.max(0, available);
           missedTicks += 1;
         }
-        ipCashDelta -= paidCost;
-        if (paidCost > 0) logTx(`\u0420\u0430\u0441\u0445\u043E\u0434\u044B \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u0430 \xAB${f.name}\xBB (\u0430\u0440\u0435\u043D\u0434\u0430/\u0437\u0430\u0440\u043F\u043B\u0430\u0442\u0430)`, paidCost, "out");
+        if (paidCost > 0) {
+          const expense = settleIpExpense(paidCost, ECONOMY_ACCOUNTS.services, `Factory upkeep · ${f.name}`, { factoryId: f.id });
+          paidCost = expense ? expense.paidDollars : 0;
+          if (paidCost > 0) logTx(`\u0420\u0430\u0441\u0445\u043E\u0434\u044B \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u0430 \xAB${f.name}\xBB (\u0430\u0440\u0435\u043D\u0434\u0430/\u0437\u0430\u0440\u043F\u043B\u0430\u0442\u0430)`, paidCost, "out");
+        }
         if (missedTicks >= 3) {
           closeIds.push(f.id);
           posts.push({ text: `\u041F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u043E \xAB${f.name}\xBB \u0437\u0430\u043A\u0440\u044B\u043B\u043E\u0441\u044C \u2014 \u043D\u0435 \u043F\u043E\u0442\u044F\u043D\u0443\u043B\u043E \u0440\u0430\u0441\u0445\u043E\u0434\u044B`, positive: false, isMacro: false });
@@ -5491,7 +5789,6 @@ function MarketSandbox() {
         }
         updates[f.id] = { missedTicks, nextTickAt: Date.now() + FACTORY_CYCLE_MS };
       });
-      if (ipCashDelta !== 0) setIpCash((c) => Math.max(0, c + ipCashDelta));
       if (closeIds.length || Object.keys(updates).length) {
         setFactories((prev) => prev.filter((f) => !closeIds.includes(f.id)).map((f) => updates[f.id] ? { ...f, ...updates[f.id] } : f));
       }
@@ -5668,6 +5965,9 @@ function MarketSandbox() {
       if (changed) {
         setCorpLoans(next);
         if (bankIncome > 0) {
+          const repayment = settleOwnedBankRepayment(worldCoreRef.current, bankIncome, { product: "negotiated-corporate-loan" });
+          commitWorldCore(repayment.core);
+          bankIncome = Math.round(repayment.paidDollars);
           setBank((prev) => prev ? { ...prev, capital: prev.capital + bankIncome } : prev);
           logTx("\u0412\u044B\u043F\u043B\u0430\u0442\u0430 \u043F\u043E \u043A\u0440\u0435\u0434\u0438\u0442\u0443 \u043A\u043E\u043C\u043F\u0430\u043D\u0438\u0438", bankIncome, "in");
         }
@@ -5725,6 +6025,10 @@ function MarketSandbox() {
         notify(`\u0412 \u043F\u0443\u043B\u0435 \u043D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u043C\u043E\u043D\u0435\u0442 \u0434\u043B\u044F \u0432\u044B\u043A\u0443\u043F\u0430 \u2014 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E \u043C\u0430\u043A\u0441\u0438\u043C\u0443\u043C ${Math.floor(company.poolCoin).toLocaleString()} ${company.ticker}`, false);
         return;
       }
+      const settlementAccount = useIp ? "ip" : useGrey ? "grey" : useBank ? "bank" : account;
+      const cashSettlement = settleExchangeTrade(worldCoreRef.current, { legacyAccountId: settlementAccount, side: "buy", cashDollars: cost, reason: `Exchange buy ${company.ticker}`, meta: { companyId, qty } });
+      if (cashSettlement.paidDollars + 0.01 < cost) { notify("Недостаточно денег на реальном торговом счёте", false); return; }
+      commitWorldCore(cashSettlement.core);
       setCurCash((c) => c - cost);
       if (useBankCard) {
         setBankAccounts((prev) => prev[account] ? { ...prev, [account]: { ...prev[account], turnoverUsed: prev[account].turnoverUsed + cost, lifetimeTurnover: (prev[account].lifetimeTurnover || 0) + cost } } : prev);
@@ -5738,6 +6042,7 @@ function MarketSandbox() {
         return { ...h, [companyId]: { qty: newQty, avgCost: newAvg } };
       });
       applyImpact(companyId, impactPct);
+      setCompanies((prev) => prev.map((c) => c.id === companyId ? { ...c, marketFlow: Math.max(-0.008, Math.min(0.008, (c.marketFlow || 0) + Math.min(0.008, impactPct * 0.00008))) } : c));
       triggerMarketShock(company, impactPct, marketShockActorLabel({ useBank, useGrey, useIp, useBankCard }));
       if (isOwnCryptoPool) {
         // poolUsd растёт только на реально вложенные деньги (как в органическом давлении
@@ -5766,6 +6071,10 @@ function MarketSandbox() {
         notify(`\u041C\u0430\u043A\u0441\u0438\u043C\u0430\u043B\u044C\u043D\u043E \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E \u0437\u0430 \u043E\u0434\u0438\u043D \u0440\u0430\u0437: ${fmt(ownPoolMaxProceeds)} (~${Math.max(0, maxSellable).toLocaleString()} ${company.ticker}). \u041F\u0440\u043E\u0434\u0430\u0432\u0430\u0439\u0442\u0435 \u0447\u0430\u0441\u0442\u044F\u043C\u0438 \u2014 \u043F\u043E\u0441\u043B\u0435 \u043A\u0430\u0436\u0434\u043E\u0439 \u0441\u0434\u0435\u043B\u043A\u0438 \u043B\u0438\u043C\u0438\u0442 \u043F\u0435\u0440\u0435\u0441\u0447\u0438\u0442\u044B\u0432\u0430\u0435\u0442\u0441\u044F`, false);
         return;
       }
+      const settlementAccount = useIp ? "ip" : useGrey ? "grey" : useBank ? "bank" : account;
+      const cashSettlement = settleExchangeTrade(worldCoreRef.current, { legacyAccountId: settlementAccount, side: "sell", cashDollars: grossProceeds, reason: `Exchange sell ${company.ticker}`, meta: { companyId, qty } });
+      if (cashSettlement.paidDollars + 0.01 < grossProceeds) { notify("На рынке недостаточно встречной ликвидности", false); return; }
+      commitWorldCore(cashSettlement.core);
       setCurCash((c) => c + grossProceeds);
       setCurHoldings((h) => {
         const prevH = h[companyId];
@@ -5778,6 +6087,7 @@ function MarketSandbox() {
         return { ...h, [companyId]: { ...prevH, qty: newQty } };
       });
       applyImpact(companyId, -impactPct);
+      setCompanies((prev) => prev.map((c) => c.id === companyId ? { ...c, marketFlow: Math.max(-0.008, Math.min(0.008, (c.marketFlow || 0) - Math.min(0.008, impactPct * 0.00008))) } : c));
       triggerMarketShock(company, -impactPct, marketShockActorLabel({ useBank, useGrey, useIp, useBankCard }));
       if (isOwnCryptoPool) {
         // Симметрично покупке: poolUsd уменьшается на реально выплаченные деньги, а не
@@ -5965,7 +6275,7 @@ function MarketSandbox() {
       notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u2014 \u043D\u0443\u0436\u043D\u043E ${fmt(RESELL_TOTAL_STARTUP)}, \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E ${fmt(bal)}`);
       return;
     }
-    adjustAccountBalance(src, -RESELL_TOTAL_STARTUP);
+    if (!ledgerPay(src, RESELL_TOTAL_STARTUP, MONEY_ACCOUNTS.services, "Открытие магазина")) { notify("Не удалось оплатить открытие магазина"); return; }
     const newId = makeId("shop");
     setResellShops((prev) => [...prev, {
       id: newId,
@@ -5996,7 +6306,8 @@ function MarketSandbox() {
     const perf = companyPerfPct(companiesRef.current, compTicker);
     const compMult = Math.max(0.9, Math.min(1.1, 1 + perf / 600));
     const pricePerUnit = Math.round(unitCost * marginMult * compMult * 100) / 100;
-    const volume = Math.round(20 + Math.random() * 130);
+    const demandScale = Math.max(0.6, Math.min(1.8, Math.sqrt(worldDemandFactor(worldCoreRef.current, demandIndexRef.current || 1))));
+    const volume = Math.round((20 + Math.random() * 130) * demandScale);
     return {
       id: makeId("forder"),
       buyerName: FACTORY_BUYER_NAMES[Math.floor(Math.random() * FACTORY_BUYER_NAMES.length)],
@@ -6016,7 +6327,7 @@ function MarketSandbox() {
       notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u2014 \u043D\u0443\u0436\u043D\u043E ${fmt(totalCost)}, \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E ${fmt(bal)}`);
       return;
     }
-    adjustAccountBalance(src, -totalCost);
+    if (!ledgerPay(src, totalCost, MONEY_ACCOUNTS.services, "Открытие производства")) { notify("Не удалось оплатить открытие производства"); return; }
     const newId = makeId("factory");
     setFactories((prev) => [...prev, {
       id: newId,
@@ -6087,7 +6398,7 @@ function MarketSandbox() {
       notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u043D\u0430 \u0418\u041F \u2014 \u043D\u0443\u0436\u043D\u043E ${fmt(cost)}`);
       return;
     }
-    setIpCash((c) => c - cost);
+    if (!ledgerPay("ip", cost, MONEY_ACCOUNTS.services, "Оборудование производства")) return;
     setFactories((prev) => prev.map((f) => f.id === factoryId ? { ...f, equipmentLevel: nextLevel } : f));
     logTx(`\u041E\u0431\u043E\u0440\u0443\u0434\u043E\u0432\u0430\u043D\u0438\u0435 \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u0430 \xAB${factory.name}\xBB \xB7 \u0443\u0440\u043E\u0432\u0435\u043D\u044C ${nextLevel}`, cost, "out");
     setTimeout(saveGame, 50);
@@ -6104,7 +6415,7 @@ function MarketSandbox() {
       notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u2014 \u043D\u0443\u0436\u043D\u043E ${fmt(delta)}`);
       return;
     }
-    adjustAccountBalance(src, -delta);
+    if (!ledgerPay(src, delta, MONEY_ACCOUNTS.services, "Расширение производства")) return;
     setFactories((prev) => prev.map((f) => f.id === factoryId ? { ...f, line: "large50" } : f));
     logTx(`\u041F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u043E: \u0440\u0430\u0441\u0448\u0438\u0440\u0435\u043D\u0438\u0435 \u0434\u043E \xAB${to.name}\xBB \xB7 ${factory.name}`, delta, "out");
     setTimeout(saveGame, 50);
@@ -6117,16 +6428,21 @@ function MarketSandbox() {
       if (order.expiresAt <= Date.now()) return;
       if (factory.stock < order.volume) return;
       const revenue = Math.round(order.pricePerUnit * order.volume);
-      setIpCash((c) => c + revenue);
-      setQuarterRevenue((r) => r + revenue);
+      const settlement = settleB2BToIp(revenue, `Factory order · ${factory.name}`, { factoryId, orderId, volume: order.volume });
+      if (!settlement || settlement.paidDollars < revenue) {
+        notify("Покупатель не смог полностью оплатить заказ");
+        return;
+      }
+      const paidRevenue = settlement.paidDollars;
+      setQuarterRevenue((r) => r + paidRevenue);
       setFactories((prev) => prev.map((f) => f.id === factoryId ? {
         ...f,
         stock: f.stock - order.volume,
-        totalRevenue: f.totalRevenue + revenue,
+        totalRevenue: f.totalRevenue + paidRevenue,
         ordersFulfilled: f.ordersFulfilled + 1,
         pendingOrders: f.pendingOrders.filter((o) => o.id !== orderId)
       } : f));
-      logTx(`\u041F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u043E \xAB${factory.name}\xBB: \u0437\u0430\u044F\u0432\u043A\u0430 \u043F\u0440\u0438\u043D\u044F\u0442\u0430 (${order.volume} \u0448\u0442)`, revenue, "in");
+      logTx(`\u041F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u043E \xAB${factory.name}\xBB: \u0437\u0430\u044F\u0432\u043A\u0430 \u043F\u0440\u0438\u043D\u044F\u0442\u0430 (${order.volume} \u0448\u0442)`, paidRevenue, "in");
     } else {
       setFactories((prev) => prev.map((f) => f.id === factoryId ? { ...f, ordersDeclined: f.ordersDeclined + 1, pendingOrders: f.pendingOrders.filter((o) => o.id !== orderId) } : f));
     }
@@ -6153,7 +6469,7 @@ function MarketSandbox() {
       notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u043D\u0430 \u043B\u043E\u0433\u0438\u0441\u0442\u0438\u043A\u0443 \u2014 \u043D\u0443\u0436\u043D\u043E ${fmt(logisticsCost)}`);
       return;
     }
-    adjustAccountBalance(src, -logisticsCost);
+    if (!ledgerPay(src, logisticsCost, MONEY_ACCOUNTS.services, "Логистика производства → магазин")) return;
     setFactories((prev) => prev.map((f) => f.id === factoryId ? { ...f, stock: f.stock - qty, totalTransferredToShop: (f.totalTransferredToShop || 0) + qty } : f));
     setResellShops((prev) => prev.map((s) => {
       if (s.id !== shopId) return s;
@@ -6174,7 +6490,7 @@ function MarketSandbox() {
       notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u2014 \u043D\u0443\u0436\u043D\u043E ${fmt(tier.openingCost)}`);
       return;
     }
-    adjustAccountBalance(src, -tier.openingCost);
+    if (!ledgerPay(src, tier.openingCost, MONEY_ACCOUNTS.services, "Открытие склада")) { notify("Не удалось оплатить открытие склада"); return; }
     const newId = makeId("warehouse");
     setWarehouses((prev) => [...prev, {
       id: newId,
@@ -6224,7 +6540,7 @@ function MarketSandbox() {
       notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u043D\u0430 \u0418\u041F \u2014 \u043D\u0443\u0436\u043D\u043E ${fmt(tier.transportBuyCost)}`);
       return;
     }
-    setIpCash((c) => c >= tier.transportBuyCost ? c - tier.transportBuyCost : c);
+    if (!ledgerPay("ip", tier.transportBuyCost, MONEY_ACCOUNTS.services, "Транспорт склада")) return;
     setWarehouses((prev) => prev.map((w) => w.id === warehouseId && w.transportLevel < tier.maxTransport ? { ...w, transportLevel: (w.transportLevel || 0) + 1 } : w));
     logTx(`\u0421\u043A\u043B\u0430\u0434 ZZONE: \u0442\u0440\u0430\u043D\u0441\u043F\u043E\u0440\u0442 \xB7 ${wh.name}`, tier.transportBuyCost, "out");
     setTimeout(saveGame, 50);
@@ -6238,7 +6554,7 @@ function MarketSandbox() {
       notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u043D\u0430 \u0418\u041F \u2014 \u043D\u0443\u0436\u043D\u043E ${fmt(tier.equipmentBuyCost)}`);
       return;
     }
-    setIpCash((c) => c >= tier.equipmentBuyCost ? c - tier.equipmentBuyCost : c);
+    if (!ledgerPay("ip", tier.equipmentBuyCost, MONEY_ACCOUNTS.services, "Оборудование склада")) return;
     setWarehouses((prev) => prev.map((w) => w.id === warehouseId && w.equipmentLevel < tier.maxEquipment ? { ...w, equipmentLevel: (w.equipmentLevel || 0) + 1 } : w));
     logTx(`\u0421\u043A\u043B\u0430\u0434 ZZONE: \u043E\u0431\u043E\u0440\u0443\u0434\u043E\u0432\u0430\u043D\u0438\u0435 \xB7 ${wh.name}`, tier.equipmentBuyCost, "out");
     setTimeout(saveGame, 50);
@@ -6251,28 +6567,33 @@ function MarketSandbox() {
       notify("\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u043D\u0430 \u0418\u041F \u0434\u043B\u044F \u0432\u044B\u043F\u043B\u0430\u0442\u044B \u0437\u0430\u0440\u043F\u043B\u0430\u0442\u044B \u0441\u043A\u043B\u0430\u0434\u0430");
       return;
     }
-    setIpCash((c) => c - paid);
-    setWarehouses((prev) => prev.map((w) => w.id === warehouseId ? { ...w, wageDue: Math.round((w.wageDue - paid) * 100) / 100 } : w));
-    logTx(`\u0417\u0430\u0440\u043F\u043B\u0430\u0442\u0430 \u0441\u043A\u043B\u0430\u0434\u0430 ZZONE \xB7 ${wh.name}`, paid, "out");
+    const settlement = settleIpExpense(paid, ECONOMY_ACCOUNTS.households, `Warehouse payroll · ${wh.name}`, { warehouseId });
+    const actuallyPaid = settlement?.paidDollars || 0;
+    if (actuallyPaid <= 0) return;
+    setWarehouses((prev) => prev.map((w) => w.id === warehouseId ? { ...w, wageDue: Math.round((w.wageDue - actuallyPaid) * 100) / 100 } : w));
+    logTx(`\u0417\u0430\u0440\u043F\u043B\u0430\u0442\u0430 \u0441\u043A\u043B\u0430\u0434\u0430 ZZONE \xB7 ${wh.name}`, actuallyPaid, "out");
     setTimeout(saveGame, 50);
   };
   const withdrawWarehousePayout = (warehouseId, destination) => {
     const wh = warehouses.find((w) => w.id === warehouseId);
     const amount = wh ? wh.payoutBalance || 0 : 0;
     if (!wh || amount <= 0) return;
-    if (destination === "ip") {
-      setIpCash((c) => c + amount);
-    } else {
+    if (destination !== "ip") {
       const acct = bankAccounts[destination];
       if (!acct || acct.frozen) {
         notify("\u0421\u0447\u0451\u0442-\u043F\u043E\u043B\u0443\u0447\u0430\u0442\u0435\u043B\u044C \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D \u0438\u043B\u0438 \u0437\u0430\u043C\u043E\u0440\u043E\u0436\u0435\u043D");
         return;
       }
-      setBankAccounts((prev) => prev[destination] ? { ...prev, [destination]: { ...prev[destination], balance: prev[destination].balance + amount } } : prev);
     }
-    setWarehouses((prev) => prev.map((w) => w.id === warehouseId ? { ...w, payoutBalance: 0 } : w));
+    const sourceAccount = businessLedgerId("warehouse", warehouseId);
+    const destinationAccount = ledgerIdForLegacyAccount(destination);
+    const movement = transferBusinessCash(worldCoreRef.current, { fromAccount: sourceAccount, toAccount: destinationAccount, amountDollars: amount, reason: `Warehouse payout · ${wh.name}`, meta: { warehouseId } });
+    if (!movement || movement.paidDollars <= 0) return;
+    commitWorldCore(movement.core);
+    syncLegacyAccountFromLedger(destination, movement.core);
+    setWarehouses((prev) => prev.map((w) => w.id === warehouseId ? { ...w, payoutBalance: Math.max(0, Math.round((w.payoutBalance - movement.paidDollars) * 100) / 100) } : w));
     const destLabel = destination === "ip" ? "\u0418\u041F" : BANK_ACCOUNTS.find((b) => b.id === destination)?.name || "\u043A\u0430\u0440\u0442\u0430";
-    logTx(`\u0412\u044B\u0432\u043E\u0434 \u0441\u043E \u0441\u0447\u0451\u0442\u0430 \u0441\u043A\u043B\u0430\u0434\u0430 ZZONE \xB7 ${wh.name} \u2192 ${destLabel}`, amount, "in");
+    logTx(`\u0412\u044B\u0432\u043E\u0434 \u0441\u043E \u0441\u0447\u0451\u0442\u0430 \u0441\u043A\u043B\u0430\u0434\u0430 ZZONE \xB7 ${wh.name} \u2192 ${destLabel}`, movement.paidDollars, "in");
     setTimeout(saveGame, 50);
   };
   const upgradeWarehouseTier = (warehouseId) => {
@@ -6287,7 +6608,7 @@ function MarketSandbox() {
       notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u2014 \u043D\u0443\u0436\u043D\u043E ${fmt(delta)}`);
       return;
     }
-    adjustAccountBalance(src, -delta);
+    if (!ledgerPay(src, delta, MONEY_ACCOUNTS.services, "Расширение склада")) return;
     setWarehouses((prev) => prev.map((w) => {
       if (w.id !== warehouseId) return w;
       const staffRatio = w.staffLevel / from.maxStaff;
@@ -6315,7 +6636,7 @@ function MarketSandbox() {
     const unitPrice = Math.round(supplier.pricePerUnit * category.priceMult * marketIndex * repPriceMult * supplierHealthPriceMult(supplierHealth) * 100) / 100;
     const totalCost = Math.round(unitPrice * qty);
     if (totalCost > ipCash) return;
-    setIpCash((c) => c - totalCost);
+    if (!ledgerPay("ip", totalCost, MONEY_ACCOUNTS.companies, "Закупка товара у поставщика")) return;
     const order = {
       id: makeId("ord"),
       supplierId,
@@ -6360,7 +6681,10 @@ function MarketSandbox() {
       notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u043D\u0430 \u0418\u041F \u2014 \u043D\u0443\u0436\u043D\u043E ${fmt(order.customsTax)}`);
       return;
     }
-    setIpCash((c) => c - order.customsTax);
+    if (!ledgerPay("ip", order.customsTax, MONEY_ACCOUNTS.treasury, "Растаможка заказа")) {
+      notify("Не удалось оплатить растаможку");
+      return;
+    }
     setResellShops((prev) => prev.map((s) => s.id === shopId ? foldOrderIntoShop(s, order) : s));
     logTx("\u0420\u0430\u0441\u0442\u0430\u043C\u043E\u0436\u043A\u0430 \u0437\u0430\u043A\u0430\u0437\u0430", order.customsTax, "out");
     setTimeout(saveGame, 50);
@@ -6383,7 +6707,10 @@ function MarketSandbox() {
       return;
     }
     const duration = AD_DURATIONS.find((d) => d.id === durationId) || AD_DURATIONS[1];
-    setIpCash((c) => c - budget);
+    if (!ledgerPay("ip", budget, MONEY_ACCOUNTS.services, "Рекламная кампания магазина")) {
+      notify("Не удалось оплатить рекламу");
+      return;
+    }
     const boostMult = computeAdBudgetMult(budget);
     setResellShops((prev) => prev.map((s) => s.id === shopId ? { ...s, ads: [...s.ads || [], { id: makeId("ad"), budget, boostMult, adUntil: Date.now() + duration.ms }] } : s));
     setTimeout(saveGame, 50);
@@ -6394,7 +6721,8 @@ function MarketSandbox() {
     const cats = shop.categories || {};
     const payout = Math.round(Object.values(cats).reduce((sum, c) => sum + c.stock * c.avgCost, 0) * 0.5);
     if (payout <= 0) return;
-    setIpCash((c) => c + payout);
+    const settlement = settleB2BToIp(payout, `Liquidation of shop stock · ${shop.name}`, { shopId });
+    if (!settlement || settlement.paidDollars <= 0) return;
     setResellShops((prev) => prev.map((s) => s.id === shopId ? { ...s, categories: emptyCategoryMap() } : s));
   };
   const closeResellShop = (shopId) => {
@@ -6415,8 +6743,10 @@ function MarketSandbox() {
     }
     setIpTransferError(null);
     const fee = Math.round(amt * 0.02);
-    setIpCash((c) => c - amt);
-    adjustAccountBalance(resolvedPayFrom, amt - fee);
+    if (!ledgerMove("ip", resolvedPayFrom, amt, "Перевод с ИП себе", { fee, feeTo: MONEY_ACCOUNTS.services })) {
+      setIpTransferError("Перевод не прошёл");
+      return;
+    }
     setIpTransferInput("");
     logTx("\u041F\u0435\u0440\u0435\u0432\u043E\u0434 \u0441 \u0418\u041F \u0441\u0435\u0431\u0435", amt - fee, "in");
     setTimeout(saveGame, 50);
@@ -6449,8 +6779,10 @@ function MarketSandbox() {
       return;
     }
     setIpTransferError(null);
-    adjustAccountBalance(src, -amt);
-    setIpCash((c) => c + amt);
+    if (!ledgerMove(src, "ip", amt, "Пополнение счёта ИП")) {
+      setIpTransferError("Перевод не прошёл");
+      return;
+    }
     setIpTransferInput("");
     logTx("\u041F\u043E\u043F\u043E\u043B\u043D\u0435\u043D\u0438\u0435 \u0441\u0447\u0451\u0442\u0430 \u0418\u041F", amt, "out");
     setTimeout(saveGame, 50);
@@ -6460,9 +6792,13 @@ function MarketSandbox() {
     if (onboarded) return;
     const bank = BANK_ACCOUNTS.find((b) => b.id === bankId);
     if (!bank) return;
+    if (!ledgerReceive(bankId, PLAYTEST_STARTING_CASH, MONEY_ACCOUNTS.treasury, "Стартовый капитал игрока", { onboarding: true })) {
+      notify("Не удалось создать стартовый счёт", false);
+      return;
+    }
     setBankAccounts((prev) => ({
       ...prev,
-      [bankId]: { balance: 1e3, cardLast4: String(Math.floor(1e3 + Math.random() * 9e3)), turnoverUsed: 0, turnoverResetAt: Date.now() + TURNOVER_RESET_MS, frozen: false, frozenUntil: null, openedAt: Date.now(), nextSavingsAt: Date.now() + bank.savingsIntervalMs, lifetimeTurnover: 0 }
+      [bankId]: { balance: PLAYTEST_STARTING_CASH, cardLast4: String(Math.floor(1e3 + Math.random() * 9e3)), turnoverUsed: 0, turnoverResetAt: Date.now() + TURNOVER_RESET_MS, frozen: false, frozenUntil: null, openedAt: Date.now(), nextSavingsAt: Date.now() + bank.savingsIntervalMs, lifetimeTurnover: 0 }
     }));
     setOnboarded(true);
     setTimeout(saveGame, 50);
@@ -6476,7 +6812,10 @@ function MarketSandbox() {
       notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u043D\u0430 \u043E\u0442\u043A\u0440\u044B\u0442\u0438\u0435 \u2014 \u043D\u0443\u0436\u043D\u043E ${fmt(bank.openingFee)}`);
       return;
     }
-    if (bank.openingFee > 0) adjustAccountBalance(src, -bank.openingFee);
+    if (bank.openingFee > 0 && !ledgerPay(src, bank.openingFee, MONEY_ACCOUNTS.services, `Открытие счёта · ${bank.name}`)) {
+      notify("Не удалось провести платёж за открытие счёта");
+      return;
+    }
     setBankAccounts((prev) => ({
       ...prev,
       [bankId]: { balance: 0, cardLast4: String(Math.floor(1e3 + Math.random() * 9e3)), turnoverUsed: 0, turnoverResetAt: Date.now() + TURNOVER_RESET_MS, frozen: false, frozenUntil: null, openedAt: Date.now(), nextSavingsAt: Date.now() + bank.savingsIntervalMs, lifetimeTurnover: 0 }
@@ -6503,7 +6842,11 @@ function MarketSandbox() {
     const limits = bankAccountLimits(bank, acct);
     const penaltyRate = acct.frozen ? 0.5 : acct.turnoverUsed >= limits.turnoverCap ? 0.2 : 0;
     const payout = Math.round(acct.balance * (1 - penaltyRate));
-    adjustAccountBalance(destAccountId, payout);
+    const penalty = Math.max(0, acct.balance - payout);
+    if (acct.balance > 0 && !ledgerMove(bankId, destAccountId, acct.balance, `Закрытие карты · ${bank.name}`, { fee: penalty, feeTo: MONEY_ACCOUNTS.services })) {
+      setBankFb(bankId, false, "Не удалось закрыть счёт: ошибка денежного контура");
+      return;
+    }
     setBankAccounts((prev) => {
       const next = { ...prev };
       delete next[bankId];
@@ -6533,8 +6876,10 @@ function MarketSandbox() {
       setBankFb(bankId, false, turnoverCheck.msg);
       return;
     }
-    adjustAccountBalance(src, -amt);
-    setBankAccounts((prev) => ({ ...prev, [bankId]: { ...prev[bankId], balance: prev[bankId].balance + amt } }));
+    if (!ledgerMove(src, bankId, amt, `Пополнение счёта · ${bank.name}`)) {
+      setBankFb(bankId, false, "Перевод не прошёл");
+      return;
+    }
     setBankTransferInputs((f) => ({ ...f, [bankId]: "" }));
     logTx(`\u041F\u043E\u043F\u043E\u043B\u043D\u0435\u043D\u0438\u0435 \u0441\u0447\u0451\u0442\u0430 \xB7 ${bank.name}`, amt, "out");
     setBankFb(bankId, true, `\u041F\u043E\u043F\u043E\u043B\u043D\u0435\u043D\u043E ${fmt(amt)}`);
@@ -6548,7 +6893,11 @@ function MarketSandbox() {
       return;
     }
     const now = Date.now();
-    setBankAccounts((prev) => prev.fed ? { ...prev, fed: { ...prev.fed, balance: prev.fed.balance - FED_PRO_COST, proActive: true, proNextChargeAt: now + FED_PRO_INTERVAL_MS, proTurnoverUsed: 0, proTurnoverResetAt: now + TURNOVER_RESET_MS } } : prev);
+    if (!ledgerPay("fed", FED_PRO_COST, MONEY_ACCOUNTS.services, "Fed Pro · подключение")) {
+      setBankFb("fed", false, "Не удалось списать стоимость Fed Pro");
+      return;
+    }
+    setBankAccounts((prev) => prev.fed ? { ...prev, fed: { ...prev.fed, proActive: true, proNextChargeAt: now + FED_PRO_INTERVAL_MS, proTurnoverUsed: 0, proTurnoverResetAt: now + TURNOVER_RESET_MS } } : prev);
     logTx("Fed Pro \xB7 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435", FED_PRO_COST, "out");
     setBankFb("fed", true, "Fed Pro \u0430\u043A\u0442\u0438\u0432\u0438\u0440\u043E\u0432\u0430\u043D \u2014 \u043B\u0438\u043C\u0438\u0442 \u043E\u0431\u043E\u0440\u043E\u0442\u0430 $1\u043C\u043B\u043D, \u043A\u043E\u043C\u0438\u0441\u0441\u0438\u044F 1%");
     setTimeout(saveGame, 50);
@@ -6591,14 +6940,11 @@ function MarketSandbox() {
         return;
       }
     }
-    setBankAccounts((prev) => ({ ...prev, [bankId]: { ...prev[bankId], balance: prev[bankId].balance - total, turnoverUsed: prev[bankId].turnoverUsed + amt, lifetimeTurnover: (prev[bankId].lifetimeTurnover || 0) + amt, proTurnoverUsed: isFedPro ? (prev[bankId].proTurnoverUsed || 0) + amt : prev[bankId].proTurnoverUsed } }));
-    if (dest === "ip") {
-      setIpCash((c) => c + amt);
-    } else if (dest === "grey") {
-      setGreyAccount((a) => a ? { ...a, balance: a.balance + amt } : a);
-    } else {
-      setBankAccounts((prev) => prev[dest] ? { ...prev, [dest]: { ...prev[dest], balance: prev[dest].balance + amt } } : prev);
+    if (!ledgerMove(bankId, dest, total, `Перевод из ${bank.name}`, { fee, feeTo: MONEY_ACCOUNTS.services })) {
+      setBankFb(bankId, false, "Перевод не прошёл");
+      return;
     }
+    setBankAccounts((prev) => ({ ...prev, [bankId]: { ...prev[bankId], turnoverUsed: prev[bankId].turnoverUsed + amt, lifetimeTurnover: (prev[bankId].lifetimeTurnover || 0) + amt, proTurnoverUsed: isFedPro ? (prev[bankId].proTurnoverUsed || 0) + amt : prev[bankId].proTurnoverUsed } }));
     logTx(`\u041F\u0435\u0440\u0435\u0432\u043E\u0434 \u0438\u0437 ${bank.name}${fee > 0 ? ` (\u043A\u043E\u043C\u0438\u0441\u0441\u0438\u044F ${fmt(fee)})` : ""}`, total, "out");
     if (!isFedPro) {
       const nearLimit = amt >= limits.singleLimit * 0.85 && amt <= limits.singleLimit * 1.05;
@@ -6620,7 +6966,10 @@ function MarketSandbox() {
       notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u043D\u0430 \u043E\u0442\u043A\u0440\u044B\u0442\u0438\u0435 \u2014 \u043D\u0443\u0436\u043D\u043E ${fmt(GREY_BANK.openingFee)}`);
       return;
     }
-    adjustAccountBalance(src, -GREY_BANK.openingFee);
+    if (!ledgerPay(src, GREY_BANK.openingFee, MONEY_ACCOUNTS.services, "Открытие офшорного счёта · Meridian")) {
+      notify("Не удалось провести платёж за открытие счёта");
+      return;
+    }
     setGreyAccount({ balance: 0, cardLast4: String(Math.floor(1e3 + Math.random() * 9e3)), pendingTransfers: [], lifetimeInflow: 0, frozen: false, frozenUntil: null, nextSavingsAt: Date.now() + GREY_BANK.savingsIntervalMs });
     logTx("\u041E\u0442\u043A\u0440\u044B\u0442\u0438\u0435 \u043E\u0444\u0448\u043E\u0440\u043D\u043E\u0433\u043E \u0441\u0447\u0451\u0442\u0430 \xB7 Meridian", GREY_BANK.openingFee, "out");
     setTimeout(saveGame, 50);
@@ -6632,7 +6981,8 @@ function MarketSandbox() {
     if (!greyAccount || greyAccount.frozen || !amt || amt <= 0 || amt > bal) return;
     const fee = Math.round(amt * GREY_BANK.transferFee);
     const net = amt - fee;
-    adjustAccountBalance(src, -amt);
+    if (fee > 0 && !ledgerPay(src, fee, MONEY_ACCOUNTS.services, "Meridian · комиссия за входящий перевод")) return;
+    if (net > 0 && !ledgerPay(src, net, MONEY_ACCOUNTS.clearing, "Перевод в Meridian · в обработке", { net })) return;
     const arrivesAt = Date.now() + GREY_BANK.transferDelayMs;
     setGreyAccount((prev) => ({
       ...prev,
@@ -6667,11 +7017,9 @@ function MarketSandbox() {
       setGreyFeedback({ ok: false, msg: "\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u043D\u0430 \u0441\u0447\u0451\u0442\u0435 \u0441 \u0443\u0447\u0451\u0442\u043E\u043C \u043A\u043E\u043C\u0438\u0441\u0441\u0438\u0438" });
       return;
     }
-    setGreyAccount((prev) => ({ ...prev, balance: prev.balance - total }));
-    if (dest === "ip") {
-      setIpCash((c) => c + amt);
-    } else {
-      setBankAccounts((prev) => prev[dest] ? { ...prev, [dest]: { ...prev[dest], balance: prev[dest].balance + amt } } : prev);
+    if (!ledgerMove("grey", dest, total, "Перевод из Meridian Offshore", { fee, feeTo: MONEY_ACCOUNTS.services })) {
+      setGreyFeedback({ ok: false, msg: "Перевод не прошёл" });
+      return;
     }
     logTx(`\u041F\u0435\u0440\u0435\u0432\u043E\u0434 \u0438\u0437 Meridian Offshore (\u043A\u043E\u043C\u0438\u0441\u0441\u0438\u044F ${fmt(fee)})`, total, "out");
     setGreyTransferInput("");
@@ -6690,8 +7038,10 @@ function MarketSandbox() {
         return;
       }
       const fee = Math.round(amt * 0.02);
-      setIpCash((c) => c - amt);
-      adjustAccountBalance(toId, amt - fee);
+      if (!ledgerMove("ip", toId, amt, "Перевод с ИП", { fee, feeTo: MONEY_ACCOUNTS.services })) {
+        setXferFeedback({ ok: false, msg: "Перевод не прошёл" });
+        return;
+      }
       logTx("\u041F\u0435\u0440\u0435\u0432\u043E\u0434 \u0441 \u0418\u041F", amt - fee, "in");
     } else if (fromId === "grey") {
       withdrawFromGrey(amt, toId);
@@ -6700,7 +7050,12 @@ function MarketSandbox() {
     }
     setXferFeedback({ ok: true, msg: "\u041F\u0435\u0440\u0435\u0432\u043E\u0434 \u043E\u0442\u043F\u0440\u0430\u0432\u043B\u0435\u043D" });
   };
-  const getAccountBalance = (accountId) => accountId === "grey" ? greyAccount?.balance || 0 : accountId === "ip" ? ipCash : accountId === "bank" ? (bankRef.current?.capital || 0) : muleCards[accountId] ? muleCards[accountId].balance || 0 : fakeIps[accountId] ? fakeIps[accountId].cash || 0 : bankAccounts[accountId]?.balance || 0;
+  const getAccountBalance = (accountId) => {
+    const ledgerValue = balanceForLegacyAccount(worldCoreRef.current, accountId);
+    const hasLegacyVisibleAccount = accountId === "ip" || accountId === "bank" || accountId === "grey" || !!muleCardsRef.current[accountId] || !!fakeIpsRef.current[accountId] || !!bankAccountsRef.current[accountId];
+    if (hasLegacyVisibleAccount) return ledgerValue;
+    return 0;
+  };
   const effectiveItemPrice = (item) => Math.round(item.price * (propertyMarketIndex[item.category] || 1));
   const totalPropertyCollateralValue = () => Object.entries(ownedItems).reduce((sum, [itemId, qty]) => {
     const item = SHOP_ITEMS.find((i) => i.id === itemId);
@@ -6715,27 +7070,11 @@ function MarketSandbox() {
     return sum + (item && item.ratingBonus ? item.ratingBonus * Math.min(qty, 1) : 0);
   }, 0));
   const adjustAccountBalance = (accountId, delta) => {
-    if (accountId === "grey") {
-      setGreyAccount((a) => a ? { ...a, balance: a.balance + delta } : a);
-      return;
-    }
-    if (accountId === "ip") {
-      setIpCash((c) => c + delta);
-      return;
-    }
-    if (accountId === "bank") {
-      setBank((prev) => prev ? { ...prev, capital: prev.capital + delta } : prev);
-      return;
-    }
-    if (muleCards[accountId]) {
-      setMuleCards((prev) => prev[accountId] ? { ...prev, [accountId]: { ...prev[accountId], balance: prev[accountId].balance + delta } } : prev);
-      return;
-    }
-    if (fakeIps[accountId]) {
-      setFakeIps((prev) => prev[accountId] ? { ...prev, [accountId]: { ...prev[accountId], cash: prev[accountId].cash + delta } } : prev);
-      return;
-    }
-    setBankAccounts((prev) => prev[accountId] ? { ...prev, [accountId]: { ...prev[accountId], balance: prev[accountId].balance + delta } } : prev);
+    const amount = Math.abs(Number(delta) || 0);
+    if (!amount) return true;
+    return delta > 0
+      ? ledgerReceive(accountId, amount, MONEY_ACCOUNTS.clearing, "Legacy external credit", { stage: 2 })
+      : ledgerPay(accountId, amount, MONEY_ACCOUNTS.clearing, "Legacy external debit", { stage: 2 });
   };
   const tenderTrackBonus = () => Math.min(8, tenderTrackRecord.completed * 1.5);
   const maxActiveTenders = () => {
@@ -6976,7 +7315,8 @@ function MarketSandbox() {
       if (muleCard.frozen) return;
       const bank = BANK_ACCOUNTS.find((b) => b.id === muleCard.bankId);
       const isSmall = !!bank && amount <= bank.singleLimit * 0.15;
-      setMuleCards((prev) => prev[accountId] ? { ...prev, [accountId]: { ...prev[accountId], balance: prev[accountId].balance + amount, warmth: Math.min(100, prev[accountId].warmth + (isSmall ? MULE_WARMUP_SMALL_TX_GAIN : 0)) } } : prev);
+      if (!ledgerReceive(accountId, amount, MONEY_ACCOUNTS.clearing, "Чёрный рынок · входящий платёж")) return;
+      setMuleCards((prev) => prev[accountId] ? { ...prev, [accountId]: { ...prev[accountId], warmth: Math.min(100, prev[accountId].warmth + (isSmall ? MULE_WARMUP_SMALL_TX_GAIN : 0)) } } : prev);
       logTx("\u0427\u0451\u0440\u043D\u044B\u0439 \u0440\u044B\u043D\u043E\u043A: \u043F\u0440\u0438\u0451\u043C \u043F\u043B\u0430\u0442\u0435\u0436\u0430 \u043D\u0430 \u0447\u0443\u0436\u0443\u044E \u043A\u0430\u0440\u0442\u0443", amount, "in");
     } else {
       adjustAccountBalance(accountId, amount);
@@ -7060,7 +7400,7 @@ function MarketSandbox() {
       notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u2014 \u043D\u0443\u0436\u043D\u043E ${fmt(price)}`);
       return;
     }
-    adjustAccountBalance(src, -price);
+    if (!ledgerPay(src, price, MONEY_ACCOUNTS.services, `Чёрный рынок · покупка чужой карты ${bank.name}`)) return;
     const id = makeId("mule");
     setMuleCards((prev) => ({
       ...prev,
@@ -7078,9 +7418,8 @@ function MarketSandbox() {
     const amount = Math.min(Math.round(Number(amountRaw) || 0), mule.balance, maxByStock);
     if (amount <= 0) return;
     const qty = amount / cat.listedPrice;
-    setMuleCards((prev) => prev[muleId] ? { ...prev, [muleId]: { ...prev[muleId], balance: prev[muleId].balance - amount } } : prev);
+    if (!ledgerMove(muleId, "ip", amount, `Оплата в магазине · ${shop.name}`)) return;
     setResellShops((prev) => prev.map((s) => s.id === shopId ? { ...s, totalRevenue: s.totalRevenue + amount, categories: { ...s.categories, [categoryId]: { ...s.categories[categoryId], stock: Math.max(0, s.categories[categoryId].stock - qty) } } } : s));
-    setIpCash((c) => c + amount);
     setLaunderStats((prev) => ({ total: prev.total + amount, byMule: { ...prev.byMule, [muleId]: (prev.byMule[muleId] || 0) + 1 } }));
     logTx(`\u041E\u0431\u043D\u0430\u043B \u0447\u0435\u0440\u0435\u0437 \u043C\u0430\u0433\u0430\u0437\u0438\u043D \xB7 ${shop.name}`, amount, "in");
     setTimeout(saveGame, 50);
@@ -7111,6 +7450,8 @@ function MarketSandbox() {
     setLaunderStats((prev) => ({ total: Math.round(prev.total * 0.4), byMule: {} }));
   };
   const closeMuleCard = (muleId) => {
+    const card = muleCards[muleId];
+    if (card?.balance > 0 && !ledgerPay(muleId, card.balance, MONEY_ACCOUNTS.banks, "Закрытие чужой карты · остаток возвращён банку")) return;
     setMuleCards((prev) => {
       const rest = { ...prev };
       delete rest[muleId];
@@ -7144,8 +7485,8 @@ function MarketSandbox() {
     }
     const bank = BANK_ACCOUNTS.find((b) => b.id === card.bankId);
     const isSmall = amt <= bank.singleLimit * 0.15;
-    adjustAccountBalance(src, -amt);
-    setMuleCards((prev) => ({ ...prev, [muleId]: { ...prev[muleId], balance: prev[muleId].balance + amt, warmth: Math.min(100, prev[muleId].warmth + (isSmall ? MULE_WARMUP_SMALL_TX_GAIN : 0)) } }));
+    if (!ledgerMove(src, muleId, amt, `Пополнение чужой карты · ${bank.name}`)) return;
+    setMuleCards((prev) => ({ ...prev, [muleId]: { ...prev[muleId], warmth: Math.min(100, prev[muleId].warmth + (isSmall ? MULE_WARMUP_SMALL_TX_GAIN : 0)) } }));
     setMuleTransferInputs((f) => ({ ...f, [muleId]: "" }));
     logTx(`\u041F\u043E\u043F\u043E\u043B\u043D\u0435\u043D\u0438\u0435 \u043A\u0430\u0440\u0442\u044B \u043D\u0430 \u0447\u0443\u0436\u043E\u0435 \u0438\u043C\u044F \xB7 ${bank.name}`, amt, "out");
     setMuleFb(muleId, true, "\u041F\u043E\u043F\u043E\u043B\u043D\u0435\u043D\u043E");
@@ -7181,6 +7522,7 @@ function MarketSandbox() {
     if (!isSmall && card.warmth < MULE_WARMUP_TARGET) {
       const blockChance = (MULE_WARMUP_TARGET - card.warmth) / MULE_WARMUP_TARGET * Math.min(1, amt / bank.singleLimit) * 0.5;
       if (Math.random() < blockChance) {
+        if (card.balance > 0) ledgerPay(muleId, card.balance, MONEY_ACCOUNTS.banks, "Блокировка чужой карты · средства удержаны банком");
         setMuleCards((prev) => ({ ...prev, [muleId]: { ...prev[muleId], frozen: true, balance: 0 } }));
         pushPost({ text: `${bank.name} \u0437\u0430\u0431\u043B\u043E\u043A\u0438\u0440\u043E\u0432\u0430\u043B \u043A\u0430\u0440\u0442\u0443 \u043F\u043E 115-\u0424\u0417 \u2014 \u0437\u0430\u043F\u043E\u0434\u043E\u0437\u0440\u0438\u043B\u0438, \u0447\u0442\u043E \u043F\u043E\u043B\u044C\u0437\u0443\u0435\u0442\u0441\u044F \u043D\u0435 \u0432\u043B\u0430\u0434\u0435\u043B\u0435\u0446`, positive: false, isMacro: true });
         flagSuspicion(20);
@@ -7189,12 +7531,11 @@ function MarketSandbox() {
         return;
       }
     }
-    setMuleCards((prev) => ({ ...prev, [muleId]: { ...prev[muleId], balance: prev[muleId].balance - total, turnoverUsed: prev[muleId].turnoverUsed + amt, lifetimeTurnover: prev[muleId].lifetimeTurnover + amt, warmth: Math.min(100, prev[muleId].warmth + (isSmall ? MULE_WARMUP_SMALL_TX_GAIN : 0)) } }));
+    if (!ledgerMove(muleId, dest, total, `Перевод с чужой карты · ${bank.name}`, { fee, feeTo: MONEY_ACCOUNTS.services })) return;
+    setMuleCards((prev) => ({ ...prev, [muleId]: { ...prev[muleId], turnoverUsed: prev[muleId].turnoverUsed + amt, lifetimeTurnover: prev[muleId].lifetimeTurnover + amt, warmth: Math.min(100, prev[muleId].warmth + (isSmall ? MULE_WARMUP_SMALL_TX_GAIN : 0)) } }));
     if (dest === "ip") {
-      setIpCash((c) => c + amt);
       setQuarterRevenue((r) => r + amt);
-    } else if (dest === "grey") setGreyAccount((a) => a ? { ...a, balance: a.balance + amt } : a);
-    else setBankAccounts((prev) => prev[dest] ? { ...prev, [dest]: { ...prev[dest], balance: prev[dest].balance + amt, turnoverUsed: prev[dest].turnoverUsed + amt, lifetimeTurnover: (prev[dest].lifetimeTurnover || 0) + amt } } : prev);
+    } else if (dest !== "grey") setBankAccounts((prev) => prev[dest] ? { ...prev, [dest]: { ...prev[dest], turnoverUsed: prev[dest].turnoverUsed + amt, lifetimeTurnover: (prev[dest].lifetimeTurnover || 0) + amt } } : prev);
     logTx(`\u041E\u0431\u043D\u0430\u043B\u0438\u0447\u043A\u0430 \u0441 \u0447\u0443\u0436\u043E\u0439 \u043A\u0430\u0440\u0442\u044B \xB7 ${bank.name}${fee > 0 ? ` (\u043A\u043E\u043C\u0438\u0441\u0441\u0438\u044F ${fmt(fee)})` : ""}`, total, "out");
     setMuleTransferInputs((f) => ({ ...f, [muleId]: "" }));
     setMuleFb(muleId, true, `\u041F\u0435\u0440\u0435\u0432\u0435\u0434\u0435\u043D\u043E ${fmt(amt)}${fee > 0 ? `, \u043A\u043E\u043C\u0438\u0441\u0441\u0438\u044F ${fmt(fee)}` : ""}`);
@@ -7210,7 +7551,7 @@ function MarketSandbox() {
       notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u2014 \u043D\u0443\u0436\u043D\u043E ${fmt(FAKE_IP_PRICE)}`);
       return;
     }
-    adjustAccountBalance(src, -FAKE_IP_PRICE);
+    if (!ledgerPay(src, FAKE_IP_PRICE, MONEY_ACCOUNTS.services, "Чёрный рынок · покупка чужого ИП")) return;
     const id = makeId("fakeip");
     setFakeIps((prev) => ({
       ...prev,
@@ -7238,8 +7579,7 @@ function MarketSandbox() {
       setFakeIpFb(fakeId, false, turnoverCheck.msg);
       return;
     }
-    adjustAccountBalance(src, -amt);
-    setFakeIps((prev) => prev[fakeId] ? { ...prev, [fakeId]: { ...prev[fakeId], cash: prev[fakeId].cash + amt } } : prev);
+    if (!ledgerMove(src, fakeId, amt, "Пополнение чужого ИП")) return;
     setFakeIpTransferInputs((f) => ({ ...f, [fakeId]: "" }));
     logTx("\u041F\u043E\u043F\u043E\u043B\u043D\u0435\u043D\u0438\u0435 \u0447\u0443\u0436\u043E\u0433\u043E \u0418\u041F", amt, "out");
     setFakeIpFb(fakeId, true, `\u041F\u043E\u043F\u043E\u043B\u043D\u0435\u043D\u043E ${fmt(amt)}`);
@@ -7258,8 +7598,7 @@ function MarketSandbox() {
       return;
     }
     const fee = Math.round(amt * 0.02);
-    setFakeIps((prev) => prev[fakeId] ? { ...prev, [fakeId]: { ...prev[fakeId], cash: prev[fakeId].cash - amt } } : prev);
-    adjustAccountBalance(resolvedPayFrom, amt - fee);
+    if (!ledgerMove(fakeId, resolvedPayFrom, amt, "Вывод с чужого ИП", { fee, feeTo: MONEY_ACCOUNTS.services })) return;
     setFakeIpTransferInputs((f) => ({ ...f, [fakeId]: "" }));
     logTx("\u0412\u044B\u0432\u043E\u0434 \u0441 \u0447\u0443\u0436\u043E\u0433\u043E \u0418\u041F", amt - fee, "in");
     setFakeIpFb(fakeId, true, `\u0412\u044B\u0432\u0435\u0434\u0435\u043D\u043E ${fmt(amt - fee)} (\u043A\u043E\u043C\u0438\u0441\u0441\u0438\u044F ${fmt(fee)})`);
@@ -7270,7 +7609,8 @@ function MarketSandbox() {
     if (!entity) return;
     const amount = Math.min(Number(amountRaw) || entity.taxOwed, entity.cash, entity.taxOwed);
     if (amount <= 0) return;
-    setFakeIps((prev) => prev[fakeId] ? { ...prev, [fakeId]: { ...prev[fakeId], cash: prev[fakeId].cash - amount, taxOwed: Number((prev[fakeId].taxOwed - amount).toFixed(2)) } } : prev);
+    if (!ledgerPay(fakeId, amount, MONEY_ACCOUNTS.treasury, "Налоги чужого ИП")) return;
+    setFakeIps((prev) => prev[fakeId] ? { ...prev, [fakeId]: { ...prev[fakeId], taxOwed: Number((prev[fakeId].taxOwed - amount).toFixed(2)) } } : prev);
     addGovTaxIn(amount);
     logTx("\u041D\u0430\u043B\u043E\u0433\u0438 \u0447\u0443\u0436\u043E\u0433\u043E \u0418\u041F", amount, "out");
     setTimeout(saveGame, 50);
@@ -7282,7 +7622,8 @@ function MarketSandbox() {
       notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u2014 \u043D\u0443\u0436\u043D\u043E ${fmt(OOO_CONVERSION_FEE)}`);
       return;
     }
-    setFakeIps((prev) => prev[fakeId] ? { ...prev, [fakeId]: { ...prev[fakeId], entityType: "ooo", cash: prev[fakeId].cash - OOO_CONVERSION_FEE } } : prev);
+    if (!ledgerPay(fakeId, OOO_CONVERSION_FEE, MONEY_ACCOUNTS.treasury, "Регистрация чужого ООО")) return;
+    setFakeIps((prev) => prev[fakeId] ? { ...prev, [fakeId]: { ...prev[fakeId], entityType: "ooo" } } : prev);
     logTx("\u041F\u0435\u0440\u0435\u0432\u043E\u0434 \u0447\u0443\u0436\u043E\u0433\u043E \u0418\u041F \u0432 \u041E\u041E\u041E", OOO_CONVERSION_FEE, "out");
     setTimeout(saveGame, 50);
   };
@@ -7342,7 +7683,10 @@ function MarketSandbox() {
         notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u043D\u0430 \u0441\u0447\u0451\u0442\u0435 \u0431\u0430\u043D\u043A\u0430 \u2014 \u043D\u0443\u0436\u043D\u043E ${fmt(d.tax)}`);
         return;
       }
-      setBank((prev) => prev ? { ...prev, capital: prev.capital - d.tax } : prev);
+      if (!ledgerPay("bank", d.tax, MONEY_ACCOUNTS.treasury, "Налоговая декларация банка")) {
+        notify("Не удалось оплатить налог банка");
+        return;
+      }
       addGovTaxIn(d.tax);
       setDeclarations((prev) => prev.map((x) => x.id === declId ? { ...x, paid: true } : x));
       setTimeout(saveGame, 50);
@@ -7352,7 +7696,10 @@ function MarketSandbox() {
       notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u043D\u0430 \u0418\u041F \u2014 \u043D\u0443\u0436\u043D\u043E ${fmt(d.tax)}`);
       return;
     }
-    setIpCash((c) => c - d.tax);
+    if (!ledgerPay("ip", d.tax, MONEY_ACCOUNTS.treasury, "Налоговая декларация ИП/ООО")) {
+      notify("Не удалось оплатить налог");
+      return;
+    }
     addGovTaxIn(d.tax);
     setDeclarations((prev) => prev.map((x) => x.id === declId ? { ...x, paid: true } : x));
     setTimeout(saveGame, 50);
@@ -7640,7 +7987,11 @@ function MarketSandbox() {
     const { eligible, largeWarehouses, qualifyingShop, totalCost } = marketplaceEligibility();
     if (!eligible) return;
     const chosenWarehouseIds = largeWarehouses.slice(0, 2).map((w) => w.id);
-    setIpCash((c) => c - totalCost);
+    const marketplaceSetupPayment = settleIpExpense(totalCost, ECONOMY_ACCOUNTS.services, "Marketplace setup", { kind: "marketplace" });
+    if (!marketplaceSetupPayment || marketplaceSetupPayment.paidDollars + 0.01 < totalCost) {
+      notify("Не удалось оплатить запуск маркетплейса");
+      return;
+    }
     logTx("\u041C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441 \xB7 \u043F\u043E\u0434\u0433\u043E\u0442\u043E\u0432\u043A\u0430 \u043A IPO", MARKETPLACE_IPO_PREP_COST, "out");
     logTx("\u041C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441 \xB7 \u0440\u0430\u0437\u0440\u0430\u0431\u043E\u0442\u043A\u0430 \u043F\u043B\u0430\u0442\u0444\u043E\u0440\u043C\u044B", MARKETPLACE_PLATFORM_COST, "out");
     setWarehouses((prev) => prev.map((w) => chosenWarehouseIds.includes(w.id) ? { ...w, assignedToMarketplace: true } : w));
@@ -7715,7 +8066,8 @@ function MarketSandbox() {
       const c = companies.find((x) => x.id === cid);
       return s + (c ? c.price * h.qty : 0);
     }, 0);
-    setIpCash((c) => c - totalCost);
+    if (!ledgerPay("ip", BANK_OPEN_COST, ECONOMY_ACCOUNTS.services, "Открытие банка")) { notify("Не удалось оплатить открытие банка"); return; }
+    if (!ledgerMove("ip", "bank", BANK_MIN_CAPITAL, "Капитал банка")) { notify("Не удалось внести капитал банка"); return; }
     logTx("Открытие банка", BANK_OPEN_COST, "out");
     logTx("Капитал банка", BANK_MIN_CAPITAL, "out");
     if (Object.keys(transferredHoldings).length > 0) {
@@ -7854,8 +8206,14 @@ function MarketSandbox() {
     if (!b || !t) return;
     const owed = Math.max(0, Math.round(Math.max(0, t.pnlTotal || 0) * bankTraderCommission() - (t.commissionPaid || 0)));
     if (owed <= 0 || owed > b.capital) return;
-    setBank((prev) => prev ? { ...prev, capital: prev.capital - owed, traders: prev.traders.map((x) => x.id === traderId ? { ...x, commissionPaid: (x.commissionPaid || 0) + owed } : x) } : prev);
-    logTx(`Выплата трейдеру \xB7 ${t.name}`, owed, "out");
+    const traderPayment = settleOwnedBankExpense(worldCoreRef.current, owed, ECONOMY_ACCOUNTS.households, "Bank trader commission", { traderId });
+    if (traderPayment.paidDollars + 0.01 < owed) {
+      notify("На реальном счёте банка недостаточно денег для выплаты", false);
+      return;
+    }
+    commitWorldCore(traderPayment.core);
+    setBank((prev) => prev ? { ...prev, capital: prev.capital - traderPayment.paidDollars, traders: prev.traders.map((x) => x.id === traderId ? { ...x, commissionPaid: (x.commissionPaid || 0) + traderPayment.paidDollars } : x) } : prev);
+    logTx(`Выплата трейдеру · ${t.name}`, traderPayment.paidDollars, "out");
     setTimeout(saveGame, 50);
   };
   const fireBankTrader = (traderId) => {
@@ -7870,8 +8228,7 @@ function MarketSandbox() {
     const b = bankRef.current;
     const amt = Math.round(Number(amount) || 0);
     if (!b || amt <= 0 || amt > b.capital) return;
-    setBank((prev) => prev ? { ...prev, capital: prev.capital - amt } : prev);
-    setIpCash((c) => c + amt);
+    if (!ledgerMove("bank", "ip", amt, "Вывод капитала банка · на ИП")) return;
     logTx("Вывод из банка \xB7 на ИП", amt, "in");
     setTimeout(saveGame, 50);
   };
@@ -7879,8 +8236,7 @@ function MarketSandbox() {
     const b = bankRef.current;
     const amt = Math.round(Number(amount) || 0);
     if (!b || amt <= 0 || amt > ipCashRef.current) return;
-    setIpCash((c) => c - amt);
-    setBank((prev) => prev ? { ...prev, capital: prev.capital + amt } : prev);
+    if (!ledgerMove("ip", "bank", amt, "Внесение капитала в банк · с ИП")) return;
     logTx("Внесение на счёт банка \xB7 с ИП", amt, "out");
     setTimeout(saveGame, 50);
   };
@@ -7896,10 +8252,7 @@ function MarketSandbox() {
     const b = bankRef.current;
     const amt = Math.round(Number(amount) || 0);
     if (!b || amt <= 0 || amt > (b.depositReserve || 0)) return;
-    setBank((prev) => prev ? { ...prev, depositReserve: (prev.depositReserve || 0) - amt } : prev);
-    setIpCash((c) => c + amt);
-    logTx("Депозитный счёт \xB7 на ООО", amt, "out");
-    setTimeout(saveGame, 50);
+    notify("Вклады клиентов — обязательства банка. Их нельзя вывести владельцу как прибыль.", false);
   };
   const payDueDeposits = () => {
     const b = bankRef.current;
@@ -7917,6 +8270,12 @@ function MarketSandbox() {
       notify(`Невозможно выплатить \xB7 нужно ${fmt(paid)}, доступно ${fmt(b.capital)}`);
       return;
     }
+    const depositPayoutSettlement = settleOwnedBankDepositPayout(worldCoreRef.current, paid, { batch: true });
+    if (depositPayoutSettlement.paidDollars + 0.01 < paid) {
+      notify("На реальном счёте банка недостаточно ликвидности для выплаты", false);
+      return;
+    }
+    commitWorldCore(depositPayoutSettlement.core);
     let principalReturned = 0;
     const nextDeposits = [];
     deposits.forEach((d) => {
@@ -7985,12 +8344,19 @@ function MarketSandbox() {
       setTimeout(saveGame, 50);
       return;
     }
-    const totalDue = Math.round(offer.amount * (1 + proposedRatePct / 100));
+    const issueSettlement = settleOwnedBankLoanIssue(worldCoreRef.current, offer.amount, { product: "negotiated-corporate-loan", companyId: offer.companyId });
+    const issuedAmount = Math.round(issueSettlement.paidDollars);
+    if (issuedAmount + 0.01 < offer.amount) {
+      notify("На реальном счёте банка недостаточно ликвидности для выдачи", false);
+      return;
+    }
+    commitWorldCore(issueSettlement.core);
+    const totalDue = Math.round(issuedAmount * (1 + proposedRatePct / 100));
     const installmentAmount = Math.round(totalDue / CORP_LOAN_TERM_CYCLES);
-    setBank((prev) => prev ? { ...prev, capital: prev.capital - offer.amount } : prev);
-    setCorpLoans((prev) => [...prev, { id: makeId("corploan"), companyId: offer.companyId, ticker: offer.ticker, name: offer.name, principal: offer.amount, ratePct: proposedRatePct, riskTier: offer.riskTier, totalDue, installmentAmount, balance: totalDue, cyclesPaid: 0, nextPayoutAt: Date.now() + CORP_LOAN_CYCLE_MS, defaulted: false, createdAt: Date.now() }]);
-    logTx(`\u041A\u0440\u0435\u0434\u0438\u0442 \u043A\u043E\u043C\u043F\u0430\u043D\u0438\u0438 \xB7 ${offer.ticker}`, offer.amount, "out");
-    notify(`${offer.ticker} \u0441\u043E\u0433\u043B\u0430\u0441\u0438\u043B\u0430\u0441\u044C \u043D\u0430 ${proposedRatePct}% \u2014 \u0432\u044B\u0434\u0430\u043D\u043E ${fmt(offer.amount)}, \u043A \u0432\u043E\u0437\u0432\u0440\u0430\u0442\u0443 ${fmt(totalDue)}`, true);
+    setBank((prev) => prev ? { ...prev, capital: prev.capital - issuedAmount } : prev);
+    setCorpLoans((prev) => [...prev, { id: makeId("corploan"), companyId: offer.companyId, ticker: offer.ticker, name: offer.name, principal: issuedAmount, ratePct: proposedRatePct, riskTier: offer.riskTier, totalDue, installmentAmount, balance: totalDue, cyclesPaid: 0, nextPayoutAt: Date.now() + CORP_LOAN_CYCLE_MS, defaulted: false, createdAt: Date.now() }]);
+    logTx(`\u041A\u0440\u0435\u0434\u0438\u0442 \u043A\u043E\u043C\u043F\u0430\u043D\u0438\u0438 \xB7 ${offer.ticker}`, issuedAmount, "out");
+    notify(`${offer.ticker} \u0441\u043E\u0433\u043B\u0430\u0441\u0438\u043B\u0430\u0441\u044C \u043D\u0430 ${proposedRatePct}% \u2014 \u0432\u044B\u0434\u0430\u043D\u043E ${fmt(issuedAmount)}, \u043A \u0432\u043E\u0437\u0432\u0440\u0430\u0442\u0443 ${fmt(totalDue)}`, true);
     setTimeout(saveGame, 50);
   };
   const startBankIpo = () => {
@@ -8035,7 +8401,7 @@ function MarketSandbox() {
       return;
     }
     if (bCur.capital < budget) {
-      notify(`Недостаточно средств на счёте банка \xB7 нужно ${fmt(budget)}`);
+      notify(`Недостаточно средств на счёте банка · нужно ${fmt(budget)}`);
       return;
     }
     const strategy = bankMarketingStrategy(strategyId);
@@ -8048,19 +8414,33 @@ function MarketSandbox() {
       : product === "creditCards"
       ? { amount: bCur.totalCardCreditIssuedAmount || 0 }
       : { count: bCur.clients || 0 };
-    const campaign = { id: makeId("mkt"), product, strategy: strategy.id, budget, startedAt: now, endsAt: now + BANK_MARKETING_DURATION_MS, reachTarget, baseline };
-    setBank((prev) => prev ? { ...prev, capital: prev.capital - budget, marketingCampaigns: [...(prev.marketingCampaigns || []), campaign] } : prev);
-    logTx(`Маркетинг \xB7 ${BANK_MARKETING_PRODUCTS.find((p) => p.id === product)?.label}`, budget, "out");
+    const marketingPayment = settleOwnedBankExpense(worldCoreRef.current, budget, ECONOMY_ACCOUNTS.services, "Bank marketing campaign", { product, strategy: strategy.id });
+    if (marketingPayment.paidDollars + 0.01 < budget) {
+      notify("На реальном счёте банка недостаточно денег для кампании", false);
+      return;
+    }
+    commitWorldCore(marketingPayment.core);
+    const campaign = { id: makeId("mkt"), product, strategy: strategy.id, budget: marketingPayment.paidDollars, startedAt: now, endsAt: now + BANK_MARKETING_DURATION_MS, reachTarget, baseline };
+    setBank((prev) => prev ? { ...prev, capital: prev.capital - marketingPayment.paidDollars, marketingCampaigns: [...(prev.marketingCampaigns || []), campaign] } : prev);
+    logTx(`Маркетинг · ${BANK_MARKETING_PRODUCTS.find((p) => p.id === product)?.label}`, marketingPayment.paidDollars, "out");
     notify("Кампания запущена", true);
     setTimeout(saveGame, 50);
   };
   const withdrawMarketplacePayout = () => {
     const mp = marketplaceRef.current;
     if (!mp || mp.cash <= 0) return;
-    const amount = mp.cash;
-    setMarketplace((prev) => prev ? { ...prev, cash: 0 } : prev);
-    setIpCash((c) => c + amount);
-    logTx(`\u041C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441 \xAB${mp.name}\xBB \u2192 \u0418\u041F`, amount, "in");
+    const movement = transferBusinessCash(worldCoreRef.current, {
+      fromAccount: businessLedgerId("marketplace", mp.id),
+      toAccount: MONEY_ACCOUNTS.business,
+      amountDollars: mp.cash,
+      reason: `Marketplace ${mp.name} payout`,
+      meta: { marketplaceId: mp.id }
+    });
+    if (movement.paidDollars <= 0) return;
+    commitWorldCore(movement.core);
+    syncLegacyAccountFromLedger("ip", movement.core);
+    setMarketplace((prev) => prev ? { ...prev, cash: Math.max(0, Math.round((prev.cash - movement.paidDollars) * 100) / 100) } : prev);
+    logTx(`Маркетплейс «${mp.name}» → ИП`, movement.paidDollars, "in");
     setTimeout(saveGame, 50);
   };
   const setMarketplaceCommission = (rate) => {
@@ -8075,7 +8455,7 @@ function MarketSandbox() {
       notify(`Недостаточно средств — нужно ${fmt(tier.cost)}`);
       return;
     }
-    setIpCash((c) => c - tier.cost);
+    if (!ledgerPay("ip", tier.cost, MONEY_ACCOUNTS.companies, `Маркетплейс · покупка: ${tier.name}`)) return;
     logTx(`Маркетплейс · ${tier.name}`, tier.cost, "out");
     setMarketplace((prev) => prev ? { ...prev, ownWarehouses: { small: prev.ownWarehouses?.small || 0, large: prev.ownWarehouses?.large || 0, [tierId]: (prev.ownWarehouses?.[tierId] || 0) + 1 } } : prev);
     setTimeout(saveGame, 50);
@@ -8086,11 +8466,11 @@ function MarketSandbox() {
     if (!mp || !track) return;
     const cost = marketplaceTrackCost(trackId, mp);
     if (ipCashRef.current < cost) {
-      notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u043D\u0430 \u0418\u041F \u2014 \u043D\u0443\u0436\u043D\u043E ${fmt(cost)}`);
+      notify(`Недостаточно средств на ИП — нужно ${fmt(cost)}`);
       return;
     }
-    setIpCash((c) => c - cost);
-    logTx(`\u041C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441 \xB7 ${track.label}`, cost, "out");
+    if (!ledgerPay("ip", cost, ECONOMY_ACCOUNTS.services, `Marketplace growth · ${track.label}`, { trackId })) return;
+    logTx(`Маркетплейс · ${track.label}`, cost, "out");
     setMarketplace((prev) => prev ? { ...prev, [trackId + "Level"]: (prev[trackId + "Level"] || 0) + 1 } : prev);
     setTimeout(saveGame, 50);
   };
@@ -8118,8 +8498,8 @@ function MarketSandbox() {
       return;
     }
     if (offer.costType === "cash") {
-      setIpCash((c) => c - offer.costValue);
-      logTx(`\u041F\u0435\u0440\u0435\u0433\u043E\u0432\u043E\u0440\u044B \xB7 ${seller.name}`, offer.costValue, "out");
+      if (!ledgerPay("ip", offer.costValue, ECONOMY_ACCOUNTS.companies, `Marketplace seller negotiation · ${seller.name}`, { sellerId })) return;
+      logTx(`Переговоры · ${seller.name}`, offer.costValue, "out");
     }
     const chance = bigSellerSuccessChance(offer, seller, mp.trustScore);
     const success = Math.random() < chance;
@@ -8145,11 +8525,11 @@ function MarketSandbox() {
       notify(`Максимум ${MARKETPLACE_AD_MAX_ACTIVE} активные кампании одновременно`);
       return;
     }
-    if (ipCash < budget) {
+    if (ipCashRef.current < budget) {
       notify(`Недостаточно средств на ИП — нужно ${fmt(budget)}`);
       return;
     }
-    setIpCash((c) => c - budget);
+    if (!ledgerPay("ip", budget, ECONOMY_ACCOUNTS.services, `Marketplace advertising · ${channel.label}`, { channelId })) return;
     const campaign = { id: makeId("mpad"), channel: channelId, budget, startedAt: now, expiresAt: now + MARKETPLACE_AD_DURATION_MS };
     setMarketplace((prev) => prev ? { ...prev, adCampaigns: [...activeNow, campaign] } : prev);
     logTx(`Реклама маркетплейса · ${channel.label}`, budget, "out");
@@ -8167,14 +8547,27 @@ function MarketSandbox() {
     const investor = marketplaceInvestorOffer;
     const mp = marketplaceRef.current;
     if (!investor || !mp) return;
+    const investment = transferBusinessCash(worldCoreRef.current, {
+      fromAccount: ECONOMY_ACCOUNTS.companies,
+      toAccount: businessLedgerId("marketplace", mp.id),
+      amountDollars: investor.checkAmount,
+      reason: `Marketplace investment · ${investor.name}`,
+      meta: { marketplaceId: mp.id, investorId: investor.id }
+    });
+    if (investment.paidDollars <= 0) {
+      notify("Инвестор сейчас не может профинансировать раунд", false);
+      setMarketplaceInvestorOffer(null);
+      return;
+    }
+    commitWorldCore(investment.core);
     setMarketplace((prev) => prev ? {
       ...prev,
-      cash: Math.round((prev.cash + investor.checkAmount) * 100) / 100,
+      cash: Math.round((prev.cash + investment.paidDollars) * 100) / 100,
       equityGiven: (prev.equityGiven || 0) + investor.equityPct,
       investorRounds: [...(prev.investorRounds || []), { investorId: investor.id, name: investor.name, equityPct: investor.equityPct, acceptedAtCycle: prev.cyclesRun, conditionCycles: investor.conditionCycles, gmvAtStart: prev.totalGmv, met: false, failed: false }]
     } : prev);
-    logTx(`\u0418\u043D\u0432\u0435\u0441\u0442\u0438\u0446\u0438\u044F \xB7 ${investor.name}`, investor.checkAmount, "in");
-    pushPost({ text: `\xAB${mp.name}\xBB \u043F\u0440\u0438\u0432\u043B\u0451\u043A ${fmt(investor.checkAmount)} \u043E\u0442 ${investor.name} \u0437\u0430 ${investor.equityPct}% \u043A\u043E\u043C\u043F\u0430\u043D\u0438\u0438`, positive: true, isMacro: false, importance: 3 });
+    logTx(`Инвестиция · ${investor.name}`, investment.paidDollars, "in");
+    pushPost({ text: `«${mp.name}» привлёк ${fmt(investment.paidDollars)} от ${investor.name} за ${investor.equityPct}% компании`, positive: true, isMacro: false, importance: 3 });
     setMarketplaceInvestorOffer(null);
     setTimeout(saveGame, 50);
   };
@@ -8185,11 +8578,11 @@ function MarketSandbox() {
     if (!mp || !dept) return;
     const cost = marketplaceDeptHireCost(deptId, mp);
     if (ipCashRef.current < cost) {
-      notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u043D\u0430 \u0418\u041F \u2014 \u043D\u0443\u0436\u043D\u043E ${fmt(cost)}`);
+      notify(`Недостаточно средств на ИП — нужно ${fmt(cost)}`);
       return;
     }
-    setIpCash((c) => c - cost);
-    logTx(`\u041C\u0430\u0440\u043A\u0435\u0442\u043F\u043B\u0435\u0439\u0441 \xB7 \u043D\u0430\u0451\u043C ${dept.label.toLowerCase()}`, cost, "out");
+    if (!ledgerPay("ip", cost, ECONOMY_ACCOUNTS.households, `Marketplace hiring · ${dept.label}`, { deptId })) return;
+    logTx(`Маркетплейс · наём ${dept.label.toLowerCase()}`, cost, "out");
     setMarketplace((prev) => prev ? { ...prev, staff: { ...prev.staff, [deptId]: (prev.staff[deptId] || 0) + 1 } } : prev);
     setTimeout(saveGame, 50);
   };
@@ -8200,17 +8593,17 @@ function MarketSandbox() {
     const option = crisis && crisis.options.find((o) => o.id === optionId);
     if (!option) return;
     if (ipCashRef.current < option.cost) {
-      notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u043D\u0430 \u0418\u041F \u2014 \u043D\u0443\u0436\u043D\u043E ${fmt(option.cost)}`);
+      notify(`Недостаточно средств на ИП — нужно ${fmt(option.cost)}`);
       return;
     }
-    setIpCash((c) => c - option.cost);
-    logTx(`\u041A\u0440\u0438\u0437\u0438\u0441 \xB7 ${crisis.text.slice(0, 30)}\u2026`, option.cost, "out");
+    if (option.cost > 0 && !ledgerPay("ip", option.cost, ECONOMY_ACCOUNTS.services, `Marketplace crisis · ${crisis.id}`, { optionId })) return;
+    logTx(`Кризис · ${crisis.text.slice(0, 30)}…`, option.cost, "out");
     setMarketplace((prev) => {
       if (!prev) return prev;
       const trustScore = Math.max(0, Math.min(100, prev.trustScore + option.trustDelta));
       return { ...prev, trustScore, crisisPenaltyCyclesLeft: Math.max(prev.crisisPenaltyCyclesLeft || 0, option.penaltyCycles || 0), pendingCrisis: null };
     });
-    pushPost({ text: `\xAB${mp.name}\xBB: ${crisis.text} \u2014 \u0440\u0435\u0448\u0435\u043D\u0438\u0435: ${option.label.toLowerCase()}`, positive: option.trustDelta >= 0, isMacro: false, importance: 2 });
+    pushPost({ text: `«${mp.name}»: ${crisis.text} — решение: ${option.label.toLowerCase()}`, positive: option.trustDelta >= 0, isMacro: false, importance: 2 });
     if (option.hiddenRisk) {
       const revealChance = 0.55;
       if (Math.random() < revealChance) {
@@ -8310,8 +8703,9 @@ function MarketSandbox() {
         const health = jobCompanyHealth(companyRecentPerfPct(companiesRef.current, company.ticker, 20), sentimentRef.current, demandIndexRef.current);
         const pay = jobEffectivePay(track, job.level, employer, health, job.negoBonusMult);
         const bonus = Math.round(pay * choice.bonusMult);
-        adjustAccountBalance(resolvedPayFrom, bonus);
-        logTx(`\u0411\u043E\u043D\u0443\u0441 \xB7 ${track.levels[job.level].name}`, bonus, "in");
+        if (ledgerReceive(resolvedPayFrom, bonus, ECONOMY_ACCOUNTS.companies, `Job bonus · ${track.levels[job.level].name}`)) {
+          logTx(`Бонус · ${track.levels[job.level].name}`, bonus, "in");
+        }
       }
     }
     setJob((j) => j && ({ ...j, reputation: Math.max(0, Math.min(JOB_REP_MAX, j.reputation + choice.repDelta)) }));
@@ -8373,7 +8767,7 @@ function MarketSandbox() {
       notify(`Недостаточно средств — нужно ${fmt(cost)}`, false);
       return;
     }
-    adjustAccountBalance(src, -cost);
+    if (!ledgerPay(src, cost, ECONOMY_ACCOUNTS.services, "Курс повышения квалификации")) return;
     logTx("Курс повышения квалификации", cost, "out");
     const repGain = Math.round(JOB_COURSE_REP_GAIN_BASE + job.level * 2);
     setJob((j) => j && ({ ...j, reputation: Math.max(0, Math.min(JOB_REP_MAX, j.reputation + repGain)), lastCourseAt: now }));
@@ -8417,7 +8811,11 @@ function MarketSandbox() {
       bonusNote = " +\u043F\u0440\u0435\u043C\u0438\u044F";
     }
     pay = Math.round(pay);
-    adjustAccountBalance(resolvedPayFrom, pay);
+    if (!ledgerReceive(resolvedPayFrom, pay, ECONOMY_ACCOUNTS.companies, `Salary · ${track.levels[j.level].name}`)) {
+      notify("Работодатель не смог провести выплату", false);
+      setJob((jj) => jj && ({ ...jj, activeShift: null }));
+      return;
+    }
     setJobHistory((h) => ({ ...h, [j.companyId]: (h[j.companyId] || 0) + 1 }));
     accrueTax("\u041D\u0414\u0424\u041B \u0441 \u0437\u0430\u0440\u043F\u043B\u0430\u0442\u044B", Math.round(pay * 0.13));
     logTx(`\u0417\u0430\u0440\u043F\u043B\u0430\u0442\u0430 \xB7 ${track.levels[j.level].name}${bonusNote}`, pay, "in");
@@ -8481,8 +8879,11 @@ function MarketSandbox() {
     const totalRatePct = loanTotalRatePct(bank.ratePerTick, term, minTerm, maxTerm, collateralUsed / amount, bankRatingRateMult(clientRating), bankHealthRateMult(bankHealth), repRateMult, keyRateLoanMult(macro));
     const totalDue = Math.round(amount * (1 + totalRatePct / 100));
     const installmentAmount = Math.round(totalDue / term);
+    if (!ledgerReceive(resolvedPayFrom, amount, ECONOMY_ACCOUNTS.banks, `Loan issuance · ${bank.name}`, { bankId })) {
+      setFb(false, "У банка сейчас недостаточно ликвидности для выдачи");
+      return;
+    }
     setLoans((prev) => [...prev, { id: makeId("loan"), bankId, principal: amount, termCount: term, totalRatePct, totalDue, installmentAmount, balance: totalDue, paidToDate: 0, periodsElapsed: 0, missedPayments: 0, nextPaymentAt: Date.now() + INSTALLMENT_MS, collateralUsed, frozen: false, createdAt: Date.now() }]);
-    adjustAccountBalance(resolvedPayFrom, amount);
     setLoanInputs((f) => ({ ...f, [bankId]: "" }));
     setFb(true, `\u041E\u0434\u043E\u0431\u0440\u0435\u043D\u043E: ${fmt(amount)}. \u041A \u0432\u043E\u0437\u0432\u0440\u0430\u0442\u0443: ${fmt(totalDue)} (${term} \u043F\u043B\u0430\u0442\u0435\u0436\u0430 \u043F\u043E ${fmt(installmentAmount)})${collateralUsed > 0 ? ` \u2014 \u0432 \u0442.\u0447. \u043F\u043E\u0434 \u0437\u0430\u043B\u043E\u0433 \u0438\u043C\u0443\u0449\u0435\u0441\u0442\u0432\u0430 \u043D\u0430 ${fmt(collateralUsed)}` : ""}`);
     logTx(`\u041A\u0440\u0435\u0434\u0438\u0442 \xB7 ${bank.name}`, amount, "in");
@@ -8498,7 +8899,7 @@ function MarketSandbox() {
       return;
     }
     const newBalance = l.balance - amount;
-    adjustAccountBalance(src, -amount);
+    if (!ledgerPay(src, amount, ECONOMY_ACCOUNTS.banks, "Платёж по кредиту", { bankId: l.bankId, loanId })) return;
     if (newBalance <= 0.01) {
       setLoans((prev) => prev.filter((x) => x.id !== loanId));
       adjustBankRating(l.bankId, l.missedPayments > 0 ? 5 : 10);
@@ -8819,7 +9220,7 @@ function MarketSandbox() {
     const bal = getAccountBalance(src);
     const pay = Math.min(amount, bal, taxOwed);
     if (pay <= 0) return;
-    adjustAccountBalance(src, -pay);
+    if (!ledgerPay(src, pay, MONEY_ACCOUNTS.treasury, "Оплата налогов")) return;
     setTaxOwed((o) => Math.max(0, Number((o - pay).toFixed(2))));
     addGovTaxIn(pay);
     setTaxHistory((h) => [{ id: makeId("tax"), label: "\u041E\u043F\u043B\u0430\u0442\u0430 \u043D\u0430\u043B\u043E\u0433\u043E\u0432", amount: pay, kind: "payment" }, ...h].slice(0, 60));
@@ -8835,7 +9236,10 @@ function MarketSandbox() {
       notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u2014 \u043D\u0443\u0436\u043D\u043E ${fmt(fine.amount)}`);
       return;
     }
-    adjustAccountBalance(src, -fine.amount);
+    if (!ledgerPay(src, fine.amount, MONEY_ACCOUNTS.treasury, `Штраф · ${fine.label}`)) {
+      notify("Не удалось оплатить штраф");
+      return;
+    }
     setFines((prev) => prev.filter((f) => f.id !== fineId));
     logTx(`\u0428\u0442\u0440\u0430\u0444 \xB7 ${fine.label}`, fine.amount, "out");
     setTimeout(saveGame, 50);
@@ -8895,7 +9299,10 @@ function MarketSandbox() {
       notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u2014 \u043D\u0443\u0436\u043D\u043E ${fmt(price)}`);
       return;
     }
-    adjustAccountBalance(src, -price);
+    if (!ledgerPay(src, price, MONEY_ACCOUNTS.companies, `Покупка · ${item.name}`)) {
+      notify("Платёж не прошёл");
+      return;
+    }
     setOwnedItems((prev) => ({ ...prev, [itemId]: (prev[itemId] || 0) + 1 }));
     logTx(`\u041F\u043E\u043A\u0443\u043F\u043A\u0430 \xB7 ${item.name}`, price, "out");
     setTimeout(saveGame, 50);
@@ -8916,7 +9323,10 @@ function MarketSandbox() {
       return;
     }
     const proceeds = Math.round(price * (LIQUIDITY_SELL_FRACTION[item.liquidity] || 0.6));
-    adjustAccountBalance(resolvedPayFrom, proceeds);
+    if (!ledgerReceive(resolvedPayFrom, proceeds, MONEY_ACCOUNTS.clearing, `Продажа · ${item.name}`)) {
+      notify("Продажа не рассчиталась");
+      return;
+    }
     setOwnedItems((prev) => ({ ...prev, [itemId]: qty - 1 }));
     logTx(`\u041F\u0440\u043E\u0434\u0430\u0436\u0430 \xB7 ${item.name}`, proceeds, "in");
     setTimeout(saveGame, 50);
@@ -8928,7 +9338,10 @@ function MarketSandbox() {
       notify(`\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u043D\u0430 \u0418\u041F \u2014 \u043D\u0443\u0436\u043D\u043E ${fmt(RENTAL_BIZ_OPEN_COST)}`);
       return;
     }
-    setIpCash((c) => c - RENTAL_BIZ_OPEN_COST);
+    if (!ledgerPay("ip", RENTAL_BIZ_OPEN_COST, MONEY_ACCOUNTS.services, "Открытие бизнеса аренды недвижимости")) {
+      notify("Не удалось оплатить открытие бизнеса");
+      return;
+    }
     logTx("\u041E\u0442\u043A\u0440\u044B\u0442\u0438\u0435 \u00AB\u0410\u0440\u0435\u043D\u0434\u044B \u043D\u0435\u0434\u0432\u0438\u0436\u0438\u043C\u043E\u0441\u0442\u0438\u00BB", RENTAL_BIZ_OPEN_COST, "out");
     setRentalBiz(true);
     setSelectedBizId("rental");
@@ -8959,6 +9372,8 @@ function MarketSandbox() {
     setTimeout(saveGame, 50);
   };
   const resetGame = () => {
+    const freshCore = createWorldCore({ population: 1e6 });
+    commitWorldCore(freshCore);
     engineRef.current = {};
     setOnboarded(false);
     setHoldings({});
@@ -11209,7 +11624,7 @@ function MarketSandbox() {
                     /* @__PURE__ */ jsx("input", { type: "text", inputMode: "numeric", value: fmtInputNumber(depositReserveTransferAmount), onChange: (e) => setDepositReserveTransferAmount(parseInputNumber(e.target.value)), onFocus: (e) => e.target.select(), placeholder: "\u0421\u0443\u043C\u043C\u0430", style: { ...inputStyle, marginBottom: 8, fontFamily: "'JetBrains Mono', monospace" } }),
                     /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8 }, children: [
                       /* @__PURE__ */ jsx("button", { onClick: () => { transferDepositReserveToCapital(depositReserveTransferAmount); setDepositReserveTransferAmount(""); }, disabled: !(Number(depositReserveTransferAmount) > 0) || Number(depositReserveTransferAmount) > (bank.depositReserve || 0), style: { ...actionBtnStyle(Number(depositReserveTransferAmount) > 0 && Number(depositReserveTransferAmount) <= (bank.depositReserve || 0)), flex: 1, marginBottom: 0 }, children: "\u041D\u0430 \u0441\u0447\u0451\u0442 \u0431\u0430\u043D\u043A\u0430" }),
-                      /* @__PURE__ */ jsx("button", { onClick: () => { transferDepositReserveToIp(depositReserveTransferAmount); setDepositReserveTransferAmount(""); }, disabled: !(Number(depositReserveTransferAmount) > 0) || Number(depositReserveTransferAmount) > (bank.depositReserve || 0), style: { ...actionBtnStyle(Number(depositReserveTransferAmount) > 0 && Number(depositReserveTransferAmount) <= (bank.depositReserve || 0), C.violet), flex: 1, marginBottom: 0 }, children: "\u041D\u0430 \u041E\u041E\u041E" })
+                      /* @__PURE__ */ jsx("button", { disabled: true, title: "Вклады клиентов — обязательства банка", style: { ...actionBtnStyle(false, C.violet), flex: 1, marginBottom: 0 }, children: "Вклады ≠ прибыль" })
                     ] })
                   ] }),
                   /* @__PURE__ */ jsxs("div", { style: { marginBottom: 14 }, children: [
